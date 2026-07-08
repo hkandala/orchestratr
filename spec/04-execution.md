@@ -10,7 +10,9 @@
 ## Decided defaults (v1)
 
 - **Permissions: bypass-all.** Every harness gets its dangerous/bypass flag (05).
-  `--read-only` and finer policies are future work (10).
+  Mitigations (review outcome): every spawn's JSON result carries
+  `"permissions":"bypass"`; first-run TTY notice states the default; `--read-only` is
+  next-in-line future work (10).
 - **Auto-close.** After the first completed turn (no `--keep`): capture response, close
   pane, status `done`. Kept agents get an idle reaper (config `idle_reap_min`).
 - **Model/effort per invocation** on every agent-launching verb, mapped per harness.
@@ -27,7 +29,7 @@ ORCR_STORE=~/.orcr    ORCR_OUT=~/.orcr/runs/a7/001-response.md
 Any `orcr run` inside such an env auto-records lineage. `--parent <id>` overrides.
 Fallback attribution chain: `--parent` → `ORCR_*` env → root. Admission control enforces
 `max_depth` and `max_agents_per_tree` with clear errors (not skill-level politeness).
-Cycles (`--reuse` targeting an ancestor) are detected and refused.
+`send` targeting an ancestor of the caller is detected and refused (cycle guard).
 
 ## Run directory contract
 

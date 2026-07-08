@@ -17,8 +17,11 @@ implementation; milestone intent lives in [10-roadmap.md](10-roadmap.md).
 
 ## Design docs & review
 - [x] spec/ folder (01-overview … 10-roadmap, todo.md)
-- [~] codex design review of CLI/API UX (humans + agents) — fold findings into 03/04
-- [ ] remove root SPEC.md after review folded; update README link
+- [x] codex design review of CLI/API UX — 24 findings adjudicated in decisions.md
+- [x] fold review outcomes into 02/03/04/06 (exit 7 state_conflict, JSON schemas,
+      --harness, send intent flags, out --format, wait --tree, show verb, job surface,
+      durable jobs, schedule --forever default, judge-harness, no --reuse)
+- [x] remove root SPEC.md; README points at spec/
 
 ## M1 — Core verbs
 - [ ] id scheme: herdr-style short ids (a7 / l2 / s1 / g3 / w4, a7:tN turn sugar);
@@ -26,14 +29,14 @@ implementation; milestone intent lives in [10-roadmap.md](10-roadmap.md).
 - [ ] profile module split: src/profile/{mod,claude,codex,pi,opencode,mock}.rs
 - [ ] engine: spawn pipeline (admission → pane launch → env inject → startup recipe →
       deliver → track) with turn state machine incl. steer merging
-- [ ] run (async default, --wait, --keep, --mode, --worktree, --reuse, --session)
-- [ ] send (steer vs new-turn resolution)
-- [ ] wait (--all/--any/--timeout, exit codes)
-- [ ] out (--turn, a7:tN, --path, --recursive, --paths, --json)
-- [ ] ps / tree (--json; tree --watch)
+- [ ] run (async default, --wait, --keep, --mode, --worktree, --session)
+- [ ] send (steer vs new-turn resolution, --steer/--turn intent flags, exit 7)
+- [ ] wait (--all/--any/--tree/--timeout, rich timeout JSON, exit codes)
+- [ ] out (--turn, a7:tN sugar, --recursive, --format body|path|json)
+- [ ] ps / tree / show (--json; tree --watch; show = canonical object state)
 - [ ] kill (--tree, graceful recipe then pane close)
 - [ ] attach (terminal handoff)
-- [ ] history (basic: finished rows, --since/--name/--harness)
+- [ ] history (basic: --since/--status/--parent/--name/--harness/--limit)
 - [ ] gc (sqlite ↔ herdr reconcile, orphaned panes, --dry-run)
 - [ ] response guarantee chain (file → transcript → scrape) wired into engine
 - [ ] env contract end-to-end (lineage recording, depth/tree caps, cycle refusal)
@@ -43,11 +46,12 @@ implementation; milestone intent lives in [10-roadmap.md](10-roadmap.md).
 
 ## M2 — Jobs & daemon
 - [ ] serve: auto-start, pidfile, socket ping, --foreground; single-writer job ownership
+- [ ] job surface: job ls|show|pause|resume|rm across l/s/g/w
 - [ ] events feed (append + `orcr events --follow --json`)
 - [ ] loop: fixed --every, --every auto (NEXT_CHECK parse), --tick-on probe,
-      --max/--until, --detach warning, prompt-file re-read per tick
-- [ ] schedule: cron + --at, tz store + local/UTC echo, --catchup, --expires,
-      ls/pause/resume/rm, from-loop
+      --max/--until, --foreground mode, prompt-file re-read per tick
+- [ ] schedule: cron + --at, tz store + local/UTC echo, --catchup, --expires opt-in
+      (forever default), resume --at re-arm, from-loop
 - [ ] reconciler on daemon start (lost agents, stale panes) + gc hardening
 - [ ] concurrency caps + queued admission; --max-runs/--max-duration budgets
 - [ ] e2e checklist M2 (09)
@@ -55,7 +59,7 @@ implementation; milestone intent lives in [10-roadmap.md](10-roadmap.md).
 ## M3 — Faces
 - [ ] top TUI (tree+detail, attach/send/kill/out keys, filter, blocked sort)
 - [ ] auto-viewer pane (HERDR_ENV detect, once-per-session guard, viewer.auto config)
-- [ ] goal (worker+judge iterate, PASS/FAIL protocol, judge defaults = worker)
+- [ ] goal (worker+judge iterate, PASS/FAIL protocol, --judge-harness, self-check label)
 - [ ] workflow run (env-contract child process, log capture, --on-orphan)
 - [ ] history full (tokens, run-dir pointers) + token telemetry from transcripts
 - [ ] SKILL.md final

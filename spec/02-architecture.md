@@ -108,7 +108,9 @@ queued → starting → working → (idle ⇄ working)* → done | failed | time
 ## Exit codes (CLI-wide)
 
 `0` ok · `2` environment/config error (herdr missing, bad config, version skew) ·
-`3` timeout · `4` blocked · `5` killed · `6` not found · `1` anything else.
+`3` timeout · `4` blocked · `5` killed · `6` not found (unknown id/name) ·
+`7` state conflict (known object, invalid lifecycle operation — JSON code
+`state_conflict` with `{current_status, wanted, id}` details) · `1` anything else.
 
 ## Telemetry
 
