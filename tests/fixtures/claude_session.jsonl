@@ -1,0 +1,3 @@
+{"message":{"role":"user","content":[{"type":"text","text":"question"}]}}
+{"message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit"},{"type":"text","text":"first assistant answer"}]}}
+{"message":{"role":"assistant","content":[{"type":"text","text":"final assistant answer"}]}}
