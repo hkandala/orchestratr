@@ -42,6 +42,7 @@ pub struct RunRequest {
     pub timeout_s: u64,
     pub keep: bool,
     pub prompt: String,
+    pub wait: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -134,7 +135,7 @@ impl<'a> Engine<'a> {
 
         let prompt_path = persist_prompt(&run_dir, 1, PromptInput::Inline(&request.prompt))?;
         let prompt_paths = serde_json::to_string(&vec![prompt_path.display().to_string()])?;
-        let mut turn = TurnRow::new(
+        let turn = TurnRow::new(
             id.clone(),
             1,
             prompt_paths,
@@ -153,52 +154,10 @@ impl<'a> Engine<'a> {
         self.store.update_agent_status(&id, "working", None, None)?;
         self.event("agent.working", &id, json!({"turn": 1}))?;
 
-        let outcome = self.await_completion(profile, &started.pane_id, request.timeout_s)?;
-        let capture = match outcome {
-            CompletionOutcome::Done => {
-                let capture =
-                    self.capture_response(profile, &agent, Path::new(&turn.response_path))?;
-                turn.response_source = Some(capture.source.as_str().to_string());
-                turn.ended_at = Some(Utc::now().to_rfc3339());
-                self.store.update_turn(&turn)?;
-                let final_status = if request.keep { "idle" } else { "done" };
-                let ended_at = (!request.keep).then(|| Utc::now().to_rfc3339());
-                self.store.update_agent_status(
-                    &id,
-                    final_status,
-                    Some("completed"),
-                    ended_at.as_deref(),
-                )?;
-                if !request.keep {
-                    let _ = self.herdr.pane_close(&started.pane_id);
-                }
-                self.event(
-                    "turn.completed",
-                    &id,
-                    json!({"turn": 1, "response_source": capture.source.as_str()}),
-                )?;
-                Some(capture)
-            }
-            CompletionOutcome::Blocked => {
-                self.store
-                    .update_agent_status(&id, "blocked", Some("blocked"), None)?;
-                self.event("agent.blocked", &id, json!({"turn": 1}))?;
-                None
-            }
-            CompletionOutcome::Timeout => {
-                let ended_at = Utc::now().to_rfc3339();
-                self.store
-                    .update_agent_status(&id, "timeout", Some("timeout"), Some(&ended_at))?;
-                self.event("agent.timeout", &id, json!({"turn": 1}))?;
-                None
-            }
-            CompletionOutcome::PaneGone => {
-                let ended_at = Utc::now().to_rfc3339();
-                self.store
-                    .update_agent_status(&id, "lost", Some("pane_gone"), Some(&ended_at))?;
-                self.event("agent.lost", &id, json!({"turn": 1}))?;
-                None
-            }
+        let capture = if request.wait {
+            self.wait_for_turn(profile, &agent, turn.n, request.timeout_s)?
+        } else {
+            None
         };
 
         let agent = self
@@ -254,6 +213,101 @@ impl<'a> Engine<'a> {
             json!({"turn": turn.n, "path": path.display().to_string()}),
         )?;
         Ok(turn)
+    }
+
+    pub fn turn(&mut self, agent_id: &str, prompt: &str) -> Result<TurnRow> {
+        let agent = self
+            .store
+            .get_agent(agent_id)?
+            .ok_or_else(|| anyhow!("agent not found: {agent_id}"))?;
+        if agent.status != "idle" {
+            bail!(
+                "state_conflict: agent {agent_id} is {}, wanted idle for turn",
+                agent.status
+            );
+        }
+        let pane_id = agent
+            .pane_id
+            .as_deref()
+            .ok_or_else(|| anyhow!("agent {agent_id} has no pane_id"))?;
+        let next = self
+            .store
+            .list_turns_by_agent(agent_id)?
+            .last()
+            .map(|turn| turn.n + 1)
+            .unwrap_or(1);
+        let run_dir = Path::new(&agent.run_dir);
+        let response = response_path(run_dir, u32::try_from(next)?);
+        let prompt_path =
+            persist_prompt(run_dir, u32::try_from(next)?, PromptInput::Inline(prompt))?;
+        let mut turn = TurnRow::new(
+            agent_id,
+            next,
+            serde_json::to_string(&vec![prompt_path.display().to_string()])?,
+            response.display().to_string(),
+            Utc::now().to_rfc3339(),
+        );
+        self.store.create_turn(&turn)?;
+        let delivered = fs::read_to_string(&prompt_path)?;
+        self.herdr.send_input(pane_id, &delivered)?;
+        self.store
+            .update_agent_status(agent_id, "working", None, None)?;
+        self.event(
+            "turn.prompt",
+            agent_id,
+            json!({"turn": next, "path": prompt_path.display().to_string()}),
+        )?;
+        turn = self
+            .store
+            .list_turns_by_agent(agent_id)?
+            .into_iter()
+            .find(|row| row.n == next)
+            .ok_or_else(|| anyhow!("turn disappeared: {agent_id}:t{next}"))?;
+        Ok(turn)
+    }
+
+    pub fn wait_for_agent(
+        &mut self,
+        profile: &dyn Profile,
+        agent_id: &str,
+        timeout_s: u64,
+    ) -> Result<Option<ResponseCapture>> {
+        let agent = self
+            .store
+            .get_agent(agent_id)?
+            .ok_or_else(|| anyhow!("agent not found: {agent_id}"))?;
+        let turn_n = self
+            .store
+            .list_turns_by_agent(agent_id)?
+            .last()
+            .map(|turn| turn.n)
+            .ok_or_else(|| anyhow!("agent {agent_id} has no turns"))?;
+        self.wait_for_turn(profile, &agent, turn_n, timeout_s)
+    }
+
+    pub fn kill_agent(&mut self, profile: &dyn Profile, agent_id: &str) -> Result<bool> {
+        let agent = self
+            .store
+            .get_agent(agent_id)?
+            .ok_or_else(|| anyhow!("agent not found: {agent_id}"))?;
+        let Some(pane_id) = agent.pane_id.as_deref() else {
+            return Ok(false);
+        };
+        for step in profile.shutdown_recipe() {
+            let _ = self.apply_action(pane_id, &step.action);
+        }
+        let _ = self.herdr.pane_close(pane_id);
+        self.store.update_agent_status(
+            agent_id,
+            "killed",
+            Some("killed"),
+            Some(&Utc::now().to_rfc3339()),
+        )?;
+        self.event("agent.killed", agent_id, json!({}))?;
+        if let Some(agent) = self.store.get_agent(agent_id)? {
+            self.write_meta(&agent)?;
+        }
+        Ok(true)
     }
 
     fn admit(&self, parent_id: Option<&str>) -> Result<u32> {
@@ -412,6 +466,76 @@ impl<'a> Engine<'a> {
         })
     }
 
+    fn wait_for_turn(
+        &mut self,
+        profile: &dyn Profile,
+        agent: &AgentRow,
+        turn_n: i64,
+        timeout_s: u64,
+    ) -> Result<Option<ResponseCapture>> {
+        let pane_id = agent
+            .pane_id
+            .as_deref()
+            .ok_or_else(|| anyhow!("agent {} has no pane_id", agent.id))?;
+        let outcome = self.await_completion(profile, pane_id, timeout_s)?;
+        let mut turn = self
+            .store
+            .list_turns_by_agent(&agent.id)?
+            .into_iter()
+            .find(|turn| turn.n == turn_n)
+            .ok_or_else(|| anyhow!("turn not found: {}:t{}", agent.id, turn_n))?;
+        match outcome {
+            CompletionOutcome::Done => {
+                let capture =
+                    self.capture_response(profile, agent, Path::new(&turn.response_path))?;
+                turn.response_source = Some(capture.source.as_str().to_string());
+                turn.ended_at = Some(Utc::now().to_rfc3339());
+                self.store.update_turn(&turn)?;
+                let final_status = if agent.keep { "idle" } else { "done" };
+                let ended_at = (!agent.keep).then(|| Utc::now().to_rfc3339());
+                self.store.update_agent_status(
+                    &agent.id,
+                    final_status,
+                    Some("completed"),
+                    ended_at.as_deref(),
+                )?;
+                if !agent.keep {
+                    let _ = self.herdr.pane_close(pane_id);
+                }
+                self.event(
+                    "turn.completed",
+                    &agent.id,
+                    json!({"turn": turn_n, "response_source": capture.source.as_str()}),
+                )?;
+                if let Some(agent) = self.store.get_agent(&agent.id)? {
+                    self.write_meta(&agent)?;
+                }
+                Ok(Some(capture))
+            }
+            CompletionOutcome::Blocked => {
+                self.store
+                    .update_agent_status(&agent.id, "blocked", Some("blocked"), None)?;
+                self.event("agent.blocked", &agent.id, json!({"turn": turn_n}))?;
+                Ok(None)
+            }
+            CompletionOutcome::Timeout => {
+                self.event("agent.wait_timeout", &agent.id, json!({"turn": turn_n}))?;
+                Ok(None)
+            }
+            CompletionOutcome::PaneGone => {
+                let ended_at = Utc::now().to_rfc3339();
+                self.store.update_agent_status(
+                    &agent.id,
+                    "lost",
+                    Some("pane_gone"),
+                    Some(&ended_at),
+                )?;
+                self.event("agent.lost", &agent.id, json!({"turn": turn_n}))?;
+                Ok(None)
+            }
+        }
+    }
+
     fn write_meta(&self, agent: &AgentRow) -> Result<()> {
         let turns = self.store.list_turns_by_agent(&agent.id)?;
         let meta_turns = turns
@@ -551,6 +675,7 @@ mod tests {
                     timeout_s: 2,
                     keep: false,
                     prompt: "hello".to_string(),
+                    wait: true,
                 },
             )
             .unwrap();

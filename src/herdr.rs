@@ -71,6 +71,11 @@ pub struct PaneInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PaneList {
+    pub panes: Vec<PaneInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct AgentSession {
     pub source: Option<String>,
     pub agent: Option<String>,
@@ -360,6 +365,10 @@ impl HerdrClient {
         Ok(result.pane)
     }
 
+    pub fn pane_list(&self) -> Result<PaneList> {
+        self.run_session_json(["pane", "list", "--json"])
+    }
+
     pub fn pane_send_text(&self, pane_id: &str, text: &str) -> Result<()> {
         self.run_session_plain(["pane", "send-text", pane_id, text])
     }
@@ -402,6 +411,20 @@ impl HerdrClient {
     pub fn pane_close(&self, pane_id: &str) -> Result<()> {
         let _: Value = self.run_session_json(["pane", "close", pane_id])?;
         Ok(())
+    }
+
+    pub fn session_attach(&self) -> Result<()> {
+        let status = Command::new(&self.bin)
+            .args(["session", "attach", &self.session])
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(HerdrError::CommandFailed(format!(
+                "herdr session attach {} exited with {status}",
+                self.session
+            )))
+        }
     }
 
     pub fn capture_response_with_scrape(

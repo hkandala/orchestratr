@@ -24,21 +24,21 @@ implementation; milestone intent lives in [10-roadmap.md](10-roadmap.md).
 - [x] remove root SPEC.md; README points at spec/
 
 ## M1 — Core verbs
-- [ ] id scheme: herdr-style short ids (a7 / l2 / s1 / g3 / w4, a7:tN turn sugar);
+- [x] id scheme: herdr-style short ids (a7 / l2 / s1 / g3 / w4, a7:tN turn sugar);
       migrate store + rundir off uuids; monotonic per-type counters
-- [ ] profile module split: src/profile/{mod,claude,codex,pi,opencode,mock}.rs
-- [ ] engine: spawn pipeline (admission → pane launch → env inject → startup recipe →
+- [x] profile module split: src/profile/{mod,claude,codex,pi,opencode,mock}.rs
+- [x] engine: spawn pipeline (admission → pane launch → env inject → startup recipe →
       deliver → track) with turn state machine incl. steer merging
-- [ ] run (async default, --wait, --keep, --mode, --worktree, --session)
-- [ ] send (steer vs new-turn resolution, --steer/--turn intent flags, exit 7)
-- [ ] wait (--all/--any/--tree/--timeout, rich timeout JSON, exit codes)
-- [ ] out (--turn, a7:tN sugar, --recursive, --format body|path|json)
-- [ ] ps / tree / show (--json; tree --watch; show = canonical object state)
-- [ ] kill (--tree, graceful recipe then pane close)
-- [ ] attach (terminal handoff)
-- [ ] history (basic: --since/--status/--parent/--name/--harness/--limit)
-- [ ] gc (sqlite ↔ herdr reconcile, orphaned panes, --dry-run)
-- [ ] response guarantee chain (file → transcript → scrape) wired into engine
+- [x] run (async default, --wait, --keep, --mode, --worktree, --session)
+- [x] send (steer vs new-turn resolution, --steer/--turn intent flags, exit 7)
+- [x] wait (--all/--any/--tree/--timeout, rich timeout JSON, exit codes)
+- [x] out (--turn, a7:tN sugar, --recursive, --format body|path|json)
+- [x] ps / tree / show (--json; tree --watch; show = canonical object state)
+- [x] kill (--tree, graceful recipe then pane close)
+- [x] attach (terminal handoff)
+- [x] history (basic: --since/--status/--parent/--name/--harness/--limit)
+- [x] gc (sqlite ↔ herdr reconcile, orphaned panes, --dry-run)
+- [x] response guarantee chain (file → transcript → scrape) wired into engine
 - [ ] env contract end-to-end (lineage recording, depth/tree caps, cycle refusal)
 - [ ] e2e checklist M1 (09): fan-out, steer-mid-turn, multi-turn --keep, recursive out,
       kill --tree, timeout exit 3, blocked exit 4, lineage
