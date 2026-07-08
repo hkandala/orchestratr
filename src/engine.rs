@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::Config;
@@ -50,6 +51,20 @@ pub struct RunResult {
     pub agent: AgentRow,
     pub turn: TurnRow,
     pub response: Option<ResponseCapture>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct QueuedRunSpec {
+    name: Option<String>,
+    parent_id: Option<String>,
+    mode: String,
+    model: String,
+    effort: String,
+    cwd: String,
+    timeout_s: u64,
+    keep: bool,
+    prompt: String,
+    depth: u32,
 }
 
 pub struct Engine<'a> {
@@ -98,50 +113,7 @@ impl<'a> Engine<'a> {
         self.event("agent.spawn", &id, json!({"harness": profile.harness()}))?;
         self.event("agent.queued", &id, json!({"depth": depth}))?;
 
-        self.store
-            .update_agent_status(&id, "starting", None, None)?;
-        self.event("agent.starting", &id, json!({}))?;
-        self.herdr.ensure_session(Duration::from_secs(10))?;
-
         let response = response_path(&run_dir, 1);
-        let envs = self.launch_env(&id, agent.parent_id.as_deref(), depth, &response);
-        let argv = match request.mode {
-            RunMode::Tui => profile.launch_argv(&request.model, &request.effort, true),
-            RunMode::Exec => profile
-                .exec_argv(&request.model, &request.effort, &request.prompt)
-                .ok_or_else(|| anyhow!("exec mode is unsupported for {}", profile.harness()))?,
-        };
-        let started = self
-            .herdr
-            .agent_start(&id, &request.cwd, &envs, &argv)
-            .with_context(|| format!("failed to launch pane for {id}"))?;
-        let session_kind = started
-            .agent_session
-            .as_ref()
-            .and_then(|s| s.kind.as_deref());
-        let session_value = started
-            .agent_session
-            .as_ref()
-            .and_then(|s| s.value.as_deref());
-        self.store.update_agent_launch(
-            &id,
-            "starting",
-            Some(&started.pane_id),
-            started.terminal_id.as_deref(),
-            session_kind,
-            session_value,
-        )?;
-        agent.pane_id = Some(started.pane_id.clone());
-        agent.terminal_id = started.terminal_id.clone();
-        agent.agent_session_kind = session_kind.map(ToString::to_string);
-        agent.agent_session_value = session_value.map(ToString::to_string);
-
-        if profile.harness() == "mock" {
-            self.herdr
-                .wait_output(&started.pane_id, "MOCK_READY", false, 10_000)?;
-        }
-        self.run_startup_recipe(profile, &started.pane_id)?;
-
         let prompt_path = persist_prompt(&run_dir, 1, PromptInput::Inline(&request.prompt))?;
         let prompt_paths = serde_json::to_string(&vec![prompt_path.display().to_string()])?;
         let turn = TurnRow::new(
@@ -163,27 +135,159 @@ impl<'a> Engine<'a> {
             json!({"turn": 1, "path": prompt_path.display().to_string()}),
         )?;
 
-        let delivered = fs::read_to_string(&prompt_path)?;
-        self.herdr.send_input(&started.pane_id, &delivered)?;
-        self.store.update_agent_status(&id, "working", None, None)?;
-        self.event("agent.working", &id, json!({"turn": 1}))?;
+        let queued_spec = QueuedRunSpec {
+            name: request.name,
+            parent_id: agent.parent_id.clone(),
+            mode: request.mode.as_str().to_string(),
+            model: request.model,
+            effort: request.effort,
+            cwd: request.cwd.display().to_string(),
+            timeout_s: request.timeout_s,
+            keep: request.keep,
+            prompt: request.prompt,
+            depth,
+        };
+        self.store
+            .save_queued_run(&id, &serde_json::to_string(&queued_spec)?)?;
 
-        let capture = if request.wait {
-            self.wait_for_turn(profile, &agent, turn.n, request.timeout_s)?
+        if self.can_launch_now()? {
+            self.promote_queued(&id, profile, request.wait)
+        } else {
+            self.write_meta(&agent)?;
+            Ok(RunResult {
+                agent,
+                turn,
+                response: None,
+            })
+        }
+    }
+
+    pub fn promote_queued(
+        &mut self,
+        agent_id: &str,
+        profile: &dyn Profile,
+        wait: bool,
+    ) -> Result<RunResult> {
+        let agent = self
+            .store
+            .get_agent(agent_id)?
+            .ok_or_else(|| anyhow!("agent not found: {agent_id}"))?;
+        if agent.status != "queued" {
+            bail!(
+                "state_conflict: id={agent_id} current_status={} wanted=queued",
+                agent.status
+            );
+        }
+        if !self.can_launch_now()? {
+            let turn = self
+                .store
+                .list_turns_by_agent(agent_id)?
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow!("agent {agent_id} has no queued turn"))?;
+            return Ok(RunResult {
+                agent,
+                turn,
+                response: None,
+            });
+        }
+        let spec_json = self
+            .store
+            .get_queued_run(agent_id)?
+            .ok_or_else(|| anyhow!("queued run spec not found for {agent_id}"))?;
+        let spec: QueuedRunSpec = serde_json::from_str(&spec_json)?;
+        let turn = self
+            .store
+            .list_turns_by_agent(agent_id)?
+            .into_iter()
+            .find(|turn| turn.n == 1)
+            .ok_or_else(|| anyhow!("agent {agent_id} has no queued turn"))?;
+
+        self.store
+            .update_agent_status(agent_id, "starting", None, None)?;
+        self.event("agent.starting", agent_id, json!({}))?;
+        self.herdr.ensure_session(Duration::from_secs(10))?;
+
+        let response = PathBuf::from(&turn.response_path);
+        let envs = self.launch_env(agent_id, spec.parent_id.as_deref(), spec.depth, &response);
+        let argv = match spec.mode.as_str() {
+            "exec" => profile
+                .exec_argv(&spec.model, &spec.effort, &spec.prompt)
+                .ok_or_else(|| anyhow!("exec mode is unsupported for {}", profile.harness()))?,
+            _ => profile.launch_argv(&spec.model, &spec.effort, true),
+        };
+        let cwd = PathBuf::from(&spec.cwd);
+        let started = self
+            .herdr
+            .agent_start(agent_id, &cwd, &envs, &argv)
+            .with_context(|| format!("failed to launch pane for {agent_id}"))?;
+        let session_kind = started
+            .agent_session
+            .as_ref()
+            .and_then(|s| s.kind.as_deref());
+        let session_value = started
+            .agent_session
+            .as_ref()
+            .and_then(|s| s.value.as_deref());
+        self.store.update_agent_launch(
+            agent_id,
+            "starting",
+            Some(&started.pane_id),
+            started.terminal_id.as_deref(),
+            session_kind,
+            session_value,
+        )?;
+
+        if profile.harness() == "mock" {
+            self.herdr
+                .wait_output(&started.pane_id, "MOCK_READY", false, 10_000)?;
+        }
+        self.run_startup_recipe(profile, &started.pane_id)?;
+
+        let prompt_paths: Vec<String> = serde_json::from_str(&turn.prompt_paths)?;
+        let prompt_path = prompt_paths
+            .first()
+            .ok_or_else(|| anyhow!("agent {agent_id} queued turn has no prompt path"))?;
+        let delivered = fs::read_to_string(prompt_path)?;
+        self.herdr.send_input(&started.pane_id, &delivered)?;
+        self.store
+            .update_agent_status(agent_id, "working", None, None)?;
+        self.store.delete_queued_run(agent_id)?;
+        self.event("agent.working", agent_id, json!({"turn": 1}))?;
+
+        let launched_agent = self
+            .store
+            .get_agent(agent_id)?
+            .ok_or_else(|| anyhow!("agent disappeared after launch: {agent_id}"))?;
+        let capture = if wait {
+            self.wait_for_turn(profile, &launched_agent, turn.n, spec.timeout_s)?
         } else {
             None
         };
 
         let agent = self
             .store
-            .get_agent(&id)?
-            .ok_or_else(|| anyhow!("agent disappeared after run: {id}"))?;
+            .get_agent(agent_id)?
+            .ok_or_else(|| anyhow!("agent disappeared after run: {agent_id}"))?;
         self.write_meta(&agent)?;
         Ok(RunResult {
             agent,
             turn,
             response: capture,
         })
+    }
+
+    pub fn promote_next_queued(&mut self, wait: bool) -> Result<Option<RunResult>> {
+        if !self.can_launch_now()? {
+            return Ok(None);
+        }
+        let Some(agent) = self.store.first_queued_agent()? else {
+            return Ok(None);
+        };
+        let profile = crate::profile::lookup(&agent.harness)
+            .ok_or_else(|| anyhow!("unknown harness on queued agent {}", agent.id))?;
+        self.promote_queued(&agent.id, profile.as_ref(), wait)
+            .map(Some)
     }
 
     pub fn steer(&mut self, agent_id: &str, prompt: &str) -> Result<TurnRow> {
@@ -379,6 +483,10 @@ impl<'a> Engine<'a> {
         Ok(count)
     }
 
+    fn can_launch_now(&self) -> Result<bool> {
+        Ok(self.store.count_active_agents()? < self.config.limits.max_concurrent)
+    }
+
     fn launch_env(
         &self,
         id: &str,
@@ -536,6 +644,9 @@ impl<'a> Engine<'a> {
                 if let Some(agent) = self.store.get_agent(&agent.id)? {
                     self.write_meta(&agent)?;
                 }
+                if !agent.keep {
+                    let _ = self.promote_next_queued(true);
+                }
                 Ok(Some(capture))
             }
             CompletionOutcome::Blocked => {
@@ -555,6 +666,7 @@ impl<'a> Engine<'a> {
                 if let Some(agent) = self.store.get_agent(&agent.id)? {
                     self.write_meta(&agent)?;
                 }
+                let _ = self.promote_next_queued(true);
                 Ok(None)
             }
             CompletionOutcome::PaneGone => {
@@ -566,6 +678,7 @@ impl<'a> Engine<'a> {
                     Some(&ended_at),
                 )?;
                 self.event("agent.lost", &agent.id, json!({"turn": turn_n}))?;
+                let _ = self.promote_next_queued(true);
                 Ok(None)
             }
         }

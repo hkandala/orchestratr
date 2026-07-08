@@ -336,12 +336,41 @@ impl Store {
         Ok(())
     }
 
+    pub fn clear_agent_pane(&self, id: &str) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE agents SET pane_id = NULL, terminal_id = NULL WHERE id = ?1",
+            [id],
+        )?;
+        if changed == 0 {
+            bail!("agent not found: {id}");
+        }
+        Ok(())
+    }
+
     pub fn list_agents(&self) -> Result<Vec<AgentRow>> {
         let mut stmt = self
             .conn
             .prepare(&(AGENT_SELECT_SQL.to_string() + " ORDER BY created_at, id"))?;
         let rows = stmt.query_map([], map_agent)?;
         collect_rows(rows)
+    }
+
+    pub fn count_active_agents(&self) -> Result<u32> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM agents WHERE status IN ('starting', 'working', 'idle', 'blocked')",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    pub fn first_queued_agent(&self) -> Result<Option<AgentRow>> {
+        let sql = AGENT_SELECT_SQL.to_string()
+            + " WHERE status = 'queued' ORDER BY created_at, id LIMIT 1";
+        self.conn
+            .query_row(&sql, [], map_agent)
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn resolve_agent_ref(&self, value: &str) -> Result<ResolvedTurnRef> {
@@ -516,6 +545,32 @@ impl Store {
         Ok(())
     }
 
+    pub fn save_queued_run(&self, agent_id: &str, spec_json: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO queued_runs (agent_id, spec_json) VALUES (?1, ?2)
+             ON CONFLICT(agent_id) DO UPDATE SET spec_json = excluded.spec_json",
+            params![agent_id, spec_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_queued_run(&self, agent_id: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT spec_json FROM queued_runs WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn delete_queued_run(&self, agent_id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM queued_runs WHERE agent_id = ?1", [agent_id])?;
+        Ok(())
+    }
+
     pub fn append_event(&self, event: &EventRow) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO events (ts, kind, ref_id, payload_json) VALUES (?1, ?2, ?3, ?4)",
@@ -605,6 +660,11 @@ impl Store {
             CREATE TABLE IF NOT EXISTS counters (
                 name TEXT PRIMARY KEY,
                 value INT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS queued_runs (
+                agent_id TEXT PRIMARY KEY,
+                spec_json TEXT NOT NULL
             );
 
             PRAGMA user_version = 1;

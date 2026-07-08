@@ -366,7 +366,7 @@ impl HerdrClient {
     }
 
     pub fn pane_list(&self) -> Result<PaneList> {
-        self.run_session_json(["pane", "list", "--json"])
+        self.run_session_json(["pane", "list"])
     }
 
     pub fn pane_send_text(&self, pane_id: &str, text: &str) -> Result<()> {

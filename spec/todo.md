@@ -50,11 +50,11 @@ implementation; milestone intent lives in [10-roadmap.md](10-roadmap.md).
 - [x] events feed (append + `orcr events --follow --json`)
 - [x] loop: fixed --every, --every auto (NEXT_CHECK parse), --tick-on probe,
       --max/--until, --foreground mode, prompt-file re-read per tick
-- [ ] schedule: cron + --at, tz store + local/UTC echo, --catchup, --expires opt-in
+- [x] schedule: cron + --at, tz store + local/UTC echo, --catchup, --expires opt-in
       (forever default), resume --at re-arm, from-loop
-- [ ] reconciler on daemon start (lost agents, stale panes) + gc hardening
-- [ ] concurrency caps + queued admission; --max-runs/--max-duration budgets
-- [ ] e2e checklist M2 (09)
+- [x] reconciler on daemon start (lost agents, stale panes) + gc hardening
+- [x] concurrency caps + queued admission; --max-runs/--max-duration budgets
+- [x] e2e checklist M2 (09)
 
 ## M3 — Faces
 - [ ] top TUI (tree+detail, attach/send/kill/out keys, filter, blocked sort)

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
@@ -16,7 +16,9 @@ use crate::config::Config;
 use crate::daemon;
 use crate::engine::{Engine, RunMode, RunRequest};
 use crate::herdr::{discover_herdr, HerdrClient, HerdrError, INSTALL_URL};
-use crate::jobs::{self, EverySpec, LoopSpec, AUTO_FALLBACK_SECS};
+use crate::jobs::{
+    self, CatchupPolicy, EverySpec, LoopSpec, ScheduleSpec, ScheduleTrigger, AUTO_FALLBACK_SECS,
+};
 use crate::profile;
 use crate::store::{AgentRow, EventRow, IdKind, JobRow, Store, TurnRow};
 
@@ -42,6 +44,7 @@ enum Command {
     History(HistoryArgs),
     Gc(GcArgs),
     Loop(LoopArgs),
+    Schedule(ScheduleArgs),
     Job(JobArgs),
     Events(EventsArgs),
     Serve(ServeArgs),
@@ -260,6 +263,10 @@ struct LoopArgs {
     tick_on: Option<String>,
     #[arg(long)]
     max: Option<u64>,
+    #[arg(long = "max-runs")]
+    max_runs: Option<u64>,
+    #[arg(long = "max-duration")]
+    max_duration: Option<String>,
     #[arg(long)]
     until: Option<String>,
     #[arg(long)]
@@ -282,6 +289,107 @@ struct LoopArgs {
     worktree: bool,
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+struct ScheduleArgs {
+    #[command(subcommand)]
+    command: ScheduleCommand,
+    #[arg(long, global = true)]
+    json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum ScheduleCommand {
+    Add(Box<ScheduleAddArgs>),
+    Ls,
+    Show(IdArg),
+    Pause(IdArg),
+    Resume(ScheduleResumeArgs),
+    Rm(IdArg),
+    FromLoop(ScheduleFromLoopArgs),
+}
+
+#[derive(Debug, Args)]
+struct ScheduleAddArgs {
+    cron: Option<String>,
+    #[arg(
+        long = "at",
+        conflicts_with = "cron",
+        help = "One-shot time: RFC3339, 'today HH:MM', 'tomorrow HH:MM', or 'in <dur>' such as 'in 2h'"
+    )]
+    at: Option<String>,
+    #[arg(long = "harness", short = 'a')]
+    harness: String,
+    #[arg(
+        short = 'p',
+        conflicts_with = "prompt_file",
+        required_unless_present = "prompt_file"
+    )]
+    prompt: Option<String>,
+    #[arg(long = "prompt-file", value_name = "f|-", conflicts_with = "prompt")]
+    prompt_file: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = CliCatchup::Skip)]
+    catchup: CliCatchup,
+    #[arg(long)]
+    expires: Option<String>,
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long, default_value = "")]
+    model: String,
+    #[arg(long, default_value = "")]
+    effort: String,
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    #[arg(long, default_value = "600s")]
+    timeout: String,
+    #[arg(long)]
+    keep: bool,
+    #[arg(long, value_enum, default_value_t = CliRunMode::Tui)]
+    mode: CliRunMode,
+    #[arg(long)]
+    worktree: bool,
+    #[arg(long = "max-runs")]
+    max_runs: Option<u64>,
+    #[arg(long = "max-duration")]
+    max_duration: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ScheduleResumeArgs {
+    id: String,
+    #[arg(
+        long = "at",
+        help = "Re-arm time: RFC3339, 'today HH:MM', 'tomorrow HH:MM', or 'in <dur>' such as 'in 2h'"
+    )]
+    at: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ScheduleFromLoopArgs {
+    id: String,
+    cron: Option<String>,
+    #[arg(
+        long = "at",
+        conflicts_with = "cron",
+        help = "One-shot time: RFC3339, 'today HH:MM', 'tomorrow HH:MM', or 'in <dur>' such as 'in 2h'"
+    )]
+    at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CliCatchup {
+    Skip,
+    Once,
+}
+
+impl From<CliCatchup> for CatchupPolicy {
+    fn from(value: CliCatchup) -> Self {
+        match value {
+            CliCatchup::Skip => Self::Skip,
+            CliCatchup::Once => Self::Once,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -370,6 +478,7 @@ fn dispatch(command: Command) -> Result<Exit> {
         Command::History(args) => cmd_history(args),
         Command::Gc(args) => cmd_gc(args),
         Command::Loop(args) => cmd_loop(args),
+        Command::Schedule(args) => cmd_schedule(args),
         Command::Job(args) => cmd_job(args),
         Command::Events(args) => cmd_events(args),
         Command::Serve(args) => cmd_serve(args),
@@ -938,56 +1047,9 @@ fn cmd_history(args: HistoryArgs) -> Result<Exit> {
 }
 
 fn cmd_gc(args: GcArgs) -> Result<Exit> {
-    let ctx = ContextBundle::load(None)?;
-    let agents = ctx.store.list_agents()?;
-    let live_panes = ctx
-        .herdr
-        .pane_list()
-        .map(|list| list.panes)
-        .unwrap_or_default();
-    let known_panes: HashSet<String> = agents.iter().filter_map(|a| a.pane_id.clone()).collect();
-    let live_pane_ids: HashSet<String> = live_panes.iter().map(|p| p.pane_id.clone()).collect();
-    let mut killed_unknown = Vec::new();
-    for pane in live_panes {
-        if pane
-            .label
-            .as_deref()
-            .is_some_and(|label| label.starts_with("a"))
-            && !known_panes.contains(&pane.pane_id)
-        {
-            if !args.dry_run {
-                let _ = ctx.herdr.pane_close(&pane.pane_id);
-            }
-            killed_unknown.push(pane.pane_id);
-        }
-    }
-    let mut marked_lost = Vec::new();
-    for agent in agents {
-        if matches!(
-            agent.status.as_str(),
-            "working" | "idle" | "blocked" | "starting"
-        ) && agent
-            .pane_id
-            .as_ref()
-            .is_some_and(|pane| !live_pane_ids.contains(pane))
-        {
-            if !args.dry_run {
-                ctx.store.update_agent_status(
-                    &agent.id,
-                    "lost",
-                    Some("pane_gone"),
-                    Some(&Utc::now().to_rfc3339()),
-                )?;
-            }
-            marked_lost.push(agent.id);
-        }
-    }
-    let value = json!({
-        "killed_unknown_panes": killed_unknown,
-        "marked_lost": marked_lost,
-        "deleted_stale_sessions": [],
-        "dry_run": args.dry_run,
-    });
+    let config = Config::load().context("config_error")?;
+    let report = daemon::reconcile(&config, args.dry_run)?;
+    let value = serde_json::to_value(report)?;
     if args.json {
         print_ok(value);
     } else {
@@ -1159,6 +1221,12 @@ fn cmd_loop(args: LoopArgs) -> Result<Exit> {
         every,
         tick_on: args.tick_on,
         max: args.max,
+        max_runs: args.max_runs,
+        max_duration_s: args
+            .max_duration
+            .as_deref()
+            .map(parse_duration_s)
+            .transpose()?,
         until: args.until,
         name: args.name,
         model: args.model,
@@ -1211,6 +1279,206 @@ fn cmd_loop(args: LoopArgs) -> Result<Exit> {
         );
     }
     Ok(Exit::Ok)
+}
+
+fn cmd_schedule(args: ScheduleArgs) -> Result<Exit> {
+    match args.command {
+        ScheduleCommand::Add(add) => cmd_schedule_add(*add, args.json),
+        ScheduleCommand::Ls => cmd_schedule_job_alias(JobCommand::Ls, args.json),
+        ScheduleCommand::Show(id) => cmd_schedule_job_alias(JobCommand::Show(id), args.json),
+        ScheduleCommand::Pause(id) => cmd_schedule_job_alias(JobCommand::Pause(id), args.json),
+        ScheduleCommand::Resume(resume) => cmd_schedule_resume(resume, args.json),
+        ScheduleCommand::Rm(id) => cmd_schedule_job_alias(JobCommand::Rm(id), args.json),
+        ScheduleCommand::FromLoop(from) => cmd_schedule_from_loop(from, args.json),
+    }
+}
+
+fn cmd_schedule_add(args: ScheduleAddArgs, json_output: bool) -> Result<Exit> {
+    let mut ctx = ContextBundle::load(None)?;
+    let tz_name = jobs::current_iana_timezone();
+    let tz = jobs::parse_timezone(&tz_name)?;
+    let trigger = schedule_trigger(args.cron.as_deref(), args.at.as_deref(), tz)?;
+    let next_run_at = match &trigger {
+        ScheduleTrigger::At { at_utc, .. } => at_utc.clone(),
+        ScheduleTrigger::Cron { utc, .. } => jobs::next_cron_after(utc, Utc::now())
+            .ok_or_else(|| anyhow!("cron has no future ticks"))?
+            .to_rfc3339(),
+    };
+    let cwd = args
+        .cwd
+        .unwrap_or(std::env::current_dir().context("failed to read current directory")?);
+    let prompt_file = args
+        .prompt_file
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let prompt = if args.prompt_file.is_some() {
+        None
+    } else {
+        Some(prompt_text(args.prompt.as_deref(), None)?)
+    };
+    let spec = ScheduleSpec {
+        harness: args.harness,
+        prompt,
+        prompt_file,
+        trigger,
+        catchup: args.catchup.into(),
+        name: args.name,
+        model: args.model,
+        effort: args.effort,
+        cwd: cwd.display().to_string(),
+        timeout_s: parse_duration_s(&args.timeout)?,
+        keep: args.keep,
+        mode: match args.mode {
+            CliRunMode::Tui => "tui".to_string(),
+            CliRunMode::Exec => "exec".to_string(),
+        },
+        worktree: args.worktree,
+        max_runs: args.max_runs,
+        max_duration_s: args
+            .max_duration
+            .as_deref()
+            .map(parse_duration_s)
+            .transpose()?,
+        last_tick_agent: None,
+        last_tick_response: None,
+    };
+    let id = ctx.store.allocate_id(IdKind::Schedule)?;
+    let mut job = JobRow::new(
+        id.clone(),
+        "schedule",
+        serde_json::to_string(&spec)?,
+        "running",
+        Utc::now().to_rfc3339(),
+    );
+    job.tz = Some(tz_name);
+    job.next_run_at = Some(next_run_at);
+    if let Some(expires) = args.expires.as_deref() {
+        job.expires_at = Some(
+            (Utc::now() + ChronoDuration::seconds(i64::try_from(parse_duration_s(expires)?)?))
+                .to_rfc3339(),
+        );
+    }
+    ctx.store.create_job(&job)?;
+    jobs::append_job_event(
+        &ctx.store,
+        "job.state",
+        &job.id,
+        json!({"status": "running"}),
+    )?;
+    ensure_daemon(&ctx.config)?;
+    print_schedule_created(&job, &spec, json_output);
+    Ok(Exit::Ok)
+}
+
+fn cmd_schedule_resume(args: ScheduleResumeArgs, json_output: bool) -> Result<Exit> {
+    let ctx = ContextBundle::load(None)?;
+    let mut job = ctx
+        .store
+        .get_job(&args.id)?
+        .ok_or_else(|| anyhow!("job not found: {}", args.id))?;
+    if job.job_type != "schedule" {
+        return state_conflict(&job.id, &job.status, "schedule");
+    }
+    let mut spec: ScheduleSpec = serde_json::from_str(&job.spec_json)?;
+    if job.ended_reason.as_deref() == Some("fired") && args.at.is_none() {
+        return state_conflict(&job.id, &job.status, "re-arm with --at");
+    }
+    if let Some(at) = args.at {
+        let tz_name = job.tz.clone().unwrap_or_else(jobs::current_iana_timezone);
+        let tz = jobs::parse_timezone(&tz_name)?;
+        let at_utc = jobs::parse_at_time(&at, tz, Utc::now())?;
+        spec.trigger = ScheduleTrigger::At {
+            at_utc: at_utc.to_rfc3339(),
+            original: at,
+        };
+        job.next_run_at = Some(at_utc.to_rfc3339());
+        job.ended_reason = None;
+    } else if job.next_run_at.is_none() {
+        job.next_run_at = Some(Utc::now().to_rfc3339());
+    }
+    job.status = "running".to_string();
+    job.spec_json = serde_json::to_string(&spec)?;
+    ctx.store.update_job(&job)?;
+    jobs::append_job_event(
+        &ctx.store,
+        "job.state",
+        &job.id,
+        json!({"status": "running"}),
+    )?;
+    ensure_daemon(&ctx.config)?;
+    if json_output {
+        print_ok(job_json(&job));
+    } else {
+        println!("{}", job.id);
+    }
+    Ok(Exit::Ok)
+}
+
+fn cmd_schedule_from_loop(args: ScheduleFromLoopArgs, json_output: bool) -> Result<Exit> {
+    let mut ctx = ContextBundle::load(None)?;
+    let loop_job = ctx
+        .store
+        .get_job(&args.id)?
+        .ok_or_else(|| anyhow!("job not found: {}", args.id))?;
+    if loop_job.job_type != "loop" {
+        return state_conflict(&loop_job.id, &loop_job.status, "loop");
+    }
+    let loop_spec: LoopSpec = serde_json::from_str(&loop_job.spec_json)?;
+    let tz_name = jobs::current_iana_timezone();
+    let tz = jobs::parse_timezone(&tz_name)?;
+    let trigger = schedule_trigger(args.cron.as_deref(), args.at.as_deref(), tz)?;
+    let next_run_at = match &trigger {
+        ScheduleTrigger::At { at_utc, .. } => at_utc.clone(),
+        ScheduleTrigger::Cron { utc, .. } => jobs::next_cron_after(utc, Utc::now())
+            .ok_or_else(|| anyhow!("cron has no future ticks"))?
+            .to_rfc3339(),
+    };
+    let spec = ScheduleSpec {
+        harness: loop_spec.harness,
+        prompt: loop_spec.prompt,
+        prompt_file: loop_spec.prompt_file,
+        trigger,
+        catchup: CatchupPolicy::Skip,
+        name: loop_spec.name,
+        model: loop_spec.model,
+        effort: loop_spec.effort,
+        cwd: loop_spec.cwd,
+        timeout_s: loop_spec.timeout_s,
+        keep: loop_spec.keep,
+        mode: loop_spec.mode,
+        worktree: loop_spec.worktree,
+        max_runs: loop_spec.max_runs.or(loop_spec.max),
+        max_duration_s: loop_spec.max_duration_s,
+        last_tick_agent: None,
+        last_tick_response: None,
+    };
+    let id = ctx.store.allocate_id(IdKind::Schedule)?;
+    let mut job = JobRow::new(
+        id,
+        "schedule",
+        serde_json::to_string(&spec)?,
+        "running",
+        Utc::now().to_rfc3339(),
+    );
+    job.tz = Some(tz_name);
+    job.next_run_at = Some(next_run_at);
+    ctx.store.create_job(&job)?;
+    jobs::append_job_event(
+        &ctx.store,
+        "job.state",
+        &job.id,
+        json!({"status": "running", "from_loop": loop_job.id}),
+    )?;
+    ensure_daemon(&ctx.config)?;
+    print_schedule_created(&job, &spec, json_output);
+    Ok(Exit::Ok)
+}
+
+fn cmd_schedule_job_alias(command: JobCommand, json_output: bool) -> Result<Exit> {
+    cmd_job(JobArgs {
+        command,
+        json: json_output,
+    })
 }
 
 struct ContextBundle {
@@ -1514,6 +1782,55 @@ fn cadence_label(spec: &LoopSpec) -> String {
     }
 }
 
+fn schedule_trigger(
+    cron: Option<&str>,
+    at: Option<&str>,
+    tz: chrono_tz::Tz,
+) -> Result<ScheduleTrigger> {
+    match (cron, at) {
+        (Some(cron), None) => {
+            let (utc, local, _) = jobs::normalize_cron_utc(cron, tz)?;
+            Ok(ScheduleTrigger::Cron { utc, local })
+        }
+        (None, Some(at)) => {
+            let at_utc = jobs::parse_at_time(at, tz, Utc::now())?;
+            Ok(ScheduleTrigger::At {
+                at_utc: at_utc.to_rfc3339(),
+                original: at.to_string(),
+            })
+        }
+        (None, None) => bail!("schedule add needs either a five-field cron or --at <time>"),
+        (Some(_), Some(_)) => bail!("use exactly one of cron or --at"),
+    }
+}
+
+fn print_schedule_created(job: &JobRow, spec: &ScheduleSpec, json_output: bool) {
+    if json_output {
+        print_ok(job_json(job));
+        return;
+    }
+    let local = job
+        .next_run_at
+        .as_deref()
+        .and_then(|next| jobs::parse_rfc3339_utc(next).ok())
+        .and_then(|next| {
+            job.tz
+                .as_deref()
+                .and_then(|tz| jobs::parse_timezone(tz).ok())
+                .map(|tz| next.with_timezone(&tz).to_rfc3339())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let utc = job.next_run_at.as_deref().unwrap_or("unknown");
+    let cadence = match &spec.trigger {
+        ScheduleTrigger::Cron { utc, local } => format!("cron local `{local}` stored UTC `{utc}`"),
+        ScheduleTrigger::At { original, .. } => format!("one-shot `{original}`"),
+    };
+    println!(
+        "{} schedule {} next: {} = {} cancel: orcr kill {}",
+        job.id, cadence, local, utc, job.id
+    );
+}
+
 fn ensure_daemon(config: &Config) -> Result<()> {
     daemon::start_background(config).map(|_| ())
 }
@@ -1641,6 +1958,7 @@ fn command_json(command: &Command) -> bool {
         Command::History(args) => args.json,
         Command::Gc(args) => args.json,
         Command::Loop(args) => args.json,
+        Command::Schedule(args) => args.json,
         Command::Job(args) => args.json,
         Command::Events(args) => args.json,
         Command::Serve(_) => false,
