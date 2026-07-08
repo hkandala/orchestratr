@@ -142,6 +142,7 @@ pub struct ResponseCapture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseSource {
     File,
+    Transcript,
     Scrape,
 }
 
@@ -149,6 +150,7 @@ impl ResponseSource {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::File => "file",
+            Self::Transcript => "transcript",
             Self::Scrape => "scrape",
         }
     }

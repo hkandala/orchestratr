@@ -5,8 +5,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use orchestratr::herdr::{discover_herdr, CompletionOutcome, HerdrClient, ResponseSource};
 use orchestratr::rundir::{append_preamble, create_run_dir, response_path};
+use orchestratr::store::{IdKind, Store};
 use tempfile::TempDir;
-use uuid::Uuid;
 
 const E2E_PREFIX: &str = "orcr-e2e-";
 
@@ -18,7 +18,7 @@ fn mock_agent_roundtrip_and_scrape_fallback() -> Result<()> {
     }
 
     let herdr_bin = discover_herdr("").context("real herdr binary is required for e2e")?;
-    let session = format!("{E2E_PREFIX}{}", Uuid::new_v4());
+    let session = format!("{E2E_PREFIX}{}", unique_suffix());
     let _guard = SessionGuard::new(herdr_bin.clone(), session.clone());
     let client = HerdrClient::new(herdr_bin, session)
         .with_timings(Duration::from_millis(250), Duration::from_millis(250));
@@ -52,9 +52,10 @@ fn run_mock_turn(
     label: &str,
     prompt: &str,
 ) -> Result<Captured> {
-    let run_dir = create_run_dir(store.path())?;
+    let mut db = Store::open(store.path())?;
+    let agent_id = db.allocate_id(IdKind::Agent)?;
+    let run_dir = create_run_dir(store.path(), &agent_id)?;
     let response = response_path(&run_dir, 1);
-    let agent_id = Uuid::new_v4().to_string();
     let envs = vec![
         ("ORCR_ID".to_string(), agent_id.clone()),
         ("ORCR_DEPTH".to_string(), "0".to_string()),
@@ -89,6 +90,13 @@ fn run_mock_turn(
         text: capture.text,
         source: capture.source,
     })
+}
+
+fn unique_suffix() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
 }
 
 struct SessionGuard {

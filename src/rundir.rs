@@ -4,16 +4,32 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunMeta {
-    pub agent_id: String,
-    pub harness: String,
-    pub created_at: DateTime<Utc>,
+    pub id: String,
+    pub name: Option<String>,
     pub parent_id: Option<String>,
+    pub harness: String,
+    pub model: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub ended_at: Option<String>,
     pub cwd: Option<String>,
+    pub pane_id: Option<String>,
+    pub terminal_id: Option<String>,
     pub response_source: Option<String>,
+    pub turns: Vec<RunMetaTurn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunMetaTurn {
+    pub n: i64,
+    pub prompt_paths: Vec<String>,
+    pub response_path: String,
+    pub response_source: Option<String>,
+    pub started_at: String,
+    pub ended_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,8 +38,12 @@ pub enum PromptInput<'a> {
     File(&'a Path),
 }
 
-pub fn create_run_dir(store_root: &Path) -> Result<PathBuf> {
-    let run_dir = store_root.join("runs").join(Uuid::new_v4().to_string());
+pub fn run_dir_for_id(store_root: &Path, agent_id: &str) -> PathBuf {
+    store_root.join("runs").join(agent_id)
+}
+
+pub fn create_run_dir(store_root: &Path, agent_id: &str) -> Result<PathBuf> {
+    let run_dir = run_dir_for_id(store_root, agent_id);
     fs::create_dir_all(&run_dir)
         .with_context(|| format!("failed to create run dir {}", run_dir.display()))?;
     Ok(run_dir)
@@ -112,9 +132,13 @@ mod tests {
     #[test]
     fn creates_flat_run_dir() {
         let temp = tempdir().unwrap();
-        let run_dir = create_run_dir(temp.path()).unwrap();
+        let run_dir = create_run_dir(temp.path(), "a7").unwrap();
 
         assert_eq!(run_dir.parent().unwrap(), temp.path().join("runs"));
+        assert_eq!(
+            run_dir.file_name().and_then(|name| name.to_str()),
+            Some("a7")
+        );
         assert!(run_dir.is_dir());
     }
 
@@ -122,12 +146,19 @@ mod tests {
     fn writes_meta_json() {
         let temp = tempdir().unwrap();
         let meta = RunMeta {
-            agent_id: "agent".to_string(),
-            harness: "mock".to_string(),
-            created_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            id: "a1".to_string(),
+            name: None,
             parent_id: None,
+            harness: "mock".to_string(),
+            model: String::new(),
+            status: "starting".to_string(),
+            created_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            ended_at: None,
             cwd: Some("/tmp".to_string()),
+            pane_id: Some("w1:p1".to_string()),
+            terminal_id: None,
             response_source: None,
+            turns: Vec::new(),
         };
 
         let path = write_meta(temp.path(), &meta).unwrap();

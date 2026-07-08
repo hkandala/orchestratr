@@ -3,7 +3,6 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use uuid::Uuid;
 
 const USER_VERSION: i64 = 1;
 
@@ -76,6 +75,7 @@ pub struct EventRow {
 
 impl AgentRow {
     pub fn new(
+        id: impl Into<String>,
         name: Option<String>,
         kind: impl Into<String>,
         harness: impl Into<String>,
@@ -83,7 +83,7 @@ impl AgentRow {
         run_dir: impl Into<String>,
     ) -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: id.into(),
             name,
             parent_id: None,
             kind: kind.into(),
@@ -111,13 +111,14 @@ impl AgentRow {
 
 impl JobRow {
     pub fn new(
+        id: impl Into<String>,
         job_type: impl Into<String>,
         spec_json: impl Into<String>,
         status: impl Into<String>,
         created_at: impl Into<String>,
     ) -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: id.into(),
             job_type: job_type.into(),
             spec_json: spec_json.into(),
             status: status.into(),
@@ -170,6 +171,43 @@ impl EventRow {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdKind {
+    Agent,
+    Loop,
+    Schedule,
+    Goal,
+    Workflow,
+}
+
+impl IdKind {
+    pub fn prefix(self) -> &'static str {
+        match self {
+            Self::Agent => "a",
+            Self::Loop => "l",
+            Self::Schedule => "s",
+            Self::Goal => "g",
+            Self::Workflow => "w",
+        }
+    }
+
+    fn counter_name(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Loop => "loop",
+            Self::Schedule => "schedule",
+            Self::Goal => "goal",
+            Self::Workflow => "workflow",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedTurnRef {
+    pub agent_id: String,
+    pub turn: Option<i64>,
+}
+
 impl Store {
     pub fn open(store_root: &Path) -> Result<Self> {
         fs::create_dir_all(store_root)
@@ -190,6 +228,7 @@ impl Store {
     }
 
     pub fn create_agent(&self, agent: &AgentRow) -> Result<()> {
+        validate_optional_name(agent.name.as_deref())?;
         self.conn.execute(
             "INSERT INTO agents (
                 id, name, parent_id, kind, harness, model, effort, host, herdr_session,
@@ -225,6 +264,26 @@ impl Store {
         Ok(())
     }
 
+    pub fn allocate_id(&mut self, kind: IdKind) -> Result<String> {
+        let tx = self.conn.transaction()?;
+        let current: i64 = tx
+            .query_row(
+                "SELECT value FROM counters WHERE name = ?1",
+                [kind.counter_name()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let next = current + 1;
+        tx.execute(
+            "INSERT INTO counters (name, value) VALUES (?1, ?2)
+             ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+            params![kind.counter_name(), next],
+        )?;
+        tx.commit()?;
+        Ok(format!("{}{next}", kind.prefix()))
+    }
+
     pub fn get_agent(&self, id: &str) -> Result<Option<AgentRow>> {
         let sql = AGENT_SELECT_SQL.to_string() + " WHERE id = ?1";
         self.conn
@@ -250,6 +309,33 @@ impl Store {
         Ok(())
     }
 
+    pub fn update_agent_launch(
+        &self,
+        id: &str,
+        status: &str,
+        pane_id: Option<&str>,
+        terminal_id: Option<&str>,
+        agent_session_kind: Option<&str>,
+        agent_session_value: Option<&str>,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE agents SET status = ?1, pane_id = ?2, terminal_id = ?3,
+                agent_session_kind = ?4, agent_session_value = ?5 WHERE id = ?6",
+            params![
+                status,
+                pane_id,
+                terminal_id,
+                agent_session_kind,
+                agent_session_value,
+                id
+            ],
+        )?;
+        if changed == 0 {
+            bail!("agent not found: {id}");
+        }
+        Ok(())
+    }
+
     pub fn list_agents(&self) -> Result<Vec<AgentRow>> {
         let mut stmt = self
             .conn
@@ -258,18 +344,26 @@ impl Store {
         collect_rows(rows)
     }
 
+    pub fn resolve_agent_ref(&self, value: &str) -> Result<ResolvedTurnRef> {
+        let (agent_ref, turn) = parse_turn_sugar(value)?;
+        let agent_id = self.resolve_agent_id(agent_ref)?;
+        Ok(ResolvedTurnRef { agent_id, turn })
+    }
+
     pub fn resolve_agent_id(&self, value: &str) -> Result<String> {
-        let ids = self.agent_ids_by_prefix(value)?;
-        match ids.len() {
-            1 => return Ok(ids[0].clone()),
-            n if n > 1 => bail!("ambiguous agent id prefix: {value}"),
-            _ => {}
+        if is_typed_id(value) {
+            return self
+                .get_agent(value)?
+                .map(|agent| agent.id)
+                .ok_or_else(|| anyhow::anyhow!("agent not found: {value}"));
         }
 
         let ids = self.agent_ids_by_name(value)?;
         match ids.len() {
             1 => Ok(ids[0].clone()),
-            n if n > 1 => bail!("ambiguous agent name: {value}"),
+            n if n > 1 => bail!(
+                "ambiguous agent name: {value}; use an explicit id from `orcr ps` or `orcr show`"
+            ),
             _ => bail!("agent not found: {value}"),
         }
     }
@@ -442,18 +536,15 @@ impl Store {
                 payload_json TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS counters (
+                name TEXT PRIMARY KEY,
+                value INT NOT NULL
+            );
+
             PRAGMA user_version = 1;
             ",
         )?;
         Ok(())
-    }
-
-    fn agent_ids_by_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id FROM agents WHERE id LIKE ?1 ORDER BY id")?;
-        let rows = stmt.query_map([format!("{prefix}%")], |row| row.get(0))?;
-        collect_rows(rows)
     }
 
     fn agent_ids_by_name(&self, name: &str) -> Result<Vec<String>> {
@@ -463,6 +554,56 @@ impl Store {
         let rows = stmt.query_map([name], |row| row.get(0))?;
         collect_rows(rows)
     }
+}
+
+pub fn validate_name(name: &str) -> Result<()> {
+    if is_reserved_name(name) {
+        bail!("name `{name}` is reserved because it matches orcr id syntax");
+    }
+    Ok(())
+}
+
+fn validate_optional_name(name: Option<&str>) -> Result<()> {
+    if let Some(name) = name {
+        validate_name(name)?;
+    }
+    Ok(())
+}
+
+pub fn is_reserved_name(name: &str) -> bool {
+    is_typed_id(name) || has_turn_suffix(name) || is_turn_token(name)
+}
+
+fn is_typed_id(value: &str) -> bool {
+    let Some(prefix) = value.chars().next() else {
+        return false;
+    };
+    matches!(prefix, 'a' | 'l' | 's' | 'g' | 'w')
+        && value.len() > 1
+        && value[1..].chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn has_turn_suffix(value: &str) -> bool {
+    value
+        .split_once(":t")
+        .is_some_and(|(_, turn)| !turn.is_empty() && turn.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn is_turn_token(value: &str) -> bool {
+    value
+        .strip_prefix(":t")
+        .is_some_and(|turn| !turn.is_empty() && turn.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn parse_turn_sugar(value: &str) -> Result<(&str, Option<i64>)> {
+    let Some((agent, turn)) = value.rsplit_once(":t") else {
+        return Ok((value, None));
+    };
+    if agent.is_empty() || turn.is_empty() || !turn.chars().all(|ch| ch.is_ascii_digit()) {
+        bail!("invalid turn reference: {value}");
+    }
+    let turn = turn.parse::<i64>()?;
+    Ok((agent, Some(turn)))
 }
 
 const AGENT_SELECT_SQL: &str = "SELECT id, name, parent_id, kind, harness, model, effort, host,
@@ -564,13 +705,15 @@ mod tests {
     #[test]
     fn agent_crud_and_resolution() {
         let temp = tempdir().unwrap();
-        let store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+        let id = store.allocate_id(IdKind::Agent).unwrap();
         let mut agent = AgentRow::new(
+            id.clone(),
             Some("worker".to_string()),
             "tui",
             "claude",
             "2026-01-01T00:00:00Z",
-            "/tmp/run",
+            format!("/tmp/run/{id}"),
         );
         agent.cwd = "/tmp".to_string();
         store.create_agent(&agent).unwrap();
@@ -589,16 +732,17 @@ mod tests {
         assert_eq!(updated.status, "done");
         assert_eq!(updated.exit_reason.as_deref(), Some("completed"));
         assert_eq!(store.list_agents().unwrap().len(), 1);
-        assert_eq!(store.resolve_agent_id(&agent.id[..8]).unwrap(), agent.id);
+        assert_eq!(store.resolve_agent_id(&agent.id).unwrap(), agent.id);
         assert_eq!(store.resolve_agent_id("worker").unwrap(), agent.id);
     }
 
     #[test]
     fn jobs_turns_and_events_crud() {
         let temp = tempdir().unwrap();
-        let store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
 
-        let job = JobRow::new("loop", r#"{"prompt":"hi"}"#, "queued", "now");
+        let job_id = store.allocate_id(IdKind::Loop).unwrap();
+        let job = JobRow::new(job_id, "loop", r#"{"prompt":"hi"}"#, "queued", "now");
         store.create_job(&job).unwrap();
         assert_eq!(store.get_job(&job.id).unwrap(), Some(job.clone()));
         assert_eq!(store.list_jobs().unwrap(), vec![job]);
@@ -635,21 +779,24 @@ mod tests {
     }
 
     #[test]
-    fn id_prefix_ambiguous_and_not_found() {
+    fn allocates_typed_ids_from_monotonic_counters() {
+        let temp = tempdir().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+
+        assert_eq!(store.allocate_id(IdKind::Agent).unwrap(), "a1");
+        assert_eq!(store.allocate_id(IdKind::Agent).unwrap(), "a2");
+        assert_eq!(store.allocate_id(IdKind::Loop).unwrap(), "l1");
+        assert_eq!(store.allocate_id(IdKind::Schedule).unwrap(), "s1");
+        assert_eq!(store.allocate_id(IdKind::Goal).unwrap(), "g1");
+        assert_eq!(store.allocate_id(IdKind::Workflow).unwrap(), "w1");
+    }
+
+    #[test]
+    fn typed_id_resolution_is_exact_and_missing_is_not_found() {
         let temp = tempdir().unwrap();
         let store = Store::open(temp.path()).unwrap();
 
-        let mut first = AgentRow::new(None, "tui", "mock", "now", "/r1");
-        first.id = "aaaaaaaa-0000-4000-8000-000000000001".to_string();
-        let mut second = AgentRow::new(None, "tui", "mock", "now", "/r2");
-        second.id = "aaaaaaaa-0000-4000-8000-000000000002".to_string();
-        store.create_agent(&first).unwrap();
-        store.create_agent(&second).unwrap();
-
-        let ambiguous = store.resolve_agent_id("aaaaaaaa").unwrap_err();
-        assert!(ambiguous.to_string().contains("ambiguous agent id prefix"));
-
-        let missing = store.resolve_agent_id("missing").unwrap_err();
+        let missing = store.resolve_agent_id("a1").unwrap_err();
         assert!(missing.to_string().contains("agent not found"));
     }
 
@@ -658,12 +805,44 @@ mod tests {
         let temp = tempdir().unwrap();
         let store = Store::open(temp.path()).unwrap();
 
-        let first = AgentRow::new(Some("same".to_string()), "tui", "mock", "now", "/r1");
-        let second = AgentRow::new(Some("same".to_string()), "tui", "mock", "now", "/r2");
+        let first = AgentRow::new("a1", Some("same".to_string()), "tui", "mock", "now", "/r1");
+        let second = AgentRow::new("a2", Some("same".to_string()), "tui", "mock", "now", "/r2");
         store.create_agent(&first).unwrap();
         store.create_agent(&second).unwrap();
 
         let error = store.resolve_agent_id("same").unwrap_err();
         assert!(error.to_string().contains("ambiguous agent name"));
+        assert!(error.to_string().contains("use an explicit id"));
+    }
+
+    #[test]
+    fn reserved_id_grammar_is_rejected_for_names() {
+        for name in ["a1", "l22", "s3", "g4", "w5", "agent:t2", ":t2"] {
+            assert!(validate_name(name).is_err(), "{name} should be reserved");
+        }
+        assert!(validate_name("agent-1").is_ok());
+    }
+
+    #[test]
+    fn resolves_turn_sugar() {
+        let temp = tempdir().unwrap();
+        let store = Store::open(temp.path()).unwrap();
+        let agent = AgentRow::new("a7", Some("worker".to_string()), "tui", "mock", "now", "/r");
+        store.create_agent(&agent).unwrap();
+
+        assert_eq!(
+            store.resolve_agent_ref("a7:t2").unwrap(),
+            ResolvedTurnRef {
+                agent_id: "a7".to_string(),
+                turn: Some(2)
+            }
+        );
+        assert_eq!(
+            store.resolve_agent_ref("worker").unwrap(),
+            ResolvedTurnRef {
+                agent_id: "a7".to_string(),
+                turn: None
+            }
+        );
     }
 }
