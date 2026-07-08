@@ -67,6 +67,10 @@ impl<'a> Engine<'a> {
         }
     }
 
+    pub fn store_mut(&mut self) -> &mut Store {
+        self.store
+    }
+
     pub fn run(&mut self, profile: &dyn Profile, request: RunRequest) -> Result<RunResult> {
         let parent_id = request.parent_id.or_else(|| env::var("ORCR_ID").ok());
         let depth = self.admit(parent_id.as_deref())?;
@@ -91,6 +95,7 @@ impl<'a> Engine<'a> {
         agent.timeout_s = i64::try_from(request.timeout_s).unwrap_or(i64::MAX);
         agent.status = "queued".to_string();
         self.store.create_agent(&agent)?;
+        self.event("agent.spawn", &id, json!({"harness": profile.harness()}))?;
         self.event("agent.queued", &id, json!({"depth": depth}))?;
 
         self.store
@@ -147,6 +152,11 @@ impl<'a> Engine<'a> {
             Utc::now().to_rfc3339(),
         );
         self.store.create_turn(&turn)?;
+        self.event(
+            "turn.start",
+            &id,
+            json!({"turn": 1, "path": prompt_path.display().to_string()}),
+        )?;
         self.event(
             "turn.prompt",
             &id,
@@ -254,6 +264,11 @@ impl<'a> Engine<'a> {
         self.store.create_turn(&turn)?;
         let delivered = fs::read_to_string(&prompt_path)?;
         self.herdr.send_input(pane_id, &delivered)?;
+        self.event(
+            "turn.start",
+            agent_id,
+            json!({"turn": next, "path": prompt_path.display().to_string()}),
+        )?;
         self.store
             .update_agent_status(agent_id, "working", None, None)?;
         self.event(
@@ -321,9 +336,10 @@ impl<'a> Engine<'a> {
             .unwrap_or(0);
         let depth = if let Some(parent_id) = parent_id {
             if self.store.get_agent(parent_id)?.is_none()
+                && self.store.get_job(parent_id)?.is_none()
                 && env::var("ORCR_ID").ok().as_deref() != Some(parent_id)
             {
-                bail!("parent agent not found: {parent_id}");
+                bail!("parent not found: {parent_id}");
             }
             caller_depth.saturating_add(1)
         } else {
@@ -714,7 +730,10 @@ mod tests {
         let meta = fs::read_to_string(temp.path().join("runs/a1/meta.json")).unwrap();
         assert!(meta.contains("\"id\": \"a1\""));
         assert!(meta.contains("\"status\": \"done\""));
-        assert_eq!(store.list_events().unwrap().len(), 5);
+        let events = store.list_events().unwrap();
+        assert_eq!(events.len(), 7);
+        assert!(events.iter().any(|event| event.kind == "agent.spawn"));
+        assert!(events.iter().any(|event| event.kind == "turn.start"));
     }
 
     #[test]

@@ -13,10 +13,12 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::config::Config;
+use crate::daemon;
 use crate::engine::{Engine, RunMode, RunRequest};
 use crate::herdr::{discover_herdr, HerdrClient, HerdrError, INSTALL_URL};
+use crate::jobs::{self, EverySpec, LoopSpec, AUTO_FALLBACK_SECS};
 use crate::profile;
-use crate::store::{AgentRow, Store, TurnRow};
+use crate::store::{AgentRow, EventRow, IdKind, JobRow, Store, TurnRow};
 
 #[derive(Debug, Parser)]
 #[command(name = "orcr", version, about = "Agent orchestration over herdr")]
@@ -39,6 +41,10 @@ enum Command {
     Status(JsonArgs),
     History(HistoryArgs),
     Gc(GcArgs),
+    Loop(LoopArgs),
+    Job(JobArgs),
+    Events(EventsArgs),
+    Serve(ServeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -205,12 +211,92 @@ struct GcArgs {
     json: bool,
 }
 
+#[derive(Debug, Args)]
+struct ServeArgs {
+    #[arg(long)]
+    foreground: bool,
+}
+
+#[derive(Debug, Args)]
+struct EventsArgs {
+    #[arg(long)]
+    follow: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct JobArgs {
+    #[command(subcommand)]
+    command: JobCommand,
+    #[arg(long, global = true)]
+    json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum JobCommand {
+    Ls,
+    Show(IdArg),
+    Pause(IdArg),
+    Resume(IdArg),
+    Rm(IdArg),
+}
+
+#[derive(Debug, Args)]
+struct LoopArgs {
+    #[arg(long = "harness", short = 'a')]
+    harness: String,
+    #[arg(
+        short = 'p',
+        conflicts_with = "prompt_file",
+        required_unless_present = "prompt_file"
+    )]
+    prompt: Option<String>,
+    #[arg(long = "prompt-file", value_name = "f|-", conflicts_with = "prompt")]
+    prompt_file: Option<PathBuf>,
+    #[arg(long, default_value = "10m")]
+    every: String,
+    #[arg(long = "tick-on")]
+    tick_on: Option<String>,
+    #[arg(long)]
+    max: Option<u64>,
+    #[arg(long)]
+    until: Option<String>,
+    #[arg(long)]
+    foreground: bool,
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long, default_value = "")]
+    model: String,
+    #[arg(long, default_value = "")]
+    effort: String,
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    #[arg(long, default_value = "600s")]
+    timeout: String,
+    #[arg(long)]
+    keep: bool,
+    #[arg(long, value_enum, default_value_t = CliRunMode::Tui)]
+    mode: CliRunMode,
+    #[arg(long)]
+    worktree: bool,
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct StatusReport {
     herdr: HerdrStatus,
     session: SessionStatus,
     store: StoreStatus,
     db: DbStatus,
+    daemon: DaemonReport,
+}
+
+#[derive(Debug, Serialize)]
+struct DaemonReport {
+    running: bool,
+    pid: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -283,6 +369,10 @@ fn dispatch(command: Command) -> Result<Exit> {
         Command::Status(args) => cmd_status(args.json),
         Command::History(args) => cmd_history(args),
         Command::Gc(args) => cmd_gc(args),
+        Command::Loop(args) => cmd_loop(args),
+        Command::Job(args) => cmd_job(args),
+        Command::Events(args) => cmd_events(args),
+        Command::Serve(args) => cmd_serve(args),
     }
 }
 
@@ -652,9 +742,31 @@ fn cmd_tree(args: TreeArgs) -> Result<Exit> {
 
 fn cmd_kill(args: KillArgs) -> Result<Exit> {
     let mut ctx = ContextBundle::load(None)?;
+    let mut killed_jobs = Vec::new();
+    let mut agent_inputs = Vec::new();
+    for input in args.ids {
+        if is_job_ref(&input) {
+            if let Some(mut job) = ctx.store.get_job(&input)? {
+                if job.status == "running" || job.status == "paused" {
+                    job.status = "killed".to_string();
+                    job.ended_reason = Some("killed".to_string());
+                    job.next_run_at = None;
+                    ctx.store.update_job(&job)?;
+                    jobs::append_job_event(
+                        &ctx.store,
+                        "job.state",
+                        &job.id,
+                        json!({"status": "killed"}),
+                    )?;
+                    killed_jobs.push(job.id);
+                }
+                continue;
+            }
+        }
+        agent_inputs.push(input);
+    }
     let agents = ctx.store.list_agents()?;
-    let mut ids: Vec<String> = args
-        .ids
+    let mut ids: Vec<String> = agent_inputs
         .iter()
         .map(|id| ctx.store.resolve_agent_id(id))
         .collect::<Result<_>>()?;
@@ -686,7 +798,7 @@ fn cmd_kill(args: KillArgs) -> Result<Exit> {
             skipped.push(json!({"id": id, "reason": "no_pane"}));
         }
     }
-    let value = json!({ "killed": killed, "skipped": skipped });
+    let value = json!({ "killed": killed, "jobs": killed_jobs, "skipped": skipped });
     if args.json {
         print_ok(value);
     } else {
@@ -756,6 +868,13 @@ fn cmd_status(json_output: bool) -> Result<Exit> {
             path: db_path.display().to_string(),
             ok: db_error.is_none(),
             error: db_error,
+        },
+        daemon: {
+            let daemon = daemon::status(&config.store_root);
+            DaemonReport {
+                running: daemon.running,
+                pid: daemon.pid,
+            }
         },
     };
     if json_output || !io::stdout().is_terminal() {
@@ -873,6 +992,223 @@ fn cmd_gc(args: GcArgs) -> Result<Exit> {
         print_ok(value);
     } else {
         println!("{}", value);
+    }
+    Ok(Exit::Ok)
+}
+
+fn cmd_serve(args: ServeArgs) -> Result<Exit> {
+    let config = Config::load().context("config_error")?;
+    if args.foreground {
+        daemon::serve_foreground(config)?;
+    } else {
+        let status = daemon::start_background(&config)?;
+        if status.running {
+            println!("daemon running pid={}", status.pid.unwrap_or_default());
+        }
+    }
+    Ok(Exit::Ok)
+}
+
+fn cmd_events(args: EventsArgs) -> Result<Exit> {
+    let ctx = ContextBundle::load(None)?;
+    if args.follow {
+        let mut last_seq = 0;
+        loop {
+            let events = ctx.store.list_events_after(last_seq)?;
+            for event in events {
+                last_seq = event.seq;
+                println!("{}", event_ndjson(&event));
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+    }
+    let events: Vec<Value> = ctx.store.list_events()?.iter().map(event_json).collect();
+    if args.json {
+        print_ok(json!({ "events": events }));
+    } else {
+        for event in events {
+            println!(
+                "{}\t{}\t{}",
+                event["seq"].as_i64().unwrap_or_default(),
+                event["kind"].as_str().unwrap_or_default(),
+                event["ref_id"].as_str().unwrap_or_default()
+            );
+        }
+    }
+    Ok(Exit::Ok)
+}
+
+fn cmd_job(args: JobArgs) -> Result<Exit> {
+    let ctx = ContextBundle::load(None)?;
+    match args.command {
+        JobCommand::Ls => {
+            let jobs: Vec<Value> = ctx.store.list_jobs()?.iter().map(job_json).collect();
+            if args.json {
+                print_ok(json!({ "jobs": jobs }));
+            } else {
+                for job in jobs {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        job["id"].as_str().unwrap_or_default(),
+                        job["type"].as_str().unwrap_or_default(),
+                        job["status"].as_str().unwrap_or_default(),
+                        job["next_run"].as_str().unwrap_or_default()
+                    );
+                }
+            }
+        }
+        JobCommand::Show(id) => {
+            let job = ctx
+                .store
+                .get_job(&id.id)?
+                .ok_or_else(|| anyhow!("job not found: {}", id.id))?;
+            let value = job_json(&job);
+            if args.json {
+                print_ok(value);
+            } else {
+                print_job_human(&job);
+            }
+        }
+        JobCommand::Pause(id) => {
+            let mut job = ctx
+                .store
+                .get_job(&id.id)?
+                .ok_or_else(|| anyhow!("job not found: {}", id.id))?;
+            if job.status != "running" {
+                return state_conflict(&job.id, &job.status, "running");
+            }
+            job.status = "paused".to_string();
+            ctx.store.update_job(&job)?;
+            jobs::append_job_event(
+                &ctx.store,
+                "job.state",
+                &job.id,
+                json!({"status": "paused"}),
+            )?;
+            if args.json {
+                print_ok(job_json(&job));
+            } else {
+                println!("{}", job.id);
+            }
+        }
+        JobCommand::Resume(id) => {
+            let mut job = ctx
+                .store
+                .get_job(&id.id)?
+                .ok_or_else(|| anyhow!("job not found: {}", id.id))?;
+            if job.status != "paused" {
+                return state_conflict(&job.id, &job.status, "paused");
+            }
+            job.status = "running".to_string();
+            if job.next_run_at.is_none() {
+                job.next_run_at = Some(Utc::now().to_rfc3339());
+            }
+            ctx.store.update_job(&job)?;
+            jobs::append_job_event(
+                &ctx.store,
+                "job.state",
+                &job.id,
+                json!({"status": "running"}),
+            )?;
+            ensure_daemon(&ctx.config)?;
+            if args.json {
+                print_ok(job_json(&job));
+            } else {
+                println!("{}", job.id);
+            }
+        }
+        JobCommand::Rm(id) => {
+            let job = ctx
+                .store
+                .get_job(&id.id)?
+                .ok_or_else(|| anyhow!("job not found: {}", id.id))?;
+            if job.status == "running" {
+                return state_conflict(&job.id, &job.status, "paused or ended");
+            }
+            ctx.store.delete_job(&job.id)?;
+            jobs::append_job_event(&ctx.store, "job.rm", &job.id, json!({}))?;
+            if args.json {
+                print_ok(json!({"id": job.id}));
+            } else {
+                println!("{}", job.id);
+            }
+        }
+    }
+    Ok(Exit::Ok)
+}
+
+fn cmd_loop(args: LoopArgs) -> Result<Exit> {
+    let timeout_s = parse_duration_s(&args.timeout)?;
+    let every = parse_every(&args.every)?;
+    let cwd = args
+        .cwd
+        .unwrap_or(std::env::current_dir().context("failed to read current directory")?);
+    let prompt_file = args
+        .prompt_file
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let prompt = if args.prompt_file.is_some() {
+        None
+    } else {
+        Some(prompt_text(args.prompt.as_deref(), None)?)
+    };
+    let spec = LoopSpec {
+        harness: args.harness,
+        prompt,
+        prompt_file,
+        every,
+        tick_on: args.tick_on,
+        max: args.max,
+        until: args.until,
+        name: args.name,
+        model: args.model,
+        effort: args.effort,
+        cwd: cwd.display().to_string(),
+        timeout_s,
+        keep: args.keep,
+        mode: match args.mode {
+            CliRunMode::Tui => "tui".to_string(),
+            CliRunMode::Exec => "exec".to_string(),
+        },
+        worktree: args.worktree,
+        last_next_reason: None,
+        last_tick_agent: None,
+        last_tick_response: None,
+        tick_probe: None,
+    };
+
+    if args.foreground {
+        return run_foreground_loop(spec, args.json);
+    }
+
+    let mut ctx = ContextBundle::load(None)?;
+    let id = ctx.store.allocate_id(IdKind::Loop)?;
+    let mut job = JobRow::new(
+        id.clone(),
+        "loop",
+        serde_json::to_string(&spec)?,
+        "running",
+        Utc::now().to_rfc3339(),
+    );
+    job.next_run_at = Some(Utc::now().to_rfc3339());
+    ctx.store.create_job(&job)?;
+    jobs::append_job_event(
+        &ctx.store,
+        "job.state",
+        &job.id,
+        json!({"status": "running"}),
+    )?;
+    ensure_daemon(&ctx.config)?;
+    let value = job_json(&job);
+    if args.json {
+        print_ok(value);
+    } else {
+        println!(
+            "{} loop cadence={} cancel: orcr kill {}",
+            job.id,
+            cadence_label(&spec),
+            job.id
+        );
     }
     Ok(Exit::Ok)
 }
@@ -1007,6 +1343,61 @@ fn turn_summary_json(turn: &TurnRow) -> Value {
     })
 }
 
+fn job_json(job: &JobRow) -> Value {
+    let spec: Value = serde_json::from_str(&job.spec_json).unwrap_or(Value::Null);
+    json!({
+        "id": job.id,
+        "type": job.job_type,
+        "status": job.status,
+        "cadence": spec.get("every").cloned().unwrap_or(Value::Null),
+        "next_run": job.next_run_at,
+        "expires_at": job.expires_at,
+        "runs_count": job.runs_count,
+        "created_at": job.created_at,
+        "ended_reason": job.ended_reason,
+        "next_reason": spec.get("last_next_reason").cloned().unwrap_or(Value::Null),
+        "last_tick_agent": spec.get("last_tick_agent").cloned().unwrap_or(Value::Null),
+        "last_tick_response": spec.get("last_tick_response").cloned().unwrap_or(Value::Null),
+        "spec": spec,
+    })
+}
+
+fn event_json(event: &EventRow) -> Value {
+    json!({
+        "seq": event.seq,
+        "time": event.ts,
+        "kind": event.kind,
+        "type": event.kind,
+        "ref_id": event.ref_id,
+        "id": event.ref_id,
+        "payload": serde_json::from_str::<Value>(&event.payload_json).unwrap_or(Value::Null),
+    })
+}
+
+fn event_ndjson(event: &EventRow) -> Value {
+    json!({
+        "type": event.kind,
+        "id": event.ref_id,
+        "time": event.ts,
+        "payload": serde_json::from_str::<Value>(&event.payload_json).unwrap_or(Value::Null),
+    })
+}
+
+fn print_job_human(job: &JobRow) {
+    println!("{} {} {}", job.id, job.job_type, job.status);
+    if let Some(next) = &job.next_run_at {
+        println!("next_run {next}");
+    }
+    if let Some(reason) = &job.ended_reason {
+        println!("ended_reason {reason}");
+    }
+    if let Ok(spec) = serde_json::from_str::<Value>(&job.spec_json) {
+        if let Some(reason) = spec.get("last_next_reason").and_then(Value::as_str) {
+            println!("next_reason {reason}");
+        }
+    }
+}
+
 fn show_json(store: &Store, agent: &AgentRow) -> Result<Value> {
     let turns: Vec<Value> = store
         .list_turns_by_agent(&agent.id)?
@@ -1104,6 +1495,75 @@ fn status_exit(status: &str) -> Exit {
     }
 }
 
+fn parse_every(value: &str) -> Result<EverySpec> {
+    if value == "auto" {
+        Ok(EverySpec::Auto)
+    } else {
+        Ok(EverySpec::Fixed(parse_duration_s(value)?))
+    }
+}
+
+fn cadence_label(spec: &LoopSpec) -> String {
+    let base = match spec.every {
+        EverySpec::Auto => format!("auto fallback {}s", AUTO_FALLBACK_SECS),
+        EverySpec::Fixed(seconds) => format!("{seconds}s"),
+    };
+    match spec.tick_on.as_deref() {
+        Some(cmd) => format!("tick-on `{cmd}` with fallback {base}"),
+        None => base,
+    }
+}
+
+fn ensure_daemon(config: &Config) -> Result<()> {
+    daemon::start_background(config).map(|_| ())
+}
+
+fn run_foreground_loop(spec: LoopSpec, json_output: bool) -> Result<Exit> {
+    let mut ctx = ContextBundle::load(None)?;
+    let id = ctx.store.allocate_id(IdKind::Loop)?;
+    let mut job = JobRow::new(
+        id.clone(),
+        "loop",
+        serde_json::to_string(&spec)?,
+        "running",
+        Utc::now().to_rfc3339(),
+    );
+    job.next_run_at = Some(Utc::now().to_rfc3339());
+    ctx.store.create_job(&job)?;
+    loop {
+        jobs::run_loop_tick(&ctx.config, &mut ctx.store, ctx.herdr.clone(), &mut job)?;
+        if job.status != "running" {
+            break;
+        }
+        let next = job
+            .next_run_at
+            .as_deref()
+            .and_then(|value| jobs::parse_rfc3339_utc(value).ok())
+            .unwrap_or_else(Utc::now);
+        let sleep = next.signed_duration_since(Utc::now()).num_seconds().max(0);
+        thread::sleep(Duration::from_secs(u64::try_from(sleep).unwrap_or(0)));
+        job = ctx
+            .store
+            .get_job(&id)?
+            .ok_or_else(|| anyhow!("job not found: {id}"))?;
+    }
+    if json_output {
+        print_ok(job_json(&job));
+    } else {
+        println!("{}", job.id);
+    }
+    Ok(Exit::Ok)
+}
+
+fn is_job_ref(value: &str) -> bool {
+    let Some(prefix) = value.chars().next() else {
+        return false;
+    };
+    matches!(prefix, 'l' | 's' | 'g' | 'w')
+        && value.len() > 1
+        && value[1..].chars().all(|ch| ch.is_ascii_digit())
+}
+
 fn state_conflict<T>(id: &str, current_status: &str, wanted: &str) -> Result<T> {
     bail!("state_conflict: id={id} current_status={current_status} wanted={wanted}")
 }
@@ -1180,6 +1640,10 @@ fn command_json(command: &Command) -> bool {
         Command::Status(args) => args.json,
         Command::History(args) => args.json,
         Command::Gc(args) => args.json,
+        Command::Loop(args) => args.json,
+        Command::Job(args) => args.json,
+        Command::Events(args) => args.json,
+        Command::Serve(_) => false,
     }
 }
 
@@ -1206,6 +1670,19 @@ fn print_human_status(report: &StatusReport) {
             report.db.error.as_deref().unwrap_or("unknown")
         );
     }
+    println!(
+        "daemon: {}{}",
+        if report.daemon.running {
+            "running"
+        } else {
+            "stopped"
+        },
+        report
+            .daemon
+            .pid
+            .map(|pid| format!(" pid={pid}"))
+            .unwrap_or_default()
+    );
 }
 
 #[cfg(test)]
@@ -1268,5 +1745,55 @@ mod tests {
         assert!(args.steer);
         assert!(args.json);
         assert!(Cli::try_parse_from(["orcr", "send", "a1", "hi", "--steer", "--turn"]).is_err());
+    }
+
+    #[test]
+    fn parses_job_loop_events_and_serve_surface() {
+        let cli = Cli::try_parse_from([
+            "orcr",
+            "loop",
+            "-a",
+            "mock",
+            "--prompt-file",
+            "p.md",
+            "--every",
+            "auto",
+            "--tick-on",
+            "test -f ready",
+            "--max",
+            "3",
+            "--until",
+            "ALL PASS",
+            "--foreground",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Loop(args)) = cli.command else {
+            panic!("expected loop");
+        };
+        assert_eq!(args.every, "auto");
+        assert_eq!(args.max, Some(3));
+        assert!(args.foreground);
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from(["orcr", "job", "pause", "l1", "--json"]).unwrap();
+        let Some(Command::Job(args)) = cli.command else {
+            panic!("expected job");
+        };
+        assert!(args.json);
+        assert!(matches!(args.command, JobCommand::Pause(_)));
+
+        let cli = Cli::try_parse_from(["orcr", "events", "--follow", "--json"]).unwrap();
+        let Some(Command::Events(args)) = cli.command else {
+            panic!("expected events");
+        };
+        assert!(args.follow);
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from(["orcr", "serve", "--foreground"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Serve(ServeArgs { foreground: true }))
+        ));
     }
 }

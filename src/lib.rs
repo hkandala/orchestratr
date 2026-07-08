@@ -1,7 +1,9 @@
 pub mod cli;
 pub mod config;
+pub mod daemon;
 pub mod engine;
 pub mod herdr;
+pub mod jobs;
 pub mod mock;
 pub mod profile;
 pub mod rundir;

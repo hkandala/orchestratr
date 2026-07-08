@@ -45,10 +45,10 @@ implementation; milestone intent lives in [10-roadmap.md](10-roadmap.md).
 - [x] skill v0 draft (skill/SKILL.md)
 
 ## M2 — Jobs & daemon
-- [ ] serve: auto-start, pidfile, socket ping, --foreground; single-writer job ownership
-- [ ] job surface: job ls|show|pause|resume|rm across l/s/g/w
-- [ ] events feed (append + `orcr events --follow --json`)
-- [ ] loop: fixed --every, --every auto (NEXT_CHECK parse), --tick-on probe,
+- [x] serve: auto-start, pidfile, socket ping, --foreground; single-writer job ownership
+- [x] job surface: job ls|show|pause|resume|rm across l/s/g/w
+- [x] events feed (append + `orcr events --follow --json`)
+- [x] loop: fixed --every, --every auto (NEXT_CHECK parse), --tick-on probe,
       --max/--until, --foreground mode, prompt-file re-read per tick
 - [ ] schedule: cron + --at, tz store + local/UTC echo, --catchup, --expires opt-in
       (forever default), resume --at re-arm, from-loop

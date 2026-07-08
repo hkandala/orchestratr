@@ -406,6 +406,64 @@ impl Store {
         collect_rows(rows)
     }
 
+    pub fn list_due_jobs(&self, now: &str) -> Result<Vec<JobRow>> {
+        let mut stmt = self.conn.prepare(
+            &(JOB_SELECT_SQL.to_string()
+                + " WHERE status = 'running' AND next_run_at IS NOT NULL AND next_run_at <= ?1
+                    ORDER BY next_run_at, id"),
+        )?;
+        let rows = stmt.query_map([now], map_job)?;
+        collect_rows(rows)
+    }
+
+    pub fn update_job(&self, job: &JobRow) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE jobs SET type = ?1, spec_json = ?2, status = ?3, tz = ?4,
+                next_run_at = ?5, expires_at = ?6, runs_count = ?7, created_at = ?8,
+                ended_reason = ?9 WHERE id = ?10",
+            params![
+                job.job_type,
+                job.spec_json,
+                job.status,
+                job.tz,
+                job.next_run_at,
+                job.expires_at,
+                job.runs_count,
+                job.created_at,
+                job.ended_reason,
+                job.id,
+            ],
+        )?;
+        if changed == 0 {
+            bail!("job not found: {}", job.id);
+        }
+        Ok(())
+    }
+
+    pub fn update_job_status(
+        &self,
+        id: &str,
+        status: &str,
+        ended_reason: Option<&str>,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE jobs SET status = ?1, ended_reason = ?2 WHERE id = ?3",
+            params![status, ended_reason, id],
+        )?;
+        if changed == 0 {
+            bail!("job not found: {id}");
+        }
+        Ok(())
+    }
+
+    pub fn delete_job(&self, id: &str) -> Result<()> {
+        let changed = self.conn.execute("DELETE FROM jobs WHERE id = ?1", [id])?;
+        if changed == 0 {
+            bail!("job not found: {id}");
+        }
+        Ok(())
+    }
+
     pub fn create_turn(&self, turn: &TurnRow) -> Result<()> {
         self.conn.execute(
             "INSERT INTO turns (
@@ -471,6 +529,14 @@ impl Store {
             .conn
             .prepare("SELECT seq, ts, kind, ref_id, payload_json FROM events ORDER BY seq")?;
         let rows = stmt.query_map([], map_event)?;
+        collect_rows(rows)
+    }
+
+    pub fn list_events_after(&self, seq: i64) -> Result<Vec<EventRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, ts, kind, ref_id, payload_json FROM events WHERE seq > ?1 ORDER BY seq",
+        )?;
+        let rows = stmt.query_map([seq], map_event)?;
         collect_rows(rows)
     }
 
@@ -742,10 +808,32 @@ mod tests {
         let mut store = Store::open(temp.path()).unwrap();
 
         let job_id = store.allocate_id(IdKind::Loop).unwrap();
-        let job = JobRow::new(job_id, "loop", r#"{"prompt":"hi"}"#, "queued", "now");
+        let mut job = JobRow::new(job_id, "loop", r#"{"prompt":"hi"}"#, "queued", "now");
+        job.next_run_at = Some("2026-01-01T00:00:00Z".to_string());
         store.create_job(&job).unwrap();
         assert_eq!(store.get_job(&job.id).unwrap(), Some(job.clone()));
-        assert_eq!(store.list_jobs().unwrap(), vec![job]);
+        assert_eq!(store.list_jobs().unwrap(), vec![job.clone()]);
+
+        job.status = "running".to_string();
+        job.runs_count = 1;
+        store.update_job(&job).unwrap();
+        assert_eq!(store.get_job(&job.id).unwrap().unwrap().status, "running");
+        assert_eq!(
+            store
+                .list_due_jobs("2026-01-01T00:00:01Z")
+                .unwrap()
+                .first()
+                .map(|row| row.id.as_str()),
+            Some(job.id.as_str())
+        );
+        store
+            .update_job_status(&job.id, "paused", Some("user"))
+            .unwrap();
+        let paused = store.get_job(&job.id).unwrap().unwrap();
+        assert_eq!(paused.status, "paused");
+        assert_eq!(paused.ended_reason.as_deref(), Some("user"));
+        store.delete_job(&job.id).unwrap();
+        assert!(store.get_job(&job.id).unwrap().is_none());
 
         let mut turn = TurnRow::new("agent-1", 1, r#"["p"]"#, "/r", "start");
         store.create_turn(&turn).unwrap();
