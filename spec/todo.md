@@ -71,3 +71,37 @@ implementation; milestone intent lives in [10-roadmap.md](10-roadmap.md).
       (76 unit + 22 e2e; manual smoke: run --wait / ps / show / history live vs herdr)
 - [x] README rewrite (install, quickstart, skill install, SDK pointers)
 - [x] design-change report back to user (delivered in session)
+
+## M4 — Reach (not started)
+### Remote hosts
+- [ ] design pass: run-dir strategy across machines (sync-back vs read-through-SSH),
+      store federation vs single-host store, herdr --remote session lifecycle
+- [ ] host registry: orcr host add/ls/rm <name> <ssh-target> (config or db)
+- [ ] run/jobs accept --host <name> → spawn via herdr --remote
+- [ ] tree/top/ps/show surface host per node; e2e vs a loopback ssh target
+### Daemon durability
+- [ ] orcr serve install|uninstall (launchd plist on macOS, systemd user unit on linux)
+- [ ] docs: catchup semantics with/without installed service
+### Presets
+- [ ] orcr preset save|ls|rm <name> (captures harness/model/effort/flags)
+- [ ] @preset expansion in run/loop/goal/schedule (orcr run @review -p "…")
+### Replay
+- [ ] orcr replay <w-id> from recorded spec_json (fresh workflow node, linked to origin)
+### Reroute policies
+- [ ] limit_screen_markers detection wired to a blocked-subtype (rate-limited)
+- [ ] config [reroute] rules: on rate-limit → alternate harness (off by default)
+### Drop-in workflow verbs
+- [ ] ~/.orcr/workflows/<name>.(ts|py|sh) surfaced as orcr do <name>
+
+## Loose ends (pre-M4, any order)
+- [ ] --worktree provisioning via herdr worktree create (flag currently warns)
+- [ ] publish SDKs: npm `orchestratr`, PyPI `orchestratr` (packages ready)
+- [ ] GitHub Actions CI: fmt + clippy + unit/fake-herdr suites (e2e needs herdr install step)
+- [ ] first-run TTY notice for bypass-all permissions default (spec/04 mitigation)
+- [ ] idle reaper for --keep agents (config idle_reap_min exists; enforcement pending)
+
+## Post-M4 future work (parked — spec/10)
+- plugin system for out-of-tree agent integrations (TOML manifests → exec-plugins)
+- herdr socket events (replace polling when CLI exposes events.subscribe)
+- permission handling: --read-only, per-job permission profiles, --on-blocked policies
+- webhook/ntfy notifications; declarative YAML workflows; Windows support
