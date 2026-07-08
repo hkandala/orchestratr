@@ -380,7 +380,8 @@ impl HerdrClient {
     }
 
     pub fn send_input(&self, pane_id: &str, text: &str) -> Result<()> {
-        self.pane_send_text(pane_id, text)?;
+        let submitted = text.replace(['\r', '\n'], " ");
+        self.pane_send_text(pane_id, &submitted)?;
         thread::sleep(self.send_input_delay);
         self.pane_send_keys(pane_id, &["enter"])
     }

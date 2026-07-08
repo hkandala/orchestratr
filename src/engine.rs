@@ -131,6 +131,10 @@ impl<'a> Engine<'a> {
         agent.agent_session_kind = session_kind.map(ToString::to_string);
         agent.agent_session_value = session_value.map(ToString::to_string);
 
+        if profile.harness() == "mock" {
+            self.herdr
+                .wait_output(&started.pane_id, "MOCK_READY", false, 10_000)?;
+        }
         self.run_startup_recipe(profile, &started.pane_id)?;
 
         let prompt_path = persist_prompt(&run_dir, 1, PromptInput::Inline(&request.prompt))?;
@@ -484,6 +488,12 @@ impl<'a> Engine<'a> {
             .into_iter()
             .find(|turn| turn.n == turn_n)
             .ok_or_else(|| anyhow!("turn not found: {}:t{}", agent.id, turn_n))?;
+        let outcome =
+            if outcome == CompletionOutcome::Timeout && Path::new(&turn.response_path).exists() {
+                CompletionOutcome::Done
+            } else {
+                outcome
+            };
         match outcome {
             CompletionOutcome::Done => {
                 let capture =
@@ -519,7 +529,16 @@ impl<'a> Engine<'a> {
                 Ok(None)
             }
             CompletionOutcome::Timeout => {
+                self.store.update_agent_status(
+                    &agent.id,
+                    "timeout",
+                    Some("timeout"),
+                    Some(&Utc::now().to_rfc3339()),
+                )?;
                 self.event("agent.wait_timeout", &agent.id, json!({"turn": turn_n}))?;
+                if let Some(agent) = self.store.get_agent(&agent.id)? {
+                    self.write_meta(&agent)?;
+                }
                 Ok(None)
             }
             CompletionOutcome::PaneGone => {
@@ -768,6 +787,8 @@ elif args[:2] == ["agent", "start"]:
     out({{"agent":{{"agent_status":"idle","cwd":args[args.index("--cwd")+1],"focused":False,"foreground_cwd":None,"name":args[2],"pane_id":"w1:p1","revision":0,"tab_id":"w1:t1","terminal_id":"term1","workspace_id":"w1","agent_session":None}}}})
 elif args[:2] == ["pane", "read"]:
     print("MOCK_READY\nMOCK_DONE\nfake scrape")
+elif args[:2] == ["wait", "output"]:
+    out({{"matched_line":"MOCK_READY","pane_id":"w1:p1","read":{{"format":"text","pane_id":"w1:p1","revision":1,"source":"recent-unwrapped","text":"MOCK_READY","truncated":False}},"revision":1}})
 elif args[:2] == ["pane", "send-text"]:
     text = args[3]
     marker = "file: "

@@ -437,7 +437,8 @@ fn cmd_wait(args: WaitArgs) -> Result<Exit> {
         bail!("wait needs at least one id or --tree <id>");
     }
     loop {
-        drive_pending_waits(&mut ctx, &ids, deadline)?;
+        drive_pending_waits(&mut ctx, &ids, deadline, args.any)?;
+        ctx.store = Store::open(&ctx.config.store_root)?;
         let state = wait_state(&ctx.store, &ids)?;
         let done_enough = if args.any {
             !state.completed.is_empty() || !state.blocked.is_empty()
@@ -483,6 +484,7 @@ fn drive_pending_waits(
     ctx: &mut ContextBundle,
     ids: &[String],
     deadline: Option<Instant>,
+    stop_after_first: bool,
 ) -> Result<()> {
     for id in ids {
         let Some(agent) = ctx.store.get_agent(id)? else {
@@ -502,6 +504,12 @@ fn drive_pending_waits(
         };
         let mut engine = Engine::new(&ctx.config, &mut ctx.store, ctx.herdr.clone());
         let _ = engine.wait_for_agent(profile.as_ref(), id, wait_s)?;
+        if stop_after_first {
+            let state = wait_state(&ctx.store, ids)?;
+            if !state.completed.is_empty() || !state.blocked.is_empty() {
+                return Ok(());
+            }
+        }
     }
     Ok(())
 }
@@ -945,7 +953,7 @@ fn wait_state(store: &Store, ids: &[String]) -> Result<WaitState> {
             .get_agent(id)?
             .ok_or_else(|| anyhow!("agent not found: {id}"))?;
         match agent.status.as_str() {
-            "done" => state.completed.push(id.clone()),
+            "done" | "idle" => state.completed.push(id.clone()),
             "blocked" => state.blocked.push(id.clone()),
             "killed" => state.blocked.push(id.clone()),
             _ => state.pending.push(id.clone()),

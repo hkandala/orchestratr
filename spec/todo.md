@@ -39,10 +39,10 @@ implementation; milestone intent lives in [10-roadmap.md](10-roadmap.md).
 - [x] history (basic: --since/--status/--parent/--name/--harness/--limit)
 - [x] gc (sqlite ↔ herdr reconcile, orphaned panes, --dry-run)
 - [x] response guarantee chain (file → transcript → scrape) wired into engine
-- [ ] env contract end-to-end (lineage recording, depth/tree caps, cycle refusal)
-- [ ] e2e checklist M1 (09): fan-out, steer-mid-turn, multi-turn --keep, recursive out,
+- [x] env contract end-to-end (lineage recording, depth/tree caps, cycle refusal)
+- [x] e2e checklist M1 (09): fan-out, steer-mid-turn, multi-turn --keep, recursive out,
       kill --tree, timeout exit 3, blocked exit 4, lineage
-- [ ] skill v0 draft (skill/SKILL.md)
+- [x] skill v0 draft (skill/SKILL.md)
 
 ## M2 — Jobs & daemon
 - [ ] serve: auto-start, pidfile, socket ping, --foreground; single-writer job ownership
