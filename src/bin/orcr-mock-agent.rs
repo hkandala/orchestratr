@@ -63,7 +63,7 @@ fn main() -> io::Result<()> {
         }
 
         if !directives.ignore_out {
-            if let Some(path) = extract_response_path(&prompt) {
+            if let Some(path) = extract_response_path(&prompt).or_else(env_response_path) {
                 if let Some(parent) = path.parent() {
                     fs::create_dir_all(parent)?;
                 }
@@ -126,4 +126,8 @@ fn drain_during_sleep(
         }
     }
     Ok(())
+}
+
+fn env_response_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("ORCR_OUT").map(std::path::PathBuf::from)
 }

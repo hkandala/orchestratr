@@ -133,6 +133,27 @@ pub struct StatusInfo {
     pub update: Option<Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponseCapture {
+    pub text: String,
+    pub source: ResponseSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseSource {
+    File,
+    Scrape,
+}
+
+impl ResponseSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Scrape => "scrape",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ClientStatus {
     pub version: Option<String>,
@@ -298,6 +319,14 @@ impl HerdrClient {
         self.run_session_json(["status", "server", "--json"])
     }
 
+    pub fn version(&self) -> Result<String> {
+        let output = Command::new(&self.bin).arg("--version").output()?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+        }
+        command_failed(&output.stderr)
+    }
+
     pub fn agent_start(
         &self,
         label: &str,
@@ -371,6 +400,29 @@ impl HerdrClient {
     pub fn pane_close(&self, pane_id: &str) -> Result<()> {
         let _: Value = self.run_session_json(["pane", "close", pane_id])?;
         Ok(())
+    }
+
+    pub fn capture_response_with_scrape(
+        &self,
+        pane_id: &str,
+        response_path: &Path,
+    ) -> Result<ResponseCapture> {
+        if response_path.exists() {
+            return Ok(ResponseCapture {
+                text: fs::read_to_string(response_path)?,
+                source: ResponseSource::File,
+            });
+        }
+
+        let text = self.pane_read(pane_id, Some("recent-unwrapped"), Some(1000), Some("text"))?;
+        if let Some(parent) = response_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(response_path, &text)?;
+        Ok(ResponseCapture {
+            text,
+            source: ResponseSource::Scrape,
+        })
     }
 
     pub fn wait_output(
@@ -643,15 +695,33 @@ where
     })
 }
 
+pub fn parse_json_value_or_envelope<T>(bytes: &[u8]) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let value: Value = serde_json::from_slice(bytes)?;
+    if let Some(error) = value.get("error") {
+        let error: EnvelopeError = serde_json::from_value(error.clone())?;
+        return Err(HerdrError::Command {
+            code: error.code,
+            message: error.message,
+        });
+    }
+    if let Some(result) = value.get("result") {
+        return serde_json::from_value(result.clone()).map_err(HerdrError::Json);
+    }
+    serde_json::from_value(value).map_err(HerdrError::Json)
+}
+
 fn parse_json_command_output<T>(stdout: &[u8], stderr: &[u8], success: bool) -> Result<T>
 where
     T: DeserializeOwned,
 {
     if !stdout.is_empty() {
-        return parse_json_envelope(stdout);
+        return parse_json_value_or_envelope(stdout);
     }
     if !stderr.is_empty() {
-        if let Ok(value) = parse_json_envelope(stderr) {
+        if let Ok(value) = parse_json_value_or_envelope(stderr) {
             return Ok(value);
         }
     }
@@ -706,6 +776,12 @@ mod tests {
                 message
             } if code == "pane_not_found" && message == "missing"
         ));
+    }
+
+    #[test]
+    fn parses_plain_json_when_not_enveloped() {
+        let value: serde_json::Value = parse_json_value_or_envelope(br#"{"ok":true}"#).unwrap();
+        assert_eq!(value, json!({"ok": true}));
     }
 
     #[test]
