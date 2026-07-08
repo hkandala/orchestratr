@@ -17,7 +17,8 @@ use crate::daemon;
 use crate::engine::{Engine, RunMode, RunRequest};
 use crate::herdr::{discover_herdr, HerdrClient, HerdrError, INSTALL_URL};
 use crate::jobs::{
-    self, CatchupPolicy, EverySpec, LoopSpec, ScheduleSpec, ScheduleTrigger, AUTO_FALLBACK_SECS,
+    self, CatchupPolicy, EverySpec, GoalSpec, LoopSpec, OrphanPolicy, ScheduleSpec,
+    ScheduleTrigger, AUTO_FALLBACK_SECS,
 };
 use crate::profile;
 use crate::store::{AgentRow, EventRow, IdKind, JobRow, Store, TurnRow};
@@ -44,6 +45,8 @@ enum Command {
     History(HistoryArgs),
     Gc(GcArgs),
     Loop(LoopArgs),
+    Goal(GoalArgs),
+    Workflow(WorkflowArgs),
     Schedule(ScheduleArgs),
     Job(JobArgs),
     Events(EventsArgs),
@@ -292,6 +295,79 @@ struct LoopArgs {
 }
 
 #[derive(Debug, Args)]
+struct GoalArgs {
+    #[arg(long = "harness", short = 'a')]
+    harness: String,
+    #[arg(
+        short = 'p',
+        conflicts_with = "prompt_file",
+        required_unless_present = "prompt_file"
+    )]
+    prompt: Option<String>,
+    #[arg(long = "prompt-file", value_name = "f|-", conflicts_with = "prompt")]
+    prompt_file: Option<PathBuf>,
+    #[arg(long = "judge-harness")]
+    judge_harness: Option<String>,
+    #[arg(long = "judge-model")]
+    judge_model: Option<String>,
+    #[arg(long = "max-iters", default_value_t = 5)]
+    max_iters: u64,
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long, default_value = "")]
+    model: String,
+    #[arg(long, default_value = "")]
+    effort: String,
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    #[arg(long, default_value = "600s")]
+    timeout: String,
+    #[arg(long)]
+    keep: bool,
+    #[arg(long, value_enum, default_value_t = CliRunMode::Tui)]
+    mode: CliRunMode,
+    #[arg(long)]
+    worktree: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct WorkflowArgs {
+    #[command(subcommand)]
+    command: WorkflowCommand,
+    #[arg(long, global = true)]
+    json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkflowCommand {
+    Run(WorkflowRunArgs),
+}
+
+#[derive(Debug, Args)]
+struct WorkflowRunArgs {
+    script: PathBuf,
+    #[arg(long = "on-orphan", value_enum, default_value_t = CliOrphanPolicy::Kill)]
+    on_orphan: CliOrphanPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CliOrphanPolicy {
+    Kill,
+    Keep,
+}
+
+impl From<CliOrphanPolicy> for OrphanPolicy {
+    fn from(value: CliOrphanPolicy) -> Self {
+        match value {
+            CliOrphanPolicy::Kill => Self::Kill,
+            CliOrphanPolicy::Keep => Self::Keep,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
 struct ScheduleArgs {
     #[command(subcommand)]
     command: ScheduleCommand,
@@ -478,6 +554,8 @@ fn dispatch(command: Command) -> Result<Exit> {
         Command::History(args) => cmd_history(args),
         Command::Gc(args) => cmd_gc(args),
         Command::Loop(args) => cmd_loop(args),
+        Command::Goal(args) => cmd_goal(args),
+        Command::Workflow(args) => cmd_workflow(args),
         Command::Schedule(args) => cmd_schedule(args),
         Command::Job(args) => cmd_job(args),
         Command::Events(args) => cmd_events(args),
@@ -834,8 +912,8 @@ fn cmd_tree(args: TreeArgs) -> Result<Exit> {
         let value = json!({
             "roots": roots
                 .iter()
-                .filter_map(|id| tree_node(&agents, id))
-                .collect::<Vec<_>>()
+                .filter_map(|id| tree_node(&ctx.store, &agents, id).transpose())
+                .collect::<Result<Vec<_>>>()?
         });
         if args.json {
             print_ok(value);
@@ -1003,6 +1081,7 @@ fn cmd_history(args: HistoryArgs) -> Result<Exit> {
         None => None,
     };
     let parent = match args.parent {
+        Some(value) if is_job_ref(&value) => Some(value),
         Some(value) => Some(ctx.store.resolve_agent_id(&value)?),
         None => None,
     };
@@ -1029,17 +1108,22 @@ fn cmd_history(args: HistoryArgs) -> Result<Exit> {
     if let Some(limit) = args.limit {
         agents.truncate(limit);
     }
-    let items: Vec<Value> = agents.iter().map(agent_json).collect();
+    let items: Vec<Value> = agents
+        .iter()
+        .map(|agent| agent_history_json(&ctx.store, agent))
+        .collect::<Result<_>>()?;
     if args.json {
         print_ok(json!({ "items": items }));
     } else {
         for item in items {
             println!(
-                "{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{} in\t{} out\t{}",
                 item["id"].as_str().unwrap_or_default(),
                 item["status"].as_str().unwrap_or_default(),
                 item["harness"].as_str().unwrap_or_default(),
-                item["created_at"].as_str().unwrap_or_default()
+                item["tokens"]["in"].as_i64().unwrap_or_default(),
+                item["tokens"]["out"].as_i64().unwrap_or_default(),
+                item["run_dir"].as_str().unwrap_or_default()
             );
         }
     }
@@ -1279,6 +1363,124 @@ fn cmd_loop(args: LoopArgs) -> Result<Exit> {
         );
     }
     Ok(Exit::Ok)
+}
+
+fn cmd_goal(args: GoalArgs) -> Result<Exit> {
+    let mut ctx = ContextBundle::load(None)?;
+    let cwd = args
+        .cwd
+        .unwrap_or(std::env::current_dir().context("failed to read current directory")?);
+    let prompt_file = args
+        .prompt_file
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let prompt = if args.prompt_file.is_some() {
+        None
+    } else {
+        Some(prompt_text(args.prompt.as_deref(), None)?)
+    };
+    let judge_independent =
+        args.judge_harness.is_some() || args.judge_model.as_ref().is_some_and(|m| m != &args.model);
+    let spec = GoalSpec {
+        harness: args.harness,
+        prompt,
+        prompt_file,
+        judge_harness: args.judge_harness,
+        judge_model: args.judge_model,
+        max_iters: args.max_iters,
+        name: args.name,
+        model: args.model,
+        effort: args.effort,
+        cwd: cwd.display().to_string(),
+        timeout_s: parse_duration_s(&args.timeout)?,
+        keep: args.keep,
+        mode: match args.mode {
+            CliRunMode::Tui => "tui".to_string(),
+            CliRunMode::Exec => "exec".to_string(),
+        },
+        worktree: args.worktree,
+        worker_agent: None,
+        last_worker_response: None,
+        last_judge_agent: None,
+        last_judge_response: None,
+        last_fail_reasons: None,
+        judge_independent,
+    };
+    let id = ctx.store.allocate_id(IdKind::Goal)?;
+    let mut job = JobRow::new(
+        id.clone(),
+        "goal",
+        serde_json::to_string(&spec)?,
+        "running",
+        Utc::now().to_rfc3339(),
+    );
+    job.next_run_at = Some(Utc::now().to_rfc3339());
+    ctx.store.create_job(&job)?;
+    jobs::append_job_event(
+        &ctx.store,
+        "job.state",
+        &job.id,
+        json!({"status": "running"}),
+    )?;
+    ensure_daemon(&ctx.config)?;
+    if args.json {
+        print_ok(job_json(&job));
+    } else {
+        let label = if spec.judge_independent {
+            "judge"
+        } else {
+            "self-check"
+        };
+        println!(
+            "{} goal evaluation={} max_iters={} cancel: orcr kill {}",
+            job.id, label, spec.max_iters, job.id
+        );
+    }
+    Ok(Exit::Ok)
+}
+
+fn cmd_workflow(args: WorkflowArgs) -> Result<Exit> {
+    match args.command {
+        WorkflowCommand::Run(run) => cmd_workflow_run(run, args.json),
+    }
+}
+
+fn cmd_workflow_run(args: WorkflowRunArgs, json_output: bool) -> Result<Exit> {
+    let mut ctx = ContextBundle::load(None)?;
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let id = ctx.store.allocate_id(IdKind::Workflow)?;
+    let spec = jobs::new_workflow_spec(
+        &ctx.config,
+        &id,
+        &args.script.display().to_string(),
+        args.on_orphan.into(),
+        &cwd.display().to_string(),
+    )?;
+    let mut job = JobRow::new(
+        id.clone(),
+        "workflow",
+        serde_json::to_string(&spec)?,
+        "running",
+        Utc::now().to_rfc3339(),
+    );
+    ctx.store.create_job(&job)?;
+    jobs::append_job_event(
+        &ctx.store,
+        "job.state",
+        &job.id,
+        json!({"status": "running"}),
+    )?;
+    jobs::run_workflow_job(&ctx.config, &mut ctx.store, &mut job)?;
+    if json_output {
+        print_ok(job_json(&job));
+    } else {
+        println!("{} workflow {} log {}", job.id, job.status, spec.log_path);
+    }
+    Ok(if job.status == "done" {
+        Exit::Ok
+    } else {
+        Exit::Other
+    })
 }
 
 fn cmd_schedule(args: ScheduleArgs) -> Result<Exit> {
@@ -1608,7 +1810,55 @@ fn turn_summary_json(turn: &TurnRow) -> Value {
         "response_source": turn.response_source,
         "started_at": turn.started_at,
         "ended_at": turn.ended_at,
+        "tokens": tokens_json(turn.tokens_in, turn.tokens_out),
     })
+}
+
+fn agent_history_json(store: &Store, agent: &AgentRow) -> Result<Value> {
+    let mut value = agent_json(agent);
+    let totals = token_totals_for_agent(store, &agent.id)?;
+    value["tokens"] = tokens_json(Some(totals.0), Some(totals.1));
+    value["turns"] = json!(store.list_turns_by_agent(&agent.id)?.len());
+    value["duration_s"] = json!(duration_s(&agent.created_at, agent.ended_at.as_deref()));
+    Ok(value)
+}
+
+fn tokens_json(input: Option<i64>, output: Option<i64>) -> Value {
+    json!({
+        "in": input.unwrap_or(0),
+        "out": output.unwrap_or(0),
+    })
+}
+
+fn token_totals_for_agent(store: &Store, agent_id: &str) -> Result<(i64, i64)> {
+    let mut input = 0_i64;
+    let mut output = 0_i64;
+    for turn in store.list_turns_by_agent(agent_id)? {
+        input = input.saturating_add(turn.tokens_in.unwrap_or(0));
+        output = output.saturating_add(turn.tokens_out.unwrap_or(0));
+    }
+    Ok((input, output))
+}
+
+fn token_totals_for_subtree(store: &Store, agents: &[AgentRow], id: &str) -> Result<(i64, i64)> {
+    let mut totals = token_totals_for_agent(store, id)?;
+    for child in children(agents, id) {
+        let child_totals = token_totals_for_subtree(store, agents, &child)?;
+        totals.0 = totals.0.saturating_add(child_totals.0);
+        totals.1 = totals.1.saturating_add(child_totals.1);
+    }
+    Ok(totals)
+}
+
+fn duration_s(created_at: &str, ended_at: Option<&str>) -> Option<i64> {
+    let created = DateTime::parse_from_rfc3339(created_at)
+        .ok()?
+        .with_timezone(&Utc);
+    let ended = ended_at
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+    Some(ended.signed_duration_since(created).num_seconds().max(0))
 }
 
 fn job_json(job: &JobRow) -> Value {
@@ -1626,6 +1876,14 @@ fn job_json(job: &JobRow) -> Value {
         "next_reason": spec.get("last_next_reason").cloned().unwrap_or(Value::Null),
         "last_tick_agent": spec.get("last_tick_agent").cloned().unwrap_or(Value::Null),
         "last_tick_response": spec.get("last_tick_response").cloned().unwrap_or(Value::Null),
+        "judge_independent": spec.get("judge_independent").cloned().unwrap_or(Value::Null),
+        "evaluation": if spec.get("judge_independent").and_then(Value::as_bool) == Some(false) {
+            Value::String("self-check".to_string())
+        } else {
+            Value::String("judge".to_string())
+        },
+        "run_dir": spec.get("run_dir").cloned().unwrap_or(Value::Null),
+        "log_path": spec.get("log_path").cloned().unwrap_or(Value::Null),
         "spec": spec,
     })
 }
@@ -1673,9 +1931,11 @@ fn show_json(store: &Store, agent: &AgentRow) -> Result<Value> {
         .map(turn_summary_json)
         .collect();
     let children = children(&store.list_agents()?, &agent.id);
+    let totals = token_totals_for_agent(store, &agent.id)?;
     Ok(json!({
         "agent": agent_json(agent),
         "turns": turns,
+        "tokens": tokens_json(Some(totals.0), Some(totals.1)),
         "children": children,
     }))
 }
@@ -1711,17 +1971,21 @@ fn tree_depth(agents: &[AgentRow], id: &str) -> usize {
     depth
 }
 
-fn tree_node(agents: &[AgentRow], id: &str) -> Option<Value> {
-    let agent = agents.iter().find(|agent| agent.id == id)?;
-    Some(json!({
+fn tree_node(store: &Store, agents: &[AgentRow], id: &str) -> Result<Option<Value>> {
+    let Some(agent) = agents.iter().find(|agent| agent.id == id) else {
+        return Ok(None);
+    };
+    let totals = token_totals_for_subtree(store, agents, id)?;
+    Ok(Some(json!({
         "id": agent.id,
         "name": agent.name,
         "status": agent.status,
+        "tokens": tokens_json(Some(totals.0), Some(totals.1)),
         "children": children(agents, id)
             .iter()
-            .filter_map(|child| tree_node(agents, child))
-            .collect::<Vec<_>>()
-    }))
+            .filter_map(|child| tree_node(store, agents, child).transpose())
+            .collect::<Result<Vec<_>>>()?
+    })))
 }
 
 fn print_tree_value(value: &Value, indent: usize) {
@@ -1958,6 +2222,8 @@ fn command_json(command: &Command) -> bool {
         Command::History(args) => args.json,
         Command::Gc(args) => args.json,
         Command::Loop(args) => args.json,
+        Command::Goal(args) => args.json,
+        Command::Workflow(args) => args.json,
         Command::Schedule(args) => args.json,
         Command::Job(args) => args.json,
         Command::Events(args) => args.json,

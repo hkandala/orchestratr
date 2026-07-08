@@ -10,10 +10,12 @@ pub struct MockDirectives {
     pub ignore_out: bool,
     pub block: bool,
     pub exit: bool,
+    pub response: Option<String>,
+    pub response_seq: Option<(PathBuf, Vec<String>)>,
 }
 
 pub fn extract_response_path(text: &str) -> Option<PathBuf> {
-    let start = text.find(PREAMBLE_PREFIX)? + PREAMBLE_PREFIX.len();
+    let start = text.rfind(PREAMBLE_PREFIX)? + PREAMBLE_PREFIX.len();
     let rest = &text[start..];
     let end = rest.find(PREAMBLE_SUFFIX)?;
     Some(PathBuf::from(&rest[..end]))
@@ -25,6 +27,8 @@ pub fn parse_directives(text: &str) -> MockDirectives {
         block: text.contains("[[block]]"),
         exit: text.contains("[[exit]]"),
         sleep_ms: None,
+        response: None,
+        response_seq: None,
     };
 
     let mut remaining = text;
@@ -35,6 +39,34 @@ pub fn parse_directives(text: &str) -> MockDirectives {
         };
         if let Ok(ms) = after_start[..end].parse::<u64>() {
             directives.sleep_ms = Some(ms);
+        }
+        remaining = &after_start[end + 2..];
+    }
+
+    let mut remaining = text;
+    while let Some(start) = remaining.find("[[respond:") {
+        let after_start = &remaining[start + "[[respond:".len()..];
+        let Some(end) = after_start.find("]]") else {
+            break;
+        };
+        directives.response = Some(after_start[..end].to_string());
+        remaining = &after_start[end + 2..];
+    }
+
+    let mut remaining = text;
+    while let Some(start) = remaining.find("[[respond-seq:") {
+        let after_start = &remaining[start + "[[respond-seq:".len()..];
+        let Some(end) = after_start.find("]]") else {
+            break;
+        };
+        if let Some((path, responses)) = after_start[..end].split_once(':') {
+            let responses = responses
+                .split("||")
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            if !responses.is_empty() {
+                directives.response_seq = Some((PathBuf::from(path), responses));
+            }
         }
         remaining = &after_start[end + 2..];
     }
@@ -60,8 +92,18 @@ mod tests {
     }
 
     #[test]
+    fn extracts_last_response_path_when_prompt_contains_history() {
+        let text = "old When you are completely finished, write your full final answer as markdown to the file: /tmp/old.md. Do not consider the task done until that file is written.\nnew When you are completely finished, write your full final answer as markdown to the file: /tmp/new.md. Do not consider the task done until that file is written.";
+        assert_eq!(
+            extract_response_path(text),
+            Some(PathBuf::from("/tmp/new.md"))
+        );
+    }
+
+    #[test]
     fn parses_directives() {
-        let directives = parse_directives("a [[sleep:250]] b [[ignore-out]] [[block]] [[exit]]");
+        let directives =
+            parse_directives("a [[sleep:250]] b [[ignore-out]] [[block]] [[exit]] [[respond:ok]]");
         assert_eq!(
             directives,
             MockDirectives {
@@ -69,7 +111,21 @@ mod tests {
                 ignore_out: true,
                 block: true,
                 exit: true,
+                response: Some("ok".to_string()),
+                response_seq: None,
             }
+        );
+    }
+
+    #[test]
+    fn parses_response_sequence_directive() {
+        let directives = parse_directives("[[respond-seq:/tmp/orcr-state:FAIL: no||PASS]]");
+        assert_eq!(
+            directives.response_seq,
+            Some((
+                PathBuf::from("/tmp/orcr-state"),
+                vec!["FAIL: no".to_string(), "PASS".to_string()]
+            ))
         );
     }
 

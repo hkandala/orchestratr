@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration as ChronoDuration, LocalResult, NaiveTime, TimeZone, Utc};
@@ -14,7 +14,8 @@ use crate::config::Config;
 use crate::engine::{Engine, RunMode, RunRequest};
 use crate::herdr::HerdrClient;
 use crate::profile;
-use crate::store::{EventRow, JobRow, Store};
+use crate::rundir::create_run_dir;
+use crate::store::{AgentRow, EventRow, JobRow, Store};
 
 pub const AUTO_FALLBACK_SECS: u64 = 600;
 pub const AUTO_MIN_SECS: u64 = 30;
@@ -67,6 +68,53 @@ pub struct ScheduleSpec {
     pub max_duration_s: Option<u64>,
     pub last_tick_agent: Option<String>,
     pub last_tick_response: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GoalSpec {
+    pub harness: String,
+    pub prompt: Option<String>,
+    pub prompt_file: Option<String>,
+    pub judge_harness: Option<String>,
+    pub judge_model: Option<String>,
+    pub max_iters: u64,
+    pub name: Option<String>,
+    pub model: String,
+    pub effort: String,
+    pub cwd: String,
+    pub timeout_s: u64,
+    pub keep: bool,
+    pub mode: String,
+    pub worktree: bool,
+    pub worker_agent: Option<String>,
+    pub last_worker_response: Option<String>,
+    pub last_judge_agent: Option<String>,
+    pub last_judge_response: Option<String>,
+    pub last_fail_reasons: Option<String>,
+    pub judge_independent: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowSpec {
+    pub script: String,
+    pub on_orphan: OrphanPolicy,
+    pub cwd: String,
+    pub run_dir: String,
+    pub log_path: String,
+    pub exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OrphanPolicy {
+    Kill,
+    Keep,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JudgeVerdict {
+    Pass,
+    Fail(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -157,6 +205,40 @@ impl ScheduleSpec {
                 .with_context(|| format!("failed to read prompt file {path}")),
             _ => Err(anyhow!("schedule needs exactly one prompt source")),
         }
+    }
+}
+
+impl GoalSpec {
+    pub fn prompt_text(&self) -> Result<String> {
+        match (&self.prompt, &self.prompt_file) {
+            (Some(prompt), None) => Ok(prompt.clone()),
+            (None, Some(path)) => fs::read_to_string(path)
+                .with_context(|| format!("failed to read prompt file {path}")),
+            _ => Err(anyhow!("goal needs exactly one prompt source")),
+        }
+    }
+
+    fn run_mode(&self) -> RunMode {
+        if self.mode == "exec" {
+            RunMode::Exec
+        } else {
+            RunMode::Tui
+        }
+    }
+}
+
+pub fn judge_preamble() -> &'static str {
+    "You are judging whether the worker satisfied the goal. Your first line must be exactly PASS or FAIL: <reasons>. Put any optional detail after that first line."
+}
+
+pub fn parse_judge_verdict(text: &str) -> Option<JudgeVerdict> {
+    let first = text.lines().next()?.trim();
+    if first == "PASS" {
+        Some(JudgeVerdict::Pass)
+    } else {
+        first
+            .strip_prefix("FAIL:")
+            .map(|reasons| JudgeVerdict::Fail(reasons.trim().to_string()))
     }
 }
 
@@ -380,6 +462,260 @@ pub fn run_schedule_tick(
     Ok(())
 }
 
+pub fn run_goal_job(
+    config: &Config,
+    store: &mut Store,
+    herdr: HerdrClient,
+    job: &mut JobRow,
+) -> Result<()> {
+    let mut spec: GoalSpec = serde_json::from_str(&job.spec_json)?;
+    let worker_profile = profile::lookup(&spec.harness)
+        .ok_or_else(|| anyhow!("unknown harness: {}", spec.harness))?;
+    let judge_harness = spec
+        .judge_harness
+        .clone()
+        .unwrap_or_else(|| spec.harness.clone());
+    let judge_model = spec
+        .judge_model
+        .clone()
+        .unwrap_or_else(|| spec.model.clone());
+    let judge_profile = profile::lookup(&judge_harness)
+        .ok_or_else(|| anyhow!("unknown judge harness: {judge_harness}"))?;
+    let goal = spec.prompt_text()?;
+    append_job_event(
+        store,
+        "job.goal.start",
+        &job.id,
+        json!({"max_iters": spec.max_iters}),
+    )?;
+
+    let mut engine = Engine::new(config, store, herdr.clone());
+    let worker = engine.run(
+        worker_profile.as_ref(),
+        RunRequest {
+            name: spec
+                .name
+                .clone()
+                .or_else(|| Some(format!("{} worker", job.id))),
+            parent_id: Some(job.id.clone()),
+            mode: spec.run_mode(),
+            model: spec.model.clone(),
+            effort: spec.effort.clone(),
+            cwd: PathBuf::from(&spec.cwd),
+            timeout_s: spec.timeout_s,
+            keep: true,
+            prompt: goal.clone(),
+            wait: true,
+        },
+    )?;
+    spec.worker_agent = Some(worker.agent.id.clone());
+    if let Some(response) = worker.response.as_ref() {
+        spec.last_worker_response = Some(response.text.clone());
+    }
+    let store = engine.store_mut();
+    job.spec_json = serde_json::to_string(&spec)?;
+    store.update_job(job)?;
+
+    while u64::try_from(job.runs_count).unwrap_or(u64::MAX) < spec.max_iters {
+        let latest = spec.last_worker_response.clone().unwrap_or_default();
+        let judge_prompt = format!(
+            "{}\n\nGOAL:\n{}\n\nWORKER LATEST RESPONSE:\n{}",
+            judge_preamble(),
+            goal,
+            latest
+        );
+        let mut engine = Engine::new(config, store, herdr.clone());
+        let judge = engine.run(
+            judge_profile.as_ref(),
+            RunRequest {
+                name: Some(format!("{} judge {}", job.id, job.runs_count + 1)),
+                parent_id: Some(job.id.clone()),
+                mode: spec.run_mode(),
+                model: judge_model.clone(),
+                effort: spec.effort.clone(),
+                cwd: PathBuf::from(&spec.cwd),
+                timeout_s: spec.timeout_s,
+                keep: false,
+                prompt: judge_prompt,
+                wait: true,
+            },
+        )?;
+        let store = engine.store_mut();
+        job.runs_count += 1;
+        spec.last_judge_agent = Some(judge.agent.id.clone());
+        if let Some(response) = judge.response.as_ref() {
+            spec.last_judge_response = Some(response.text.clone());
+            match parse_judge_verdict(&response.text) {
+                Some(JudgeVerdict::Pass) => {
+                    job.status = "done".to_string();
+                    job.ended_reason = Some("passed".to_string());
+                    job.next_run_at = None;
+                    finish_worker(store, &herdr, &worker.agent, "done", "completed")?;
+                    job.spec_json = serde_json::to_string(&spec)?;
+                    store.update_job(job)?;
+                    append_job_event(store, "job.goal.done", &job.id, json!({"verdict": "PASS"}))?;
+                    return Ok(());
+                }
+                Some(JudgeVerdict::Fail(reasons)) => {
+                    spec.last_fail_reasons = Some(reasons.clone());
+                    if u64::try_from(job.runs_count).unwrap_or(u64::MAX) >= spec.max_iters {
+                        break;
+                    }
+                    let mut engine = Engine::new(config, store, herdr.clone());
+                    let turn =
+                        engine.turn(&worker.agent.id, &format!("Judge feedback:\n{reasons}"))?;
+                    let response = engine.wait_for_agent(
+                        worker_profile.as_ref(),
+                        &worker.agent.id,
+                        spec.timeout_s,
+                    )?;
+                    let store = engine.store_mut();
+                    if let Some(response) = response {
+                        spec.last_worker_response = Some(response.text);
+                    } else if let Ok(text) = fs::read_to_string(&turn.response_path) {
+                        spec.last_worker_response = Some(text);
+                    }
+                    job.spec_json = serde_json::to_string(&spec)?;
+                    store.update_job(job)?;
+                }
+                None => {
+                    spec.last_fail_reasons =
+                        Some("judge did not produce PASS or FAIL first line".to_string());
+                    break;
+                }
+            }
+        } else {
+            spec.last_fail_reasons = Some("judge produced no response".to_string());
+            break;
+        }
+    }
+
+    job.status = "failed".to_string();
+    job.ended_reason = Some("goal-max-iters".to_string());
+    job.next_run_at = None;
+    finish_worker(store, &herdr, &worker.agent, "failed", "goal-max-iters")?;
+    job.spec_json = serde_json::to_string(&spec)?;
+    store.update_job(job)?;
+    append_job_event(
+        store,
+        "job.goal.failed",
+        &job.id,
+        json!({"exit_reason": "goal-max-iters"}),
+    )?;
+    Ok(())
+}
+
+pub fn run_workflow_job(config: &Config, store: &mut Store, job: &mut JobRow) -> Result<()> {
+    let mut spec: WorkflowSpec = serde_json::from_str(&job.spec_json)?;
+    fs::create_dir_all(&spec.run_dir)?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&spec.log_path)?;
+    append_job_event(
+        store,
+        "job.workflow.start",
+        &job.id,
+        json!({"script": spec.script}),
+    )?;
+    let status = Command::new("sh")
+        .arg(&spec.script)
+        .current_dir(&spec.cwd)
+        .env("ORCR_ID", &job.id)
+        .env("ORCR_STORE", &config.store_root)
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log))
+        .status()
+        .with_context(|| format!("failed to run workflow script {}", spec.script))?;
+    spec.exit_code = status.code();
+    if status.success() {
+        job.status = "done".to_string();
+        job.ended_reason = Some("completed".to_string());
+    } else {
+        job.status = "failed".to_string();
+        job.ended_reason = Some("exit-nonzero".to_string());
+    }
+    job.next_run_at = None;
+    job.spec_json = serde_json::to_string(&spec)?;
+    store.update_job(job)?;
+    handle_workflow_orphans(config, store, &job.id, spec.on_orphan)?;
+    append_job_event(
+        store,
+        "job.workflow.done",
+        &job.id,
+        json!({"exit_code": spec.exit_code, "on_orphan": spec.on_orphan}),
+    )?;
+    Ok(())
+}
+
+pub fn new_workflow_spec(
+    config: &Config,
+    id: &str,
+    script: &str,
+    on_orphan: OrphanPolicy,
+    cwd: &str,
+) -> Result<WorkflowSpec> {
+    let run_dir = create_run_dir(&config.store_root, id)?;
+    Ok(WorkflowSpec {
+        script: script.to_string(),
+        on_orphan,
+        cwd: cwd.to_string(),
+        log_path: run_dir.join("log.txt").display().to_string(),
+        run_dir: run_dir.display().to_string(),
+        exit_code: None,
+    })
+}
+
+fn finish_worker(
+    store: &Store,
+    herdr: &HerdrClient,
+    agent: &AgentRow,
+    status: &str,
+    exit_reason: &str,
+) -> Result<()> {
+    if let Some(pane_id) = agent.pane_id.as_deref() {
+        let _ = herdr.pane_close(pane_id);
+    }
+    store.update_agent_status(
+        &agent.id,
+        status,
+        Some(exit_reason),
+        Some(&Utc::now().to_rfc3339()),
+    )?;
+    Ok(())
+}
+
+fn handle_workflow_orphans(
+    config: &Config,
+    store: &mut Store,
+    workflow_id: &str,
+    policy: OrphanPolicy,
+) -> Result<()> {
+    if policy == OrphanPolicy::Keep {
+        return Ok(());
+    }
+    let herdr_bin = crate::herdr::discover_herdr(&config.herdr.bin)?;
+    let herdr = HerdrClient::new(herdr_bin, config.herdr.session.clone());
+    let active: Vec<AgentRow> = store
+        .list_agents()?
+        .into_iter()
+        .filter(|agent| agent.parent_id.as_deref() == Some(workflow_id))
+        .filter(|agent| {
+            matches!(
+                agent.status.as_str(),
+                "queued" | "starting" | "working" | "idle" | "blocked"
+            )
+        })
+        .collect();
+    for agent in active {
+        if let Some(profile) = profile::lookup(&agent.harness) {
+            let mut engine = Engine::new(config, store, herdr.clone());
+            let _ = engine.kill_agent(profile.as_ref(), &agent.id)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn tick_on_fires(spec: &mut LoopSpec) -> Result<bool> {
     let Some(command) = spec.tick_on.as_deref() else {
         return Ok(true);
@@ -512,6 +848,17 @@ mod tests {
 
         let slow = parse_next_check("NEXT_CHECK: 99d - later").unwrap();
         assert_eq!(slow.seconds, 86_400);
+    }
+
+    #[test]
+    fn parses_judge_verdict_first_line_only() {
+        assert_eq!(parse_judge_verdict("PASS\nextra"), Some(JudgeVerdict::Pass));
+        assert_eq!(
+            parse_judge_verdict("FAIL: missing tests\nPASS"),
+            Some(JudgeVerdict::Fail("missing tests".to_string()))
+        );
+        assert_eq!(parse_judge_verdict(" PASS"), Some(JudgeVerdict::Pass));
+        assert_eq!(parse_judge_verdict("maybe pass"), None);
     }
 
     #[test]

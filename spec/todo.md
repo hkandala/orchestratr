@@ -59,9 +59,9 @@ implementation; milestone intent lives in [10-roadmap.md](10-roadmap.md).
 ## M3 — Faces
 - [ ] top TUI (tree+detail, attach/send/kill/out keys, filter, blocked sort)
 - [ ] auto-viewer pane (HERDR_ENV detect, once-per-session guard, viewer.auto config)
-- [ ] goal (worker+judge iterate, PASS/FAIL protocol, --judge-harness, self-check label)
-- [ ] workflow run (env-contract child process, log capture, --on-orphan)
-- [ ] history full (tokens, run-dir pointers) + token telemetry from transcripts
+- [x] goal (worker+judge iterate, PASS/FAIL protocol, --judge-harness, self-check label)
+- [x] workflow run (env-contract child process, log capture, --on-orphan)
+- [x] history full (tokens, run-dir pointers) + token telemetry from transcripts
 - [ ] SKILL.md final
 - [ ] SDK: TS package + Python package (thin --json wrappers) + examples
 - [ ] e2e checklist M3 (09)

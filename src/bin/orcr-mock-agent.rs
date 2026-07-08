@@ -67,7 +67,20 @@ fn main() -> io::Result<()> {
                 if let Some(parent) = path.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                fs::write(path, format!("# mock response\n{prompt}"))?;
+                let response =
+                    if prompt.contains("You are judging whether the worker satisfied the goal") {
+                        sequence_response(&directives)
+                            .transpose()?
+                            .flatten()
+                            .or_else(|| directives.response.clone())
+                    } else {
+                        match directives.response.clone() {
+                            Some(response) => Some(response),
+                            None => sequence_response(&directives).transpose()?.flatten(),
+                        }
+                    }
+                    .unwrap_or_else(|| format!("# mock response\n{prompt}"));
+                fs::write(path, response)?;
             }
         }
 
@@ -130,4 +143,25 @@ fn drain_during_sleep(
 
 fn env_response_path() -> Option<std::path::PathBuf> {
     std::env::var_os("ORCR_OUT").map(std::path::PathBuf::from)
+}
+
+fn sequence_response(
+    directives: &orchestratr::mock::MockDirectives,
+) -> Option<io::Result<Option<String>>> {
+    let (path, responses) = directives.response_seq.as_ref()?;
+    let current = fs::read_to_string(path)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    let next = current.saturating_add(1);
+    Some((|| {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, next.to_string())?;
+        Ok(responses
+            .get(current)
+            .cloned()
+            .or_else(|| responses.last().cloned()))
+    })())
 }

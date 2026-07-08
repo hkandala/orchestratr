@@ -18,8 +18,8 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 use crate::config::Config;
 use crate::herdr::{discover_herdr, HerdrClient};
 use crate::jobs::{
-    append_job_event, parse_rfc3339_utc, run_loop_tick, run_schedule_tick, tick_on_fires,
-    CatchupPolicy, LoopSpec, ScheduleSpec, TICK_ON_POLL_SECS,
+    append_job_event, parse_rfc3339_utc, run_goal_job, run_loop_tick, run_schedule_tick,
+    run_workflow_job, tick_on_fires, CatchupPolicy, LoopSpec, ScheduleSpec, TICK_ON_POLL_SECS,
 };
 use crate::store::{EventRow, JobRow, Store};
 use crate::{engine::Engine, profile};
@@ -152,6 +152,8 @@ pub fn supervise_once(config: &Config) -> Result<()> {
         if let Err(error) = match job.job_type.as_str() {
             "loop" => supervise_loop_job(config, &mut store, &mut job),
             "schedule" => supervise_schedule_job(config, &mut store, &mut job),
+            "goal" => supervise_goal_job(config, &mut store, &mut job),
+            "workflow" => supervise_workflow_job(config, &mut store, &mut job),
             _ => continue,
         } {
             append_job_event(
@@ -167,6 +169,16 @@ pub fn supervise_once(config: &Config) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn supervise_goal_job(config: &Config, store: &mut Store, job: &mut JobRow) -> Result<()> {
+    let herdr_bin = discover_herdr(&config.herdr.bin)?;
+    let herdr = HerdrClient::new(herdr_bin, config.herdr.session.clone());
+    run_goal_job(config, store, herdr, job)
+}
+
+fn supervise_workflow_job(config: &Config, store: &mut Store, job: &mut JobRow) -> Result<()> {
+    run_workflow_job(config, store, job)
 }
 
 #[derive(Debug, Default, Clone, Serialize)]

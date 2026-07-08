@@ -107,6 +107,20 @@ impl TranscriptAdapter for CodexTranscript {
         }
         Ok(task_complete.or(agent_message).or(response_item))
     }
+
+    fn tokens(&self, home: &Path, session_ref: &str) -> TranscriptResult<Option<(u64, u64)>> {
+        let root = home.join(".codex");
+        let mut totals = (0_u64, 0_u64);
+        for path in find_matching_jsonl(&root, session_ref)? {
+            for line in read_jsonl_values(&path)? {
+                if let Some((input, output)) = usage_tokens(&line) {
+                    totals.0 = totals.0.saturating_add(input);
+                    totals.1 = totals.1.saturating_add(output);
+                }
+            }
+        }
+        Ok((totals != (0, 0)).then_some(totals))
+    }
 }
 
 fn codex_response_item_text(value: &Value) -> Option<String> {
@@ -120,4 +134,27 @@ fn codex_response_item_text(value: &Value) -> Option<String> {
         .or_else(|| item.get("content"))
         .and_then(Value::as_str)
         .map(ToString::to_string)
+}
+
+fn usage_tokens(value: &Value) -> Option<(u64, u64)> {
+    let usage = value
+        .get("usage")
+        .or_else(|| value.get("token_usage"))
+        .or_else(|| value.get("tokens"))
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("usage"))
+        })?;
+    let input = usage
+        .get("input_tokens")
+        .or_else(|| usage.get("prompt_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .or_else(|| usage.get("completion_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    ((input, output) != (0, 0)).then_some((input, output))
 }

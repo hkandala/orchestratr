@@ -556,6 +556,12 @@ impl<'a> Engine<'a> {
         agent: &AgentRow,
         response_path: &Path,
     ) -> Result<ResponseCapture> {
+        for _ in 0..20 {
+            if response_path.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
         if response_path.exists() {
             return Ok(ResponseCapture {
                 text: fs::read_to_string(response_path)?,
@@ -624,6 +630,10 @@ impl<'a> Engine<'a> {
                     self.capture_response(profile, agent, Path::new(&turn.response_path))?;
                 turn.response_source = Some(capture.source.as_str().to_string());
                 turn.ended_at = Some(Utc::now().to_rfc3339());
+                if let Some((input, output)) = self.capture_tokens(profile, agent)? {
+                    turn.tokens_in = Some(i64::try_from(input).unwrap_or(i64::MAX));
+                    turn.tokens_out = Some(i64::try_from(output).unwrap_or(i64::MAX));
+                }
                 self.store.update_turn(&turn)?;
                 let final_status = if agent.keep { "idle" } else { "done" };
                 let ended_at = (!agent.keep).then(|| Utc::now().to_rfc3339());
@@ -714,6 +724,21 @@ impl<'a> Engine<'a> {
         };
         write_meta(Path::new(&agent.run_dir), &meta)?;
         Ok(())
+    }
+
+    fn capture_tokens(
+        &self,
+        profile: &dyn Profile,
+        agent: &AgentRow,
+    ) -> Result<Option<(u64, u64)>> {
+        let Some(adapter) = profile.transcript() else {
+            return Ok(None);
+        };
+        let Some(session_ref) = agent.agent_session_value.as_deref() else {
+            return Ok(None);
+        };
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        Ok(adapter.tokens(&home, session_ref)?)
     }
 
     fn event(&self, kind: &str, ref_id: &str, payload: serde_json::Value) -> Result<()> {

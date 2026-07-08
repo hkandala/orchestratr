@@ -84,6 +84,20 @@ impl TranscriptAdapter for ClaudeTranscript {
         }
         Ok(latest)
     }
+
+    fn tokens(&self, home: &Path, session_ref: &str) -> TranscriptResult<Option<(u64, u64)>> {
+        let root = home.join(".claude").join("projects");
+        let mut totals = (0_u64, 0_u64);
+        for path in find_matching_jsonl(&root, session_ref)? {
+            for line in read_jsonl_values(&path)? {
+                if let Some((input, output)) = usage_tokens(&line) {
+                    totals.0 = totals.0.saturating_add(input);
+                    totals.1 = totals.1.saturating_add(output);
+                }
+            }
+        }
+        Ok((totals != (0, 0)).then_some(totals))
+    }
 }
 
 fn claude_assistant_text(value: &Value) -> Option<String> {
@@ -98,4 +112,23 @@ fn claude_assistant_text(value: &Value) -> Option<String> {
         .filter_map(|item| item.get("text").and_then(Value::as_str))
         .next()
         .map(ToString::to_string)
+}
+
+fn usage_tokens(value: &Value) -> Option<(u64, u64)> {
+    let usage = value.get("usage").or_else(|| {
+        value
+            .get("message")
+            .and_then(|message| message.get("usage"))
+    })?;
+    let input = usage
+        .get("input_tokens")
+        .or_else(|| usage.get("prompt_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .or_else(|| usage.get("completion_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    ((input, output) != (0, 0)).then_some((input, output))
 }

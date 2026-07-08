@@ -256,6 +256,21 @@ mod tests {
     }
 
     #[test]
+    fn claude_transcript_extracts_tokens() {
+        let temp = tempdir().unwrap();
+        let dir = temp.path().join(".claude/projects/project-a");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("session-abc.jsonl"),
+            include_str!("../../tests/fixtures/claude_session.jsonl"),
+        )
+        .unwrap();
+
+        let tokens = claude::ClaudeTranscript.tokens(temp.path(), "abc").unwrap();
+        assert_eq!(tokens, Some((11, 7)));
+    }
+
+    #[test]
     fn codex_transcript_extracts_by_priority() {
         let temp = tempdir().unwrap();
         let dir = temp.path().join(".codex/rollouts");
@@ -287,6 +302,23 @@ mod tests {
             .extract_last_response(temp.path(), "agent-session")
             .unwrap();
         assert_eq!(text.as_deref(), Some("agent message wins"));
+    }
+
+    #[test]
+    fn codex_transcript_extracts_tokens() {
+        let temp = tempdir().unwrap();
+        let dir = temp.path().join(".codex/rollouts");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("rollout-agent-session.jsonl"),
+            include_str!("../../tests/fixtures/codex_agent_session.jsonl"),
+        )
+        .unwrap();
+
+        let tokens = codex::CodexTranscript
+            .tokens(temp.path(), "agent-session")
+            .unwrap();
+        assert_eq!(tokens, Some((13, 5)));
     }
 
     #[test]
