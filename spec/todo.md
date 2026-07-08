@@ -67,6 +67,7 @@ implementation; milestone intent lives in [10-roadmap.md](10-roadmap.md).
 - [x] e2e checklist M3 (09)
 
 ## Final
-- [ ] full-suite pass (units + fake-herdr + e2e), clippy/fmt clean
-- [ ] README rewrite (install, quickstart, skill install)
-- [ ] design-change report back to user
+- [x] full-suite pass (units + fake-herdr + e2e), clippy/fmt clean
+      (76 unit + 22 e2e; manual smoke: run --wait / ps / show / history live vs herdr)
+- [x] README rewrite (install, quickstart, skill install, SDK pointers)
+- [x] design-change report back to user (delivered in session)
