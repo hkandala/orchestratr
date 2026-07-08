@@ -595,6 +595,13 @@ impl Store {
         collect_rows(rows)
     }
 
+    pub fn max_event_seq(&self) -> Result<i64> {
+        let seq: Option<i64> = self
+            .conn
+            .query_row("SELECT MAX(seq) FROM events", [], |row| row.get(0))?;
+        Ok(seq.unwrap_or(0))
+    }
+
     fn init_schema(&self) -> Result<()> {
         self.conn.execute_batch(
             "
@@ -903,6 +910,7 @@ mod tests {
         store.update_turn(&turn).unwrap();
         assert_eq!(store.list_turns_by_agent("agent-1").unwrap(), vec![turn]);
 
+        assert_eq!(store.max_event_seq().unwrap(), 0);
         let event = EventRow::new("ts", "kind", Some("ref".to_string()), "{}");
         let seq = store.append_event(&event).unwrap();
         let events = store.list_events().unwrap();
@@ -910,6 +918,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].seq, 1);
         assert_eq!(events[0].payload_json, "{}");
+        assert_eq!(store.max_event_seq().unwrap(), 1);
     }
 
     #[test]

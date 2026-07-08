@@ -110,6 +110,34 @@ fn no_running_e2e_sessions_are_left_by_prior_tests() -> Result<()> {
     assert_no_running_e2e_sessions()
 }
 
+#[test]
+fn top_without_tty_errors_cleanly_and_exits_2() -> Result<()> {
+    // No ORCR_E2E gate: this never touches herdr or a live session — `orcr top` checks
+    // for a TTY on stdout before doing anything else, and `Command::output()` always
+    // pipes stdout/stderr, so this is deterministic and cheap in every environment.
+    let store = tempfile::tempdir()?;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_orcr"));
+    command.env("ORCR_STORE", store.path());
+    command.arg("top");
+    let output = command.output()?;
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("interactive terminal"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "expected no stdout, got: {output:?}"
+    );
+    Ok(())
+}
+
 struct E2eContext {
     store: TempDir,
     session: String,

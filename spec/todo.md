@@ -57,14 +57,14 @@ implementation; milestone intent lives in [10-roadmap.md](10-roadmap.md).
 - [x] e2e checklist M2 (09)
 
 ## M3 — Faces
-- [ ] top TUI (tree+detail, attach/send/kill/out keys, filter, blocked sort)
-- [ ] auto-viewer pane (HERDR_ENV detect, once-per-session guard, viewer.auto config)
+- [x] top TUI (tree+detail, attach/send/kill/out keys, filter, blocked sort)
+- [x] auto-viewer pane (HERDR_ENV detect, once-per-session guard, viewer.auto config)
 - [x] goal (worker+judge iterate, PASS/FAIL protocol, --judge-harness, self-check label)
 - [x] workflow run (env-contract child process, log capture, --on-orphan)
 - [x] history full (tokens, run-dir pointers) + token telemetry from transcripts
-- [ ] SKILL.md final
-- [ ] SDK: TS package + Python package (thin --json wrappers) + examples
-- [ ] e2e checklist M3 (09)
+- [x] SKILL.md final
+- [x] SDK: TS package + Python package (thin --json wrappers) + examples
+- [x] e2e checklist M3 (09)
 
 ## Final
 - [ ] full-suite pass (units + fake-herdr + e2e), clippy/fmt clean

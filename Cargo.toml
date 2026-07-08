@@ -36,6 +36,8 @@ thiserror = "2"
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+ratatui = "0.30.2"
+crossterm = "0.29.0"
 
 [dev-dependencies]
 assert_cmd = "2"

@@ -414,6 +414,29 @@ impl HerdrClient {
         Ok(())
     }
 
+    pub fn pane_split(&self, pane_id: &str, direction: &str, ratio: f64) -> Result<PaneInfo> {
+        let result: PaneGetResult = self.run_session_json([
+            "pane",
+            "split",
+            pane_id,
+            "--direction",
+            direction,
+            "--ratio",
+            &ratio.to_string(),
+            "--no-focus",
+        ])?;
+        Ok(result.pane)
+    }
+
+    pub fn pane_rename(&self, pane_id: &str, label: &str) -> Result<PaneInfo> {
+        let result: PaneGetResult = self.run_session_json(["pane", "rename", pane_id, label])?;
+        Ok(result.pane)
+    }
+
+    pub fn pane_run(&self, pane_id: &str, command: &str) -> Result<()> {
+        self.run_session_plain(["pane", "run", pane_id, command])
+    }
+
     pub fn session_attach(&self) -> Result<()> {
         let status = Command::new(&self.bin)
             .args(["session", "attach", &self.session])

@@ -49,6 +49,7 @@ enum Command {
     Workflow(WorkflowArgs),
     Schedule(ScheduleArgs),
     Job(JobArgs),
+    Top(TopArgs),
     Events(EventsArgs),
     Serve(ServeArgs),
 }
@@ -221,6 +222,12 @@ struct GcArgs {
 struct ServeArgs {
     #[arg(long)]
     foreground: bool,
+}
+
+#[derive(Debug, Args)]
+struct TopArgs {
+    #[arg(long)]
+    pane: bool,
 }
 
 #[derive(Debug, Args)]
@@ -558,6 +565,7 @@ fn dispatch(command: Command) -> Result<Exit> {
         Command::Workflow(args) => cmd_workflow(args),
         Command::Schedule(args) => cmd_schedule(args),
         Command::Job(args) => cmd_job(args),
+        Command::Top(args) => cmd_top(args),
         Command::Events(args) => cmd_events(args),
         Command::Serve(args) => cmd_serve(args),
     }
@@ -593,6 +601,7 @@ fn cmd_run(args: RunArgs) -> Result<Exit> {
             wait: args.wait,
         },
     )?;
+    maybe_auto_open_viewer(&ctx.config, &ctx.herdr);
     let mut value = json!({
         "agent": agent_json(&result.agent),
         "turn": turn_summary_json(&result.turn),
@@ -1142,6 +1151,50 @@ fn cmd_gc(args: GcArgs) -> Result<Exit> {
     Ok(Exit::Ok)
 }
 
+fn cmd_top(args: TopArgs) -> Result<Exit> {
+    if !args.pane && crate::top::is_headless() {
+        eprintln!("orcr top requires an interactive terminal (no TTY detected)");
+        return Ok(Exit::Env);
+    }
+    let ctx = ContextBundle::load(None)?;
+    if args.pane {
+        let herdr_env = std::env::var("HERDR_ENV").ok();
+        if herdr_env.as_deref() != Some("1") {
+            bail!("orcr top --pane requires running inside a herdr pane (HERDR_ENV is not set)");
+        }
+        let pane_id = std::env::var("HERDR_PANE_ID").context(
+            "HERDR_PANE_ID is not set; cannot determine which pane to split the viewer from",
+        )?;
+        let opened =
+            crate::top::open_viewer_pane(&ctx.herdr, &ctx.config, &pane_id, &orcr_bin_path())?;
+        if !opened {
+            eprintln!("orcr-top pane already open");
+        }
+        return Ok(Exit::Ok);
+    }
+    crate::top::run_tui(ctx.config, ctx.store, ctx.herdr)?;
+    Ok(Exit::Ok)
+}
+
+fn orcr_bin_path() -> String {
+    std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "orcr".to_string())
+}
+
+/// Best-effort: open the live-tree viewer pane once per herdr session on run/job
+/// creation, per spec/07 "Auto-viewer (v1)". Never fails the calling command.
+fn maybe_auto_open_viewer(config: &Config, herdr: &HerdrClient) {
+    let herdr_env = std::env::var("HERDR_ENV").ok();
+    if !crate::top::auto_viewer_enabled(herdr_env.as_deref(), config.viewer.auto) {
+        return;
+    }
+    let Ok(pane_id) = std::env::var("HERDR_PANE_ID") else {
+        return;
+    };
+    let _ = crate::top::open_viewer_pane(herdr, config, &pane_id, &orcr_bin_path());
+}
+
 fn cmd_serve(args: ServeArgs) -> Result<Exit> {
     let config = Config::load().context("config_error")?;
     if args.foreground {
@@ -1351,6 +1404,7 @@ fn cmd_loop(args: LoopArgs) -> Result<Exit> {
         json!({"status": "running"}),
     )?;
     ensure_daemon(&ctx.config)?;
+    maybe_auto_open_viewer(&ctx.config, &ctx.herdr);
     let value = job_json(&job);
     if args.json {
         print_ok(value);
@@ -1423,6 +1477,7 @@ fn cmd_goal(args: GoalArgs) -> Result<Exit> {
         json!({"status": "running"}),
     )?;
     ensure_daemon(&ctx.config)?;
+    maybe_auto_open_viewer(&ctx.config, &ctx.herdr);
     if args.json {
         print_ok(job_json(&job));
     } else {
@@ -1470,6 +1525,7 @@ fn cmd_workflow_run(args: WorkflowRunArgs, json_output: bool) -> Result<Exit> {
         &job.id,
         json!({"status": "running"}),
     )?;
+    maybe_auto_open_viewer(&ctx.config, &ctx.herdr);
     jobs::run_workflow_job(&ctx.config, &mut ctx.store, &mut job)?;
     if json_output {
         print_ok(job_json(&job));
@@ -1568,6 +1624,7 @@ fn cmd_schedule_add(args: ScheduleAddArgs, json_output: bool) -> Result<Exit> {
         json!({"status": "running"}),
     )?;
     ensure_daemon(&ctx.config)?;
+    maybe_auto_open_viewer(&ctx.config, &ctx.herdr);
     print_schedule_created(&job, &spec, json_output);
     Ok(Exit::Ok)
 }
@@ -1672,6 +1729,7 @@ fn cmd_schedule_from_loop(args: ScheduleFromLoopArgs, json_output: bool) -> Resu
         json!({"status": "running", "from_loop": loop_job.id}),
     )?;
     ensure_daemon(&ctx.config)?;
+    maybe_auto_open_viewer(&ctx.config, &ctx.herdr);
     print_schedule_created(&job, &spec, json_output);
     Ok(Exit::Ok)
 }
@@ -1830,7 +1888,7 @@ fn tokens_json(input: Option<i64>, output: Option<i64>) -> Value {
     })
 }
 
-fn token_totals_for_agent(store: &Store, agent_id: &str) -> Result<(i64, i64)> {
+pub(crate) fn token_totals_for_agent(store: &Store, agent_id: &str) -> Result<(i64, i64)> {
     let mut input = 0_i64;
     let mut output = 0_i64;
     for turn in store.list_turns_by_agent(agent_id)? {
@@ -1840,7 +1898,11 @@ fn token_totals_for_agent(store: &Store, agent_id: &str) -> Result<(i64, i64)> {
     Ok((input, output))
 }
 
-fn token_totals_for_subtree(store: &Store, agents: &[AgentRow], id: &str) -> Result<(i64, i64)> {
+pub(crate) fn token_totals_for_subtree(
+    store: &Store,
+    agents: &[AgentRow],
+    id: &str,
+) -> Result<(i64, i64)> {
     let mut totals = token_totals_for_agent(store, id)?;
     for child in children(agents, id) {
         let child_totals = token_totals_for_subtree(store, agents, &child)?;
@@ -1850,7 +1912,7 @@ fn token_totals_for_subtree(store: &Store, agents: &[AgentRow], id: &str) -> Res
     Ok(totals)
 }
 
-fn duration_s(created_at: &str, ended_at: Option<&str>) -> Option<i64> {
+pub(crate) fn duration_s(created_at: &str, ended_at: Option<&str>) -> Option<i64> {
     let created = DateTime::parse_from_rfc3339(created_at)
         .ok()?
         .with_timezone(&Utc);
@@ -1940,7 +2002,7 @@ fn show_json(store: &Store, agent: &AgentRow) -> Result<Value> {
     }))
 }
 
-fn children(agents: &[AgentRow], id: &str) -> Vec<String> {
+pub(crate) fn children(agents: &[AgentRow], id: &str) -> Vec<String> {
     agents
         .iter()
         .filter(|agent| agent.parent_id.as_deref() == Some(id))
@@ -1948,7 +2010,7 @@ fn children(agents: &[AgentRow], id: &str) -> Vec<String> {
         .collect()
 }
 
-fn descendant_ids(agents: &[AgentRow], root: &str) -> Vec<String> {
+pub(crate) fn descendant_ids(agents: &[AgentRow], root: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut stack = children(agents, root);
     while let Some(id) = stack.pop() {
@@ -1958,7 +2020,7 @@ fn descendant_ids(agents: &[AgentRow], root: &str) -> Vec<String> {
     out
 }
 
-fn tree_depth(agents: &[AgentRow], id: &str) -> usize {
+pub(crate) fn tree_depth(agents: &[AgentRow], id: &str) -> usize {
     let mut depth = 0;
     let mut current = id;
     while let Some(agent) = agents.iter().find(|agent| agent.id == current) {
@@ -2226,6 +2288,7 @@ fn command_json(command: &Command) -> bool {
         Command::Workflow(args) => args.json,
         Command::Schedule(args) => args.json,
         Command::Job(args) => args.json,
+        Command::Top(_) => false,
         Command::Events(args) => args.json,
         Command::Serve(_) => false,
     }
