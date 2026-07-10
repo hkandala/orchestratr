@@ -1,9 +1,9 @@
 # orcr CLI v2 — final design (post-review)
 
 Ground-up simplification of the v1 CLI, designed against the herdr / paseo / orca CLI
-references and hardened through four independent design reviews (transcripts:
-`review-1..4.md`; pre-review draft: `cli-v2-draft.md`; rendered commentable reference:
-`orcr-cli-reference.html`). This file is the authoritative markdown version.
+references and hardened through four independent design reviews (adjudication in §9).
+This file is the authoritative design; a rendered, commentable version lives as a Claude
+artifact.
 
 Status: **design locked pending owner review comments; not yet implemented.** The v1
 implementation and `spec/01..10` still describe the shipped v1 surface.
