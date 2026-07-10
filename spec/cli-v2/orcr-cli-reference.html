@@ -1,0 +1,1137 @@
+<title>orcr — CLI reference v2</title>
+<style>
+  :root {
+    --bg: #FBFCFA; --bg-raise: #F2F5F1; --ink: #1E2422; --ink-soft: #55605B;
+    --ink-faint: #8A948F; --accent: #1F6F54; --accent-soft: #E3EFE9;
+    --line: #DCE3DE; --code-bg: #F0F3EF;
+    --good: #2E7D4F; --warn: #A66B1F; --bad: #B0433A;
+    --mono: "SF Mono", ui-monospace, "Cascadia Code", Menlo, monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --sans: "Avenir Next", "Seravek", -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #101512; --bg-raise: #171E1A; --ink: #DCE4DE; --ink-soft: #9AA69F;
+      --ink-faint: #6C7772; --accent: #5BC49B; --accent-soft: #1B2E26;
+      --line: #26302A; --code-bg: #161D19; --good: #62BB84; --warn: #D19A4E; --bad: #D97A70; }
+  }
+  :root[data-theme="dark"] { --bg: #101512; --bg-raise: #171E1A; --ink: #DCE4DE;
+    --ink-soft: #9AA69F; --ink-faint: #6C7772; --accent: #5BC49B; --accent-soft: #1B2E26;
+    --line: #26302A; --code-bg: #161D19; --good: #62BB84; --warn: #D19A4E; --bad: #D97A70; }
+  :root[data-theme="light"] { --bg: #FBFCFA; --bg-raise: #F2F5F1; --ink: #1E2422;
+    --ink-soft: #55605B; --ink-faint: #8A948F; --accent: #1F6F54; --accent-soft: #E3EFE9;
+    --line: #DCE3DE; --code-bg: #F0F3EF; --good: #2E7D4F; --warn: #A66B1F; --bad: #B0433A; }
+
+  body { background: var(--bg); color: var(--ink); font-family: var(--sans);
+    line-height: 1.6; font-size: 16px; margin: 0; }
+  .wrap { max-width: 62rem; margin: 0 auto; padding: 2.5rem 1.4rem 6rem; }
+  header.masthead { border-bottom: 2px solid var(--ink); padding-bottom: 1.4rem; margin-bottom: 2rem; }
+  .eyebrow { font-family: var(--mono); font-size: .72rem; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--accent); margin: 0 0 .7rem; }
+  h1 { font-family: var(--serif); font-size: clamp(1.9rem, 4.5vw, 2.7rem); line-height: 1.1;
+    margin: 0 0 .6rem; font-weight: 600; text-wrap: balance; }
+  .dek { font-size: 1.05rem; color: var(--ink-soft); max-width: 48rem; margin: 0; }
+  h2 { font-family: var(--serif); font-size: 1.55rem; font-weight: 600; margin: 3rem 0 .8rem;
+    padding-top: 1.3rem; border-top: 1px solid var(--line); text-wrap: balance; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.8rem 0 .4rem; }
+  h4 { font-size: .92rem; font-weight: 600; margin: 1.2rem 0 .3rem; }
+  p, li { max-width: 48rem; }
+  ul, ol { padding-left: 1.3rem; }
+  li { margin: .28rem 0; }
+  a { color: var(--accent); }
+  code { font-family: var(--mono); font-size: .84em; background: var(--code-bg);
+    padding: .1em .32em; border-radius: 3px; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: .85rem 1.05rem; overflow-x: auto; line-height: 1.5; margin: .8rem 0; }
+  pre code { background: none; padding: 0; font-size: .78rem; }
+  .tablewrap { overflow-x: auto; margin: 1rem 0; }
+  table { border-collapse: collapse; font-size: .87rem; min-width: 100%; }
+  th { text-align: left; font-family: var(--mono); font-size: .68rem; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--ink-soft); font-weight: 600; }
+  th, td { padding: .48rem .8rem .48rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td code { white-space: nowrap; }
+  .toc { font-size: .9rem; columns: 2; column-gap: 2.5rem; padding-left: 1.2rem; margin: .8rem 0 0; }
+  .toc li { break-inside: avoid; }
+  @media (max-width: 640px) { .toc { columns: 1; } }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft);
+    border-radius: 0 6px 6px 0; padding: .7rem 1rem; margin: 1rem 0; font-size: .92rem;
+    max-width: 46rem; }
+  .callout.warn { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 9%, var(--bg)); }
+  .gotcha { border-left: 3px solid var(--warn); padding: .15rem 0 .15rem .9rem;
+    font-size: .88rem; color: var(--ink-soft); margin: .8rem 0; max-width: 46rem; }
+  .pill { display: inline-block; font-family: var(--mono); font-size: .68rem;
+    padding: .1em .55em; border-radius: 99px; border: 1px solid var(--line);
+    color: var(--ink-soft); vertical-align: middle; }
+  .pill.core { color: var(--accent); border-color: var(--accent); }
+  .pill.adv  { color: var(--warn); border-color: var(--warn); }
+  .pill.plumb{ color: var(--ink-faint); }
+
+  section.cmd { background: var(--bg-raise); border: 1px solid var(--line); border-radius: 10px;
+    margin: 1.4rem 0; padding: 1.1rem 1.4rem 1.2rem; }
+  section.cmd > h3 { font-family: var(--mono); font-size: 1.25rem; font-weight: 700;
+    margin: .2rem 0 .15rem; color: var(--accent); display: flex; align-items: center;
+    gap: .7rem; flex-wrap: wrap; }
+  section.cmd .oneline { color: var(--ink-soft); font-size: .95rem; margin: 0 0 .6rem; }
+  section.cmd h4 { font-family: var(--mono); font-size: .7rem; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--ink-soft); margin: 1.1rem 0 .35rem; }
+  section.cmd details { margin: .6rem 0 0; }
+  section.cmd details > summary { cursor: pointer; font-family: var(--mono); font-size: .78rem;
+    color: var(--accent); }
+  .kbd-note { font-size: .8rem; color: var(--ink-faint); }
+  .ctx-table td:first-child { font-weight: 600; white-space: nowrap; }
+  .legend { font-size: .8rem; color: var(--ink-soft); }
+
+  #selbubble { position: fixed; z-index: 85; display: none; }
+  #selbubble button { font-family: var(--mono); font-size: .75rem; background: var(--accent);
+    color: #fff; border: none; border-radius: 5px; padding: .3em .7em; cursor: pointer;
+    box-shadow: 0 3px 10px rgba(0,0,0,.3); }
+  #sb-tab { position: fixed; right: 0; top: 45%; z-index: 72; writing-mode: vertical-rl;
+    background: var(--accent); color: #fff; border: none; border-radius: 6px 0 0 6px;
+    padding: .8em .3em; font-family: var(--mono); font-size: .78rem; cursor: pointer; }
+  #sidebar { position: fixed; top: 0; right: 0; bottom: 0; width: min(24rem, 92vw);
+    background: var(--bg-raise); border-left: 1px solid var(--line); z-index: 75;
+    display: none; flex-direction: column; box-shadow: -8px 0 24px rgba(0,0,0,.3); }
+  #sidebar.open { display: flex; }
+  #sidebar .shead { display: flex; align-items: center; gap: .6rem; padding: .75rem 1rem;
+    border-bottom: 1px solid var(--line); }
+  #sidebar .sbody { overflow: auto; flex: 1; padding: .5rem 1rem; }
+  #sidebar .sitem { border-bottom: 1px dashed var(--line); padding: .55rem 0; font-size: .84rem; }
+  #sidebar .sitem .anchor { font-family: var(--mono); font-size: .72rem; color: var(--accent); }
+  #sidebar .sitem .quote { color: var(--ink-soft); font-style: italic; font-size: .78rem;
+    border-left: 2px solid var(--line); padding-left: .5rem; margin: .25rem 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #sidebar .sitem .acts { float: right; display: flex; gap: .4rem; }
+  #sidebar .sitem .acts button { cursor: pointer; border: none; background: none;
+    font-size: .8rem; color: var(--ink-soft); }
+  #sidebar .sitem .acts button:hover { color: var(--accent); }
+  #sidebar .sitem .acts button.del:hover { color: var(--bad); }
+  #sidebar .sitem textarea { width: 100%; min-height: 3.5rem; font-family: var(--sans);
+    font-size: .84rem; background: var(--bg); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 5px; box-sizing: border-box; margin-top: .3rem; }
+  #sidebar .sfoot { padding: .7rem 1rem; border-top: 1px solid var(--line); display: flex;
+    gap: .5rem; flex-wrap: wrap; }
+  #exportbox { display: none; padding: .7rem 1rem; border-top: 1px solid var(--line); }
+  #exportbox textarea { width: 100%; min-height: 8rem; font-family: var(--mono);
+    font-size: .7rem; background: var(--bg); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 5px; box-sizing: border-box; }
+  #cform { position: fixed; z-index: 90; background: var(--bg-raise);
+    border: 1px solid var(--accent); border-radius: 8px; padding: .8rem; width: min(24rem, 90vw);
+    display: none; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+  #cform textarea { width: 100%; min-height: 4.5rem; font-family: var(--sans);
+    font-size: .88rem; background: var(--bg); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 5px; padding: .4rem; box-sizing: border-box; }
+  #cform .target { font-family: var(--mono); font-size: .7rem; color: var(--ink-soft);
+    margin-bottom: .4rem; word-break: break-all; max-height: 4.5rem; overflow: auto; }
+  #cform .row { display: flex; gap: .5rem; margin-top: .5rem; justify-content: flex-end; }
+  .btn { font-family: var(--mono); font-size: .78rem; border: 1px solid var(--line);
+    border-radius: 5px; background: var(--bg); color: var(--ink); padding: .3em .8em;
+    cursor: pointer; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:focus-visible, a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+<header class="masthead">
+  <p class="eyebrow">orcr · CLI reference · v2 draft for review · july 2026</p>
+  <h1>The orcr command reference</h1>
+  <p class="dek">A ground-up simplification of the CLI: fewer verbs, one clear placement model
+  for herdr sessions / workspaces / tabs / panes, and first-class visibility into
+  <em>every</em> agent running in herdr — including ones orcr didn't start. Select any text to
+  leave a review comment; the sidebar collects them for export.</p>
+</header>
+
+<nav>
+  <p class="eyebrow">Contents</p>
+  <ol class="toc">
+    <li><a href="#model">The mental model</a></li>
+    <li><a href="#placement">Placement: sessions, workspaces, tabs, panes, cwd</a></li>
+    <li><a href="#targets">Targets, ids &amp; contract levels</a></li>
+    <li><a href="#conventions">Global conventions</a></li>
+    <li><a href="#commands">Command reference</a></li>
+    <li><a href="#cut">What was cut — and its replacement</a></li>
+    <li><a href="#sdk">SDK: the six workflow patterns</a></li>
+    <li><a href="#config">Configuration</a></li>
+    <li><a href="#adjudication">Design-review adjudication</a></li>
+  </ol>
+</nav>
+
+<h2 id="model">1 · The mental model</h2>
+<ol>
+  <li><strong>orcr spawns real agent TUIs in your real herdr session.</strong> Every agent is a
+    visible tab you can attach to in one keystroke. No hidden side session — the herdr UI
+    <em>is</em> the viewer.</li>
+  <li><strong>orcr sees everything herdr sees.</strong> <code>orcr ls</code> lists agents you
+    started by hand in a herdr pane right alongside orcr-managed ones, and
+    <code>send / wait / out / attach</code> work on them too (with an honest, machine-readable
+    downgrade of guarantees — see <a href="#targets">contract levels</a>).</li>
+  <li><strong>Two independent axes:</strong> <code>--cwd</code> is where the agent process runs;
+    <code>--workspace</code> is where its tab appears in herdr. Defaults: cwd = your cwd,
+    workspace = derived from cwd. Neither ever silently changes the other.</li>
+  <li><strong><code>run</code> waits and prints the answer.</strong> It's the better
+    <code>-p</code> for every harness. Fan-out is explicit: <code>--detach</code>.</li>
+  <li><strong>Files are the inter-agent API.</strong> Prompts and responses are markdown files
+    under <code>runs/&lt;id&gt;/</code>; after <code>done</code> the response file always exists
+    and its provenance (<code>file | transcript | scrape</code>) is recorded.</li>
+  <li><strong>One durable job primitive: <code>loop</code>.</strong> Run an agent on a cron,
+    an interval, or once at a time — until a condition. Goals, judges, and workflows are
+    recipes built from <code>run / send / wait / out</code> — not verbs.</li>
+  <li><strong>Nine core commands</strong> (<code>run ls show send wait out attach kill
+    loop</code>), three advanced (<code>adopt daemon top</code>), three plumbing
+    (<code>status</code> is the health probe; <code>gc</code>, <code>events</code>).</li>
+</ol>
+
+<h2 id="placement">2 · Placement: sessions, workspaces, tabs, panes, cwd</h2>
+
+<p>herdr's hierarchy is <strong>Session → Workspace → Tab → Pane → Agent</strong>. orcr's
+mapping:</p>
+
+<div class="tablewrap">
+<table>
+  <tr><th>herdr concept</th><th>what it is</th><th>orcr's stance</th></tr>
+  <tr><td><strong>Session</strong></td><td>a persistent herdr server namespace (own panes,
+    sockets, state)</td><td>orcr targets exactly one session per invocation: the session
+    you're in when inside herdr, else config <code>herdr.session</code> — which defaults to
+    <strong>herdr's default session</strong>, not a hidden side session. Override:
+    <code>--session</code> / <code>ORCR_SESSION</code>. One config line
+    (<code>session&nbsp;=&nbsp;"orcr"</code>) restores full isolation.</td></tr>
+  <tr><td><strong>Workspace</strong></td><td>project container, typically one per repo; has a
+    default cwd; herdr's sidebar rolls up agent attention per workspace</td><td>the placement
+    unit. Resolved from the agent's cwd by default (git-root first — order below).
+    <code>--workspace &lt;id|label|new&gt;</code> overrides.</td></tr>
+  <tr><td><strong>Tab</strong></td><td>an addressable layout unit inside a workspace</td>
+    <td><strong>one tab per agent</strong> — labeled with the agent's name/id, prefixed by the
+    parent's name for fan-outs (<code>impl/a8</code>). Predictable, attachable, closable.</td></tr>
+  <tr><td><strong>Pane</strong></td><td>a real terminal</td><td>the agent's TUI is the tab's
+    single pane. <code>--split right|down</code> opts into splitting the caller's tab instead
+    (side-by-side supervision). <code>pane_id</code> stays the only stable low-level handle.</td></tr>
+  <tr><td><strong>Agent</strong></td><td>a process herdr recognizes in a pane
+    (working / idle / blocked / done / unknown)</td><td>completion detection rides these states
+    (<code>working → idle</code>, then the response file is finalized). Foreign agents are
+    first-class read/steer targets.</td></tr>
+  <tr><td><strong>Worktree</strong></td><td>herdr-managed git worktree bound to a workspace</td>
+    <td><code>run --worktree [&lt;branch&gt;]</code> provisions one and runs the agent inside
+    it: cwd becomes the worktree path (conflicting <code>--cwd</code> is an error), placement
+    goes to the worktree's workspace.</td></tr>
+</table>
+</div>
+
+<div class="callout"><strong>Workspace ≠ cwd.</strong> A herdr workspace <em>has</em> a default
+cwd but it is a UI container, not a directory. orcr keeps the axes separate:
+<code>--cwd</code> controls the process, <code>--workspace</code> controls the tab's home.
+When you set only <code>--cwd</code>, the workspace is derived from it; when you set only
+<code>--workspace</code>, the cwd is still your own.</div>
+
+<h3>Where a new agent lands — the context matrix</h3>
+<p>orcr detects its calling context from env: <code>HERDR_*</code> vars mark a herdr-managed
+pane; <code>ORCR_*</code> vars mark an orcr-spawned agent. Defaults per context:</p>
+
+<div class="tablewrap">
+<table class="ctx-table">
+  <tr><th>you are…</th><th>session</th><th>workspace</th><th>tab</th><th>cwd</th></tr>
+  <tr><td>a human (or agent) in a plain terminal</td>
+    <td>config <code>herdr.session</code> (default: herdr's default). Server not running →
+      orcr starts it headless and reports <code>herdr_server: started</code>; attach anytime
+      with plain <code>herdr</code>.</td>
+    <td>resolved from cwd (order below); created if none matches</td>
+    <td>new tab</td><td>caller's cwd</td></tr>
+  <tr><td>a human at a herdr pane</td>
+    <td>current session</td><td>current workspace</td><td>new tab</td><td>pane cwd</td></tr>
+  <tr><td>an orcr-spawned agent spawning a subagent</td>
+    <td>same session</td><td>parent's workspace</td>
+    <td>new tab labeled <code>parent/child</code>; <code>--split</code> to sit beside the
+      parent instead</td>
+    <td>parent's cwd (inherited)</td></tr>
+  <tr><td>a foreign agent in a herdr pane running orcr</td>
+    <td>current session</td><td>current workspace</td><td>new tab</td><td>pane cwd</td></tr>
+</table>
+</div>
+<p class="legend">Focus is never stolen in any context — <code>--focus</code> is always
+opt-in. Every spawn result reports the full resolved placement
+(<code>{session, workspace, tab, pane}</code>) plus <code>workspace_resolution</code>, so
+scripts never guess.</p>
+
+<h3>Workspace resolution order</h3>
+<ol>
+  <li>Explicit <code>--workspace &lt;id|label&gt;</code> (or <code>new</code> for a fresh one).</li>
+  <li>Inside herdr with no <code>--cwd</code> override → the caller's current workspace.</li>
+  <li>Existing workspace whose cwd equals the <strong>git worktree root</strong> of the agent's
+    cwd (paths compared canonically — symlinks resolved).</li>
+  <li>Existing workspace whose cwd equals the exact cwd.</li>
+  <li>Nearest ancestor workspace, only if it lies within the same git worktree.</li>
+  <li>Otherwise: create a workspace at the git root (or the cwd when not in git), labeled
+    after the directory.</li>
+</ol>
+<p>The matched rule ships in every result as
+<code>workspace_resolution: explicit | current | git_root | exact_cwd | ancestor | created</code>.
+This keeps monorepos from collapsing into one giant workspace and repeated spawns from
+spraying new ones.</p>
+
+<h3>Ownership: how sharing your session stays safe</h3>
+<ul>
+  <li>Every workspace, tab, and pane orcr creates carries a durable machine-readable marker
+    (pane env + herdr agent metadata with orcr as source).</li>
+  <li><code>gc</code>, idle reaping, auto-close, and <code>kill --tree</code> only ever touch
+    marked resources. Your hand-made panes are structurally out of reach.</li>
+  <li>Destructive operations on foreign targets always require <code>--force</code>.</li>
+  <li>Prefer total isolation anyway? <code>[herdr] session = "orcr"</code> in config — one
+    line, everything else works identically.</li>
+</ul>
+
+<h2 id="targets">3 · Targets, ids &amp; contract levels</h2>
+
+<div class="tablewrap">
+<table>
+  <tr><th>form</th><th>example</th><th>meaning</th></tr>
+  <tr><td><code>a&lt;N&gt;</code></td><td><code>a7</code></td><td>orcr-managed agent — monotonic
+    counter, never reused, stable in history forever</td></tr>
+  <tr><td><code>l&lt;N&gt;</code></td><td><code>l2</code></td><td>loop (the durable job)</td></tr>
+  <tr><td>name</td><td><code>impl</code></td><td>a live <code>--name</code> label; typed-id
+    grammar (<code>^[al]\d+$</code>, <code>:t\d+</code>, the word <code>new</code>) is reserved
+    and rejected as a name — and a name held by a live agent can't be reused until it ends</td></tr>
+  <tr><td>herdr target</td><td><code>codex-2</code></td><td>a foreign agent, addressed by its
+    herdr identity (terminal id / agent label), passed through as-is</td></tr>
+  <tr><td><code>a7:t2</code></td><td></td><td>turn sugar, accepted by <code>out</code> and
+    <code>show</code> (same as <code>--turn 2</code>)</td></tr>
+  <tr><td>canonical prefix</td><td><code>orcr:a7</code> · <code>name:impl</code> ·
+    <code>herdr:codex-2</code></td><td>unambiguous forms for scripts — resolution never
+    guesses across namespaces</td></tr>
+</table>
+</div>
+<p>Bare targets resolve <code>orcr id → orcr name → herdr target</code>; any collision is an
+error listing every match with its canonical form (exit 6 family, code
+<code>ambiguous_target</code>). Scripts should use canonical prefixes for anything
+destructive.</p>
+
+<h3>Contract levels</h3>
+<p>The same verbs work on every target, but the guarantees differ — and the difference is
+machine-readable, never silent. Every JSON row/object carries <code>origin</code>,
+<code>contract</code>, and a <code>capabilities</code> map:</p>
+
+<div class="tablewrap">
+<table>
+  <tr><th>contract</th><th>who</th><th>you get</th></tr>
+  <tr><td><code>managed</code></td><td>agents orcr spawned</td><td>everything: run-dir files,
+    turn tracking, lineage, response guarantee, steer/turn semantics, clean kill</td></tr>
+  <tr><td><code>adopted</code></td><td>foreign agents after <code>orcr adopt</code></td>
+    <td>full contract from the next turn onward; history before adoption stays
+    <code>untracked</code> (orcr never fabricates turns it didn't observe)</td></tr>
+  <tr><td><code>foreign</code></td><td>anything herdr detects that orcr didn't start</td>
+    <td>read/steer/wait/attach best-effort: <code>out</code> falls back to transcript adapter
+    or pane scrape (source recorded), <code>wait</code> rides herdr agent states, no run-dir,
+    no turns, kill needs <code>--force</code></td></tr>
+</table>
+</div>
+<p>Commands that need a missing capability fail with
+<code>capability_unavailable</code> + the exact missing key — for scripts that must not
+degrade, <code>out --require-source file</code> turns silent fallbacks into loud errors.</p>
+
+<h2 id="conventions">4 · Global conventions</h2>
+<ul>
+  <li><strong>Output:</strong> concise human text on a TTY; with <code>--json</code>, exactly
+    one envelope object on stdout — <code>{"ok":true,"result":…}</code> or
+    <code>{"ok":false,"error":{"code","message","details"}}</code> — logs on stderr. Exception:
+    <code>events --follow --json</code> streams NDJSON.</li>
+  <li><strong>Exit codes:</strong> <code>0</code> ok · <code>2</code> environment (herdr
+    missing, config, version skew) · <code>3</code> timeout · <code>4</code> blocked ·
+    <code>5</code> killed · <code>6</code> not found · <code>7</code> state conflict ·
+    <code>1</code> other.</li>
+  <li><strong>Stable error codes</strong> in every JSON error: <code>ambiguous_target</code>,
+    <code>state_conflict</code> (with <code>current_status</code> + valid next commands),
+    <code>capability_unavailable</code>, <code>herdr_unreachable</code>,
+    <code>placement_failed</code>, <code>limit_exceeded</code>, <code>lost_pane</code>,
+    <code>lost_session</code>.</li>
+  <li><strong>Durations require units</strong>: <code>45s</code>, <code>20m</code>,
+    <code>3h</code>, <code>30d</code>. Bare numbers are rejected with a hint — never silently
+    interpreted. Milliseconds never appear (herdr's ms timeouts stay internal).</li>
+  <li><strong>Placement echo:</strong> every command that creates or moves anything reports the
+    resolved <code>{session, workspace, tab, pane}</code>.</li>
+  <li><strong>Feature probe:</strong> <code>status --json</code> includes <code>version</code>,
+    <code>schema_version</code>, and a <code>features</code> list, so skills and SDKs detect
+    capabilities without try-and-fail.</li>
+  <li><strong>Future-proofing:</strong> JSON identity objects reserve <code>host</code> (always
+    <code>local</code> today) so remote hosts can arrive without breaking shapes.</li>
+</ul>
+<h2 id="commands">5 · Command reference</h2>
+<p class="legend"><span class="pill core">core</span> the nine commands the skill teaches ·
+<span class="pill adv">advanced</span> real but rare ·
+<span class="pill plumb">plumbing</span> for SDKs and operators</p>
+
+<section class="cmd" id="cmd-run">
+<h3>orcr run <span class="pill core">core</span></h3>
+<p class="oneline">Spawn an agent on any harness, wait for its answer, print it. The better
+<code>-p</code> for every harness.</p>
+<h4>Synopsis</h4>
+<pre><code>orcr run -a &lt;harness&gt; [-p &lt;text&gt; | -f &lt;file|-&gt;]
+         [--name &lt;label&gt;] [--model &lt;m&gt;] [--effort &lt;e&gt;]
+         [--cwd &lt;dir&gt;] [--worktree [&lt;branch&gt;]]
+         [--session &lt;s&gt;] [--workspace &lt;id|label|new&gt;] [--split right|down] [--focus]
+         [--keep] [--timeout &lt;dur&gt;] [--detach|-d]
+         [--parent &lt;id&gt;] [--dry-run] [--mode tui|exec] [--json]</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li><strong>Waits by default</strong>: blocks through the first turn, prints the response
+    body, exits by outcome (0 done · 3 timeout · 4 blocked · 5 killed). Completion means the
+    <em>response file is finalized</em> — herdr's idle signal alone is never enough.</li>
+  <li><code>--detach/-d</code> returns immediately and prints the new id — the fan-out path.
+    <code>--json</code> always carries the id, waiting or not.</li>
+  <li>Auto-closes the tab after the response is finalized (never before), recording
+    <code>close_reason</code>. <code>--keep</code> leaves the agent idle for follow-up
+    <code>send --turn</code>s; kept agents reap after config <code>idle_reap</code>.</li>
+  <li>Placement per <a href="#placement">§2</a>; the result reports it in full, plus
+    <code>herdr_server: existing|started|failed</code> when auto-start was involved.</li>
+  <li><code>--worktree</code>: provision a herdr worktree, run there
+    (<code>--cwd</code> alongside it is an error).</li>
+  <li><code>--parent</code> must name a live managed/adopted agent in the same session;
+    depth/tree caps and cycles are rejected before spawning. Inside an orcr agent, lineage is
+    automatic via env.</li>
+  <li><code>--dry-run</code>: resolve placement, validate everything, spawn nothing —
+    the JSON shows exactly what would happen.</li>
+  <li><code>--mode exec</code> (advanced): headless harness invocation for API-billed or
+    ultra-short tasks — still inside a herdr pane, still visible, registered to herdr with
+    orcr as the reporting source.</li>
+  <li>Every spawn injects the env contract (<code>ORCR_ID / ORCR_PARENT / ORCR_DEPTH /
+    ORCR_STORE / ORCR_OUT</code>) so nested <code>orcr run</code> calls self-assemble into a
+    tree.</li>
+</ul>
+<h4>Examples</h4>
+<pre><code># ask codex, get the answer, done
+orcr run -a codex -p "review the diff in this repo" --cwd ~/proj
+
+# fan out three ways, gather later
+orcr run -a claude -p "implement the parser"  --name impl -d --keep
+orcr run -a codex  -p "write property tests"  --name tests -d
+orcr run -a pi     -p "draft the docs"        --name docs -d
+orcr wait impl tests docs --timeout 20m &amp;&amp; orcr out impl --recursive --format path</code></pre>
+<details><summary>JSON result shape</summary>
+<pre><code>{ "ok": true, "result": {
+    "id": "a7", "name": "impl", "harness": "claude", "origin": "orcr",
+    "contract": "managed", "status": "done", "host": "local",
+    "placement": { "session": "herdr", "workspace": "ws3", "tab": "t9", "pane": "p12" },
+    "workspace_resolution": "git_root",
+    "herdr_server": "existing",
+    "turn": { "n": 1, "prompt_path": "…/runs/a7/001-prompt.md" },
+    "response": { "text": "…", "path": "…/runs/a7/001-response.md", "source": "file" },
+    "kept": false, "close_reason": "auto_after_response",
+    "permissions": "bypass"
+} }</code></pre></details>
+</section>
+
+<section class="cmd" id="cmd-ls">
+<h3>orcr ls <span class="pill core">core</span></h3>
+<p class="oneline">One list for everything alive in the session — orcr-managed <em>and</em>
+foreign. Replaces v1's <code>ps</code>, <code>tree</code>, and <code>history</code>.</p>
+<h4>Synopsis</h4>
+<pre><code>orcr ls [--tree] [--all] [--status &lt;s&gt;] [--managed|--foreign]
+        [--harness &lt;h&gt;] [--since &lt;dur&gt;] [--json]</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li>Default: live agents in the target session, merged. The <code>ORIGIN</code> column
+    (<code>orcr</code> / <code>herdr</code>) is always shown; foreign rows display their herdr
+    target, never an <code>a&lt;N&gt;</code>-shaped id.</li>
+  <li><code>--tree</code> renders lineage (foreign agents are roots); <code>--all</code> adds
+    ended agents (the old <code>history</code>); <code>--status blocked</code> is the
+    "who needs me" filter. Filters compose.</li>
+  <li>JSON rows carry <code>origin</code>, <code>contract</code>, and
+    <code>capabilities</code> — scripts filter on those instead of assuming a uniform
+    contract.</li>
+</ul>
+<h4>Examples</h4>
+<pre><code>orcr ls                        # everything alive here, one table
+orcr ls --tree                 # lineage view
+orcr ls --status blocked       # agents waiting on a human
+orcr ls --all --since 2h       # everything, including ended, last two hours
+orcr ls --json | jq '.result.agents[] | select(.origin=="orcr") | .id'</code></pre>
+</section>
+
+<section class="cmd" id="cmd-show">
+<h3>orcr show <span class="pill core">core</span></h3>
+<p class="oneline">Everything about one agent, as one object.</p>
+<h4>Synopsis</h4>
+<pre><code>orcr show &lt;target | target:tN&gt; [--json]</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li>Identity, origin + contract + capabilities, status, placement, cwd, model/effort,
+    timings, exit/close reasons, turns with prompt/response paths and sources, children ids,
+    parent.</li>
+  <li>Foreign targets: everything herdr knows (state, pane, process) plus the capability map —
+    no invented turns or history.</li>
+  <li><code>ls</code> rows and <code>show</code> objects share one schema
+    (<code>show</code> = the expanded form), so SDK types don't fork.</li>
+</ul>
+</section>
+
+<section class="cmd" id="cmd-send">
+<h3>orcr send <span class="pill core">core</span></h3>
+<p class="oneline">Message a live agent: steer it mid-turn, or hand a kept agent its next
+turn.</p>
+<h4>Synopsis</h4>
+<pre><code>orcr send &lt;target&gt; [&lt;text&gt; | -f &lt;file|-&gt;] [--steer | --turn] [--raw]
+          [--wait] [--json]</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li>To a <strong>working</strong> agent = <strong>steer</strong> the current turn: recorded
+    as <code>NNN-prompt.K.md</code>, still exactly one response, and completion re-arms —
+    the turn ends only on the next stable working→idle <em>after the last input</em>. Blocked
+    agents accept steers too (that's how you unstick them).</li>
+  <li>To an <strong>idle kept</strong> agent = the <strong>next turn</strong>
+    (<code>NNN+1-prompt.md</code>).</li>
+  <li>Bare <code>send</code> resolves by live state and says what it did
+    (<code>steered a7 (working)</code>). Scripts and the skill pin intent with
+    <code>--steer</code> / <code>--turn</code>; a mismatch is exit 7 with
+    <code>current_status</code> and the valid alternatives in details.</li>
+  <li>Foreign targets: works when herdr recognizes the pane as an agent. A pane that is
+    <em>not</em> a recognized agent (say, a bare shell) requires <code>--raw</code> — orcr
+    won't type into arbitrary terminals by default.</li>
+  <li>Done/ended target → exit 7; unknown → exit 6.</li>
+</ul>
+<h4>Examples</h4>
+<pre><code>orcr send impl --steer "also handle escaped quotes"
+orcr send impl --turn "now run the full test suite" --wait
+orcr send codex-2 "looks good, continue"      # foreign, herdr-recognized</code></pre>
+</section>
+
+<section class="cmd" id="cmd-wait">
+<h3>orcr wait <span class="pill core">core</span></h3>
+<p class="oneline">Block until agents finish. The fan-in half of fan-out.</p>
+<h4>Synopsis</h4>
+<pre><code>orcr wait &lt;target...&gt; [--any] [--tree] [--timeout &lt;dur&gt;] [--json]</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li>All-of by default; <code>--any</code> returns on the first completion;
+    <code>--tree</code> waits on a node's live descendants too.</li>
+  <li>Managed targets complete when the response file is finalized. Foreign targets ride
+    herdr states: an already-idle foreign target returns immediately (noted in the result);
+    otherwise orcr waits for the next stable working→idle.</li>
+  <li>Timeout → exit 3 with <code>completed / pending / blocked</code> buckets; a blocked
+    target → exit 4 with <code>block_reason</code> when herdr exposes one. If a pane or the
+    session vanishes mid-wait, you get <code>lost_pane</code> / <code>lost_session</code>
+    promptly — never a hang until timeout.</li>
+</ul>
+</section>
+
+<section class="cmd" id="cmd-out">
+<h3>orcr out <span class="pill core">core</span></h3>
+<p class="oneline">Read an agent's answer — the response contract, not a log stream.</p>
+<h4>Synopsis</h4>
+<pre><code>orcr out &lt;target | target:tN&gt; [--turn N] [--recursive]
+         [--format body|path|json] [--require-source file|transcript]</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li>Default: the latest response body. <code>--turn N</code> / <code>:tN</code> select a
+    turn; <code>--recursive</code> walks descendants depth-first;
+    <code>--format path</code> prints <code>id&nbsp;name&nbsp;path</code> lines for piping.</li>
+  <li>Provenance is explicit: each item reports <code>source: file | transcript | scrape</code>.
+    Foreign targets fall back to the harness transcript adapter, else a pane scrape —
+    <code>--require-source</code> makes scripts fail loudly instead of consuming
+    low-confidence text.</li>
+  <li>Raw screen content is deliberately out of scope — that's
+    <code>herdr pane read</code>.</li>
+</ul>
+</section>
+
+<section class="cmd" id="cmd-attach">
+<h3>orcr attach <span class="pill core">core</span></h3>
+<p class="oneline">Go look at it. The moat in one verb.</p>
+<h4>Synopsis</h4>
+<pre><code>orcr attach &lt;target&gt; [--takeover]</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li>Inside a herdr client: focuses the agent's tab. In a plain terminal: hands this terminal
+    to the pane (herdr's attach; detach returns you here).</li>
+  <li>Default is observe; <code>--takeover</code> claims input — and is required for foreign
+    targets, so you never accidentally type into someone's session.</li>
+</ul>
+</section>
+
+<section class="cmd" id="cmd-kill">
+<h3>orcr kill <span class="pill core">core</span></h3>
+<p class="oneline">Stop execution: graceful per-harness exit, then close the pane.</p>
+<h4>Synopsis</h4>
+<pre><code>orcr kill &lt;target...&gt; [--tree] [--force] [--json]</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li>Managed: run the harness's graceful shutdown recipe (~5s deadline), then close the
+    orcr-owned pane and tab. Status <code>killed</code>, <code>exit_reason</code> recorded.
+    The run dir and history remain.</li>
+  <li><code>--tree</code> kills descendants bottom-up — <strong>managed descendants only</strong>
+    by default; foreign nodes in the tree are skipped and listed. Crossing into them takes
+    <code>--force</code>.</li>
+  <li>Foreign targets always require <code>--force</code> (orcr didn't start them), and the
+    result lists exactly which panes were closed vs skipped.</li>
+  <li>Stopping a loop is <code>kill l2</code>; deleting its definition is
+    <code>loop rm l2</code>.</li>
+</ul>
+</section>
+
+<section class="cmd" id="cmd-loop">
+<h3>orcr loop <span class="pill core">core</span></h3>
+<p class="oneline">The one durable job primitive: run an agent on a cadence — or once at a
+time — until a condition. It survives your shell, because the daemon owns it.</p>
+<h4>Synopsis</h4>
+<pre><code>orcr loop add ("&lt;cron&gt;" | --every &lt;dur&gt; | --once-at &lt;time&gt;)
+              -a &lt;harness&gt; (-p &lt;text&gt; | -f &lt;file&gt;)
+              [--max &lt;n&gt;] [--until &lt;regex&gt;] [--key &lt;k&gt;]
+              [--catchup skip|once] [--expires &lt;dur&gt;] [run-flags…]
+orcr loop ls | show &lt;id&gt; | pause &lt;id&gt; | resume &lt;id&gt; [--once-at &lt;time&gt;] | rm &lt;id&gt;</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li>Three cadence forms: five-field cron (stored UTC, confirmations echo local <em>and</em>
+    UTC), <code>--every</code> intervals (measured from tick completion), and one-shot
+    <code>--once-at</code> (RFC3339 or friendly forms). The <code>once</code> is in the flag
+    name on purpose — a one-shot is a loop that fires exactly once, and the confirmation says
+    so ("fires once at …, then ends"). Re-arm a fired one-shot with
+    <code>resume --once-at</code>.</li>
+  <li><code>--max</code> and <code>--until &lt;regex&gt;</code> (matched against each tick's
+    response file) are <em>termination policy</em>. <code>--every 20m --max 20 --until
+    "ALL PASS"</code> is the durable fix-until-green loop.</li>
+  <li>Each tick spawns a fresh agent with the loop's prompt and run-flags; ticks show up in
+    <code>ls --tree</code> under the loop node <code>l&lt;N&gt;</code>. There is no built-in
+    judge — a tick that needs one spawns it (the tick agent has the CLI too), or you use the
+    worker/judge recipe in <a href="#sdk">§7</a>.</li>
+  <li><code>-f</code> prompt files are re-read every tick — edit a running loop's
+    instructions without touching it.</li>
+  <li><code>--key</code> makes creation idempotent: retrying <code>add --key nightly-triage</code>
+    returns the existing <code>l&lt;N&gt;</code> instead of a duplicate (agents retry; loops
+    shouldn't multiply).</li>
+  <li>Missed ticks (laptop asleep, daemon down): <code>--catchup skip</code> (default) or
+    <code>once</code>. Recurring loops run until removed; <code>--expires</code> opts into
+    auto-expiry. Creation always prints the cadence in words and the exact cancel command.</li>
+</ul>
+<h4>Examples</h4>
+<pre><code>orcr loop add "0 9 * * 1-5" -a claude -p "triage new issues" --key triage
+orcr loop add --every 20m -a claude -f fix-tests.md --max 20 --until "ALL PASS"
+orcr loop add --once-at "tomorrow 07:00" -a codex -p "run the release checklist"</code></pre>
+</section>
+
+<section class="cmd" id="cmd-adopt">
+<h3>orcr adopt <span class="pill adv">advanced</span></h3>
+<p class="oneline">Promote a hand-started herdr agent to orcr-managed.</p>
+<h4>Synopsis</h4>
+<pre><code>orcr adopt &lt;herdr-target&gt; [--name &lt;label&gt;] [--json]</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li>Assigns an <code>a&lt;N&gt;</code> id immediately; the full contract (turn files,
+    response guarantee, lineage) starts with the <em>next</em> orcr-initiated turn after the
+    agent is idle. Until then the contract reads <code>adopted</code> with
+    <code>pending: true</code>.</li>
+  <li>Nothing is back-filled: pre-adoption output stays <code>untracked</code>. Adopting
+    mid-turn never splices into a turn orcr didn't start.</li>
+  <li>Foreign targets already work degraded without adoption — adopt when you want stable ids,
+    run-dir files, and multi-turn tracking on an agent you started by hand.</li>
+</ul>
+</section>
+
+<section class="cmd" id="cmd-status">
+<h3>orcr status <span class="pill plumb">plumbing</span></h3>
+<p class="oneline">One health probe for the whole stack.</p>
+<h4>Synopsis</h4>
+<pre><code>orcr status [--json]</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li>Reports: orcr version + <code>schema_version</code> + <code>features</code> list, store
+    path and lock state, daemon (running / pid / pending loops + next fire), herdr binary +
+    version, target session and server reachability, live agent counts by status (blocked
+    agents named), reconciliation drift.</li>
+  <li>This <em>is</em> the daemon status — there is no separate
+    <code>daemon status</code> to remember.</li>
+</ul>
+</section>
+
+<section class="cmd" id="cmd-daemon">
+<h3>orcr daemon <span class="pill adv">advanced</span></h3>
+<p class="oneline">Control the background supervisor (it normally manages itself).</p>
+<h4>Synopsis</h4>
+<pre><code>orcr daemon start | stop</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li>Auto-starts on demand — the first <code>loop add</code>, detached-run timeout, or
+    kept-agent reap that needs it. Manual control is for operators.</li>
+  <li>The daemon owns: loop execution, idle reaping, timeout enforcement for detached
+    runs, reconciliation after herdr restarts — and is the single writer for durable job
+    state (foreground verbs coordinate through it when it's up, a store lock when not).</li>
+  <li>Named <code>daemon</code> deliberately: <code>herdr server</code> is the substrate,
+    <code>orcr daemon</code> is the supervisor. Two words, two processes.</li>
+</ul>
+</section>
+
+<section class="cmd" id="cmd-top">
+<h3>orcr top <span class="pill adv">advanced</span></h3>
+<p class="oneline">A live tree TUI for orcr state — turns, lineage, loops, blocked
+waits.</p>
+<h4>Synopsis</h4>
+<pre><code>orcr top [--pane]</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li>For SSH boxes and plain terminals where the herdr UI isn't in front of you; inside
+    herdr, <code>--pane</code> opens it as a split. Keys: Enter attach · s send · k/K kill ·
+    o open response · q quit.</li>
+  <li>Nothing auto-opens it anymore — agents now live in your visible session, so herdr
+    itself is the default viewer (v1's auto-viewer pane is gone).</li>
+</ul>
+</section>
+
+<section class="cmd" id="cmd-gc">
+<h3>orcr gc <span class="pill plumb">plumbing</span></h3>
+<p class="oneline">Reconcile recorded state with herdr reality.</p>
+<h4>Synopsis</h4>
+<pre><code>orcr gc [--dry-run] [--json]</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li>Diffs the store against the live session: orcr-marked panes unknown to the store are
+    closed; recorded agents whose panes vanished are marked <code>lost</code>; dead session
+    registrations are dropped. Reports every action (start with <code>--dry-run</code>).</li>
+  <li>Structurally incapable of touching unmarked (user-created) panes, tabs, or
+    workspaces.</li>
+</ul>
+</section>
+
+<section class="cmd" id="cmd-events">
+<h3>orcr events <span class="pill plumb">plumbing</span></h3>
+<p class="oneline">The append-only event feed — what the TUI and SDKs subscribe to.</p>
+<h4>Synopsis</h4>
+<pre><code>orcr events [--follow] [--json]</code></pre>
+<h4>Behavior</h4>
+<ul>
+  <li>Spawns, status changes, turns, steers, loop ticks, reconciliation actions.
+    <code>--follow --json</code> streams NDJSON (<code>{type, id, time, payload}</code> per
+    line) — the one exception to the single-object rule.</li>
+</ul>
+</section>
+
+<h2 id="cut">6 · What was cut — and its replacement</h2>
+<p>The v1 surface had 20 verbs; v2 has 15 (9 core). The test for every cut: can it be rebuilt
+from the outside with the remaining primitives? If yes, it's a recipe or SDK helper, not a
+command.</p>
+
+<div class="tablewrap">
+<table>
+  <tr><th>v1</th><th>v2 replacement</th><th>why</th></tr>
+  <tr><td><code>loop</code> + <code>schedule</code> (two verbs)</td><td>one <code>loop</code>
+    primitive: <code>--every</code>/cron cadence, <code>--once-at</code> one-shots,
+    <code>--max</code>/<code>--until</code> termination</td><td>both were "run an agent on a
+    cadence with a stop rule"; one noun, honestly named for the headline case, with one-shots
+    explicit in the flag</td></tr>
+  <tr><td><code>goal</code></td><td>recipe (below) + SDK helper <code>iterateUntil()</code></td>
+    <td>worker/judge iteration is orchestration <em>policy</em> — exactly what run/send/wait/out
+    exist to express</td></tr>
+  <tr><td><code>workflow run</code></td><td>run your script; the env contract already parents
+    every <code>orcr run</code> inside it. Grouping/orphan-cleanup sugar → SDK
+    <code>withGroup()</code></td><td>"execute a script" needs no wrapper verb</td></tr>
+  <tr><td><code>job ls/show/pause/resume/rm</code></td><td><code>loop …</code> subcommands</td>
+    <td>only one durable job type remains</td></tr>
+  <tr><td><code>ps</code> / <code>tree</code> / <code>history</code></td>
+    <td><code>ls</code> / <code>ls --tree</code> / <code>ls --all</code></td>
+    <td>one list, three views</td></tr>
+  <tr><td><code>serve</code>, <code>status</code>+serve health</td><td><code>daemon
+    start|stop</code> + a single <code>status</code></td><td>one health command; manual daemon
+    control is an operator concern</td></tr>
+  <tr><td>auto-viewer pane</td><td>gone — herdr's own UI is the viewer;
+    <code>top</code> stays explicit</td><td>agents are visible in your real session now</td></tr>
+  <tr><td>dedicated hidden <code>orcr</code> session</td><td>your default session + ownership
+    markers; isolation is one config line</td><td>visibility is the product</td></tr>
+</table>
+</div>
+
+<h3>The goal recipe (worker + independent judge)</h3>
+<pre><code>orcr run -a claude -p "$(cat goal.md)" --name worker --keep -d
+for i in 1 2 3 4 5; do
+  orcr wait worker --timeout 15m
+  verdict=$(orcr run -a codex -p "Judge against goal.md. First line: PASS or FAIL: reasons.
+$(orcr out worker)")
+  case "$verdict" in PASS*) break;; esac
+  orcr send worker --turn "Judge feedback — address and retry: ${verdict#FAIL:}"
+done
+orcr kill worker</code></pre>
+<p class="legend">Ships as a documented recipe and an SDK helper — outside the CLI, inside the
+product.</p>
+
+<h3>Deliberately not added</h3>
+<ul>
+  <li><strong>No coordination layer</strong> (orca-style inboxes, asks, decision gates, task
+    boards). orcr is the terminal/session substrate; coordination composes on top via files
+    and the SDK, against stable ids, lineage, run dirs, and the event stream.</li>
+  <li><strong>No remote hosts, no permission broker — yet.</strong> The JSON shapes reserve
+    room (<code>host</code>, capability maps, <code>blocked</code> semantics) so both can land
+    without new verb sprawl.</li>
+</ul>
+
+<h2 id="sdk">7 · SDK: the six workflow patterns</h2>
+
+<p>The SDK (TypeScript + Python) is a thin typed wrapper over <code>orcr … --json</code> — no
+private protocol, nothing you couldn't do in shell. The surface used below:</p>
+
+<div class="tablewrap">
+<table>
+  <tr><th>SDK</th><th>wraps</th><th>notes</th></tr>
+  <tr><td><code>orcr.run(opts) → Agent</code></td><td><code>run</code></td><td>waits and
+    resolves with the response by default; <code>detach: true</code> resolves immediately with
+    a live handle; <code>keep: true</code> for multi-turn workers</td></tr>
+  <tr><td><code>agent.out() / .turn(p) / .steer(p) / .wait() / .kill() / .show()</code></td>
+    <td><code>out send wait kill show</code></td><td><code>.turn()</code> resolves with that
+    turn's response</td></tr>
+  <tr><td><code>orcr.wait(agents, opts)</code></td><td><code>wait</code></td>
+    <td><code>{any, tree, timeout}</code></td></tr>
+  <tr><td><code>orcr.loop.add(opts) → Loop</code></td><td><code>loop add</code></td>
+    <td>durable — the daemon owns it, your process can exit</td></tr>
+  <tr><td><code>orcr.withGroup(label, fn)</code></td><td>env contract</td><td>parents every
+    spawn inside <code>fn</code> to one group node; kills orphans on throw</td></tr>
+</table>
+</div>
+
+<p>Every pattern below runs agents as real, visible herdr tabs — you can watch any step of any
+workflow live, attach, and steer it mid-flight. That composability question — "can a workflow
+do its steps, consolidate, then set up a loop and <em>leave</em>?" — is pattern 6b: everything
+before <code>loop.add</code> is your process; everything after belongs to the daemon.</p>
+
+<h3>1 · Classify-and-act</h3>
+<pre><code>import { orcr } from "@orchestratr/sdk";
+
+const routes = {
+  bug:     { harness: "claude", prompt: (t) =&gt; `Reproduce, then fix this bug:\n${t}` },
+  feature: { harness: "codex",  prompt: (t) =&gt; `Implement with tests:\n${t}` },
+  docs:    { harness: "pi",     prompt: (t) =&gt; `Write the docs for:\n${t}` },
+};
+
+const cls = await orcr.run({
+  harness: "claude", model: "haiku",           // cheap classifier
+  prompt: `Classify as exactly one word — bug, feature, or docs:\n${task}`,
+});
+const route = routes[cls.response.text.trim().toLowerCase()] ?? routes.bug;
+const result = await orcr.run({ harness: route.harness, prompt: route.prompt(task), cwd });
+console.log(result.response.text);</code></pre>
+
+<h3>2 · Fanout-and-synthesize</h3>
+<pre><code>const angles = ["security", "performance", "API design", "test coverage"];
+
+const reviewers = await Promise.all(angles.map(a =&gt; orcr.run({
+  harness: "codex", cwd, detach: true, name: `rev-${a.replace(/\W+/g, "-")}`,
+  prompt: `Review this repo strictly for ${a}. End with a ranked findings list.`,
+})));
+
+await orcr.wait(reviewers, { timeout: "20m" });
+const reports = await Promise.all(reviewers.map(async r =&gt; `## ${r.name}\n${await r.out()}`));
+
+const synthesis = await orcr.run({ harness: "claude", prompt:
+  `Merge these review reports into one deduplicated, severity-ranked report:\n\n${reports.join("\n\n")}` });
+console.log(synthesis.response.text);</code></pre>
+
+<h3>3 · Adversarial verification</h3>
+<pre><code>const worker = await orcr.run({ harness: "claude", cwd, keep: true, name: "worker",
+                                prompt: taskPrompt });
+let answer = worker.response.text;
+
+for (let round = 0; round &lt; 3; round++) {
+  const verdicts = await Promise.all([1, 2, 3].map(() =&gt; orcr.run({
+    harness: "codex", cwd,                      // different harness = independent eyes
+    prompt: `Try hard to REFUTE this solution. First line: "REFUTED: &lt;why&gt;" or "HOLDS".\n\n${answer}`,
+  })));
+  const refuted = verdicts.filter(v =&gt; v.response.text.startsWith("REFUTED"));
+  if (refuted.length &lt;= 1) break;               // survives a majority of skeptics
+
+  answer = (await worker.turn(
+    `Independent verifiers refuted your solution:\n` +
+    refuted.map(v =&gt; v.response.text).join("\n") + `\nAddress every point and answer again.`,
+  )).text;
+}
+await worker.kill();</code></pre>
+
+<h3>4 · Generate-and-filter</h3>
+<pre><code>const generators = await Promise.all(Array.from({ length: 5 }, (_, i) =&gt; orcr.run({
+  harness: i % 2 ? "codex" : "claude",          // mixed harnesses = diverse ideas
+  detach: true, name: `gen-${i}`,
+  prompt: `Propose 3 genuinely distinct approaches for: ${brief}. One per "## Idea" section.`,
+})));
+await orcr.wait(generators);
+
+const ideas = (await Promise.all(generators.map(g =&gt; g.out()))).join("\n\n---\n\n");
+const best = await orcr.run({ harness: "claude", prompt:
+  `Candidate approaches:\n${ideas}\n\n` +
+  `Dedupe near-identical ideas, score each against this rubric: ${rubric}. ` +
+  `Return the top 2 verbatim with scores; list the discards in one line each.` });</code></pre>
+
+<h3>5 · Tournament</h3>
+<pre><code>const seeds = ["MVP-first", "risk-first", "user-first", "perf-first"];
+const attempts = await Promise.all(seeds.map(angle =&gt; orcr.run({
+  harness: "claude", detach: true, name: angle,
+  prompt: `Design the solution ${angle}: ${brief}`,
+})));
+await orcr.wait(attempts);
+
+let pool = await Promise.all(attempts.map(async a =&gt; ({ name: a.name, text: await a.out() })));
+while (pool.length &gt; 1) {                       // pairwise judge bracket
+  const next = [];
+  for (let i = 0; i &lt; pool.length; i += 2) {
+    const j = await orcr.run({ harness: "codex", prompt:
+      `Which design better serves "${brief}"? First line exactly A or B, then why.\n\n` +
+      `A (${pool[i].name}):\n${pool[i].text}\n\nB (${pool[i+1].name}):\n${pool[i+1].text}` });
+    next.push(j.response.text.trimStart().startsWith("B") ? pool[i+1] : pool[i]);
+  }
+  pool = next;
+}
+console.log(`winner: ${pool[0].name}\n\n${pool[0].text}`);</code></pre>
+
+<h3>6 · Loop until done — and 6b: set it up and leave</h3>
+<pre><code>// 6 — foreground: keep rounds going until two consecutive rounds find nothing new
+let dry = 0;
+while (dry &lt; 2) {
+  const r = await orcr.run({ harness: "codex", cwd, prompt:
+    `Hunt for bugs NOT already listed in findings.md; append new ones there. ` +
+    `Reply exactly NONE if you found nothing new.` });
+  dry = r.response.text.includes("NONE") ? dry + 1 : 0;
+}
+
+// 6b — the durable handoff: do the steps, consolidate, then LEAVE.
+// Everything above ran in this process; the loop below outlives it.
+await orcr.loop.add({
+  every: "30m", harness: "codex", cwd,
+  promptFile: "findings.md",                    // re-read every tick — steer by editing it
+  until: "ALL RESOLVED", max: 48, key: "burn-down",
+});
+process.exit(0);   // daemon owns it now — check in later: orcr loop ls · orcr ls --tree</code></pre>
+
+<p class="legend">Patterns compose: a tournament can seed pattern 3's worker; any tick of a
+durable loop can itself run pattern 2, because the tick agent has the CLI too. The v1
+<code>goal</code> verb is pattern 3 with one verifier.</p>
+
+<h2 id="config">8 · Configuration</h2>
+<pre><code># ~/.orcr/config.toml — every key optional; defaults shown
+[defaults]
+harness = "claude"
+model   = ""          # empty = harness default
+effort  = ""
+timeout = "10m"
+keep    = false
+
+[limits]
+max_depth           = 3
+max_agents_per_tree = 10
+max_concurrent      = 4
+idle_reap           = "15m"
+
+[herdr]
+bin     = ""          # empty = $ORCR_HERDR_BIN → $PATH
+session = ""          # "" = herdr's default session · set "orcr" for full isolation
+
+[placement]
+workspace = "auto"    # auto | current | git-root | cwd | new | &lt;label&gt;
+container = "tab"     # tab | split</code></pre>
+<p><code>ORCR_STORE</code> relocates the whole store (tests and sandboxes rely on it);
+<code>ORCR_SESSION</code> overrides the session per-invocation.</p>
+
+<h2 id="adjudication">9 · Design-review adjudication</h2>
+<p>The draft went through four independent design reviews, each with a different lens:
+<strong>LLM-caller ergonomics</strong>, <strong>human CLI conventions</strong>,
+<strong>systems correctness / herdr integration</strong>, and <strong>minimalism /
+extensibility</strong>. What they changed:</p>
+
+<h3>Adopted from review</h3>
+<ul>
+  <li><strong>Contract levels + capability maps</strong> on every target (three reviews rated
+    silent managed/foreign polymorphism the top risk). Degradation is now always
+    machine-readable, and <code>--require-source</code> exists.</li>
+  <li><strong>Git-root-first workspace matching</strong> with canonical paths and a reported
+    resolution reason (all four flagged exact/ancestor matching as monorepo-hostile).</li>
+  <li><strong>One <code>status</code></strong> — the separate <code>daemon status</code> was
+    unanimously called a distinction users shouldn't learn.</li>
+  <li><strong>Ownership markers</strong> for everything orcr creates; gc/reap/kill are
+    structurally scoped to them. <code>kill --tree</code> stops at foreign nodes by
+    default.</li>
+  <li><strong>Foreign-input safety</strong>: <code>send --raw</code> gate for unrecognized
+    panes; <code>attach --takeover</code> required for foreign targets.</li>
+  <li><strong>Adoption semantics</strong> hardened: id now, contract from next idle +
+    orcr-initiated turn, zero history reconstruction.</li>
+  <li><strong>Lifecycle honesty</strong>: auto-close only after the response is finalized;
+    <code>lost_pane</code>/<code>lost_session</code> fail fast instead of hanging;
+    <code>herdr_server: existing|started|failed</code> reported on auto-start.</li>
+  <li><strong><code>loop --key</code></strong> idempotency (retrying agents were creating
+    duplicate jobs); <code>--parent</code> validity rules; required duration units;
+    <code>run --dry-run</code>; feature probe in <code>status --json</code>; reserved
+    <code>host</code> field.</li>
+</ul>
+
+<h3>Adjudicated against (with reasons)</h3>
+<ul>
+  <li><strong>"Default plain-terminal spawns to an isolated <code>orcr</code> session"</strong>
+    (systems review). Rejected: visibility in the user's real session is the product's core
+    promise; the blast-radius concerns are answered with ownership markers, force-gated
+    foreign ops, and the one-line isolation config. The dissent is recorded — if markers prove
+    insufficient in practice, this is the first decision to revisit.</li>
+  <li><strong>"Make <code>ls --json</code> managed-only by default"</strong> (LLM-ergonomics
+    review). Rejected: seeing everything is the moat; safety comes from
+    origin/contract fields + capability errors + force gates, not from hiding rows.</li>
+  <li><strong>"Rename <code>out</code> → <code>logs</code>"</strong> (two reviews). Rejected:
+    <code>out</code> returns the final-answer contract, not a stream; <code>logs</code> would
+    promise docker-style tailing that <code>herdr pane read</code> already owns. Discoverability
+    is handled in <code>--help</code> ("read an agent's answer").</li>
+  <li><strong>"Add an automation mode env-var that flips defaults"</strong>. Rejected: two
+    default-sets is how CLIs become unpredictable; instead, the skill teaches explicit flags
+    (<code>--json</code>, pinned intent, canonical targets).</li>
+</ul>
+
+<h3>Post-review naming call</h3>
+<p>The durable primitive shipped in the reviewed draft as <code>schedule</code>; it was
+renamed <code>loop</code> afterward (owner's call): the headline use — iterate until a
+condition — <em>is</em> loop engineering, and the name should say so. The one place the name
+could mislead, one-shots, is defused by putting the semantics in the flag
+(<code>--once-at</code>) and in the confirmation output.</p>
+
+<p class="legend">Full review transcripts live alongside the spec; every remaining open
+question is intentionally none.</p>
+
+<footer style="margin-top:4rem;border-top:1px solid var(--line);padding-top:1rem">
+  <p class="legend">orcr · orchestrate coding agents across harnesses, on herdr ·
+  reference is a draft — comment freely and export for Claude when done.</p>
+</footer>
+</div>
+
+<script>
+(function(){
+const LS = 'orcr-cliref-comments-v1';
+const load = () => { try { return JSON.parse(localStorage.getItem(LS)) || []; } catch(e){ return []; } };
+const save = (c) => { localStorage.setItem(LS, JSON.stringify(c)); renderSidebar(); };
+let comments = load();
+
+/* ---------- selection commenting ---------- */
+const bubble = document.createElement('div'); bubble.id = 'selbubble';
+bubble.innerHTML = '<button>💬 Comment</button>';
+document.body.appendChild(bubble);
+let pendingSel = null;
+function hideBubble(){ bubble.style.display = 'none'; pendingSel = null; }
+function sectionFor(node){
+  let el = node && node.nodeType === 1 ? node : (node ? node.parentElement : null);
+  if (el){
+    const cmd = el.closest('section.cmd');
+    if (cmd){ const h = cmd.querySelector('h3'); return h ? h.textContent.replace(/\s+/g,' ').trim().split(' ').slice(0,2).join(' ') : cmd.id; }
+  }
+  let section = 'general';
+  const heads = [...document.querySelectorAll('.wrap h2')];
+  let y = 0;
+  try { const sel = window.getSelection(); y = sel.getRangeAt(0).getBoundingClientRect().top + window.scrollY; } catch(e){}
+  for (const h of heads){ if (h.offsetTop <= y) section = h.textContent.trim(); }
+  return section;
+}
+document.addEventListener('mouseup', (e) => {
+  if (bubble.contains(e.target) || form.contains(e.target) || sidebar.contains(e.target)) return;
+  setTimeout(() => {
+    const sel = window.getSelection();
+    const text = sel ? sel.toString().trim() : '';
+    if (!text || text.length < 3){ hideBubble(); return; }
+    const range = sel.getRangeAt(0);
+    const node = range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement;
+    pendingSel = { type:'sel', section: sectionFor(node), quote: text.slice(0,240) };
+    const r = range.getBoundingClientRect();
+    bubble.style.left = Math.min(r.right + 6, window.innerWidth - 130) + 'px';
+    bubble.style.top = Math.max(8, r.top - 34) + 'px';
+    bubble.style.display = 'block';
+  }, 10);
+});
+bubble.querySelector('button').addEventListener('click', () => {
+  if (pendingSel){ const r = bubble.getBoundingClientRect(); showForm(pendingSel, r.left, r.top + 30); }
+  hideBubble();
+});
+['scroll','resize'].forEach(ev => window.addEventListener(ev, hideBubble, {passive:true}));
+
+/* ---------- comment form ---------- */
+const form = document.createElement('div'); form.id = 'cform';
+form.innerHTML = '<div class="target"></div><textarea placeholder="Your review comment…"></textarea>' +
+  '<div class="row"><button class="btn" id="ccancel">Cancel</button><button class="btn primary" id="csave">Save</button></div>';
+document.body.appendChild(form);
+let pendingTarget = null;
+function anchorLabel(t){ return '§ ' + (t.section || 'general'); }
+function showForm(target, x, y){
+  pendingTarget = target;
+  form.querySelector('.target').textContent = anchorLabel(target) + (target.quote ? '  ·  “' + target.quote.slice(0,140) + '”' : '');
+  form.style.display = 'block';
+  const fw = Math.min(400, window.innerWidth*0.9);
+  form.style.left = Math.min(x || 80, window.innerWidth - fw - 16) + 'px';
+  form.style.top = Math.min((y || 120) + 8, window.innerHeight - 240) + 'px';
+  form.querySelector('textarea').value = ''; form.querySelector('textarea').focus();
+}
+function hideForm(){ form.style.display = 'none'; pendingTarget = null; }
+form.querySelector('#ccancel').addEventListener('click', hideForm);
+form.querySelector('#csave').addEventListener('click', () => {
+  const text = form.querySelector('textarea').value.trim();
+  if (text && pendingTarget){
+    comments.push({ id: Date.now(), ts: new Date().toISOString(), target: pendingTarget, text });
+    save(comments);
+    sidebar.classList.add('open');
+  }
+  hideForm();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape'){ hideForm(); hideBubble(); sidebar.classList.remove('open'); } });
+
+/* ---------- sidebar ---------- */
+const tab = document.createElement('button'); tab.id = 'sb-tab';
+document.body.appendChild(tab);
+const sidebar = document.createElement('div'); sidebar.id = 'sidebar';
+sidebar.innerHTML = '<div class="shead"><strong>Review comments</strong>' +
+  '<span style="margin-left:auto"></span><button class="btn" id="sgeneral">+ general</button>' +
+  '<button class="btn" id="sclose">✕</button></div>' +
+  '<div class="sbody"></div>' +
+  '<div class="sfoot"><button class="btn primary" id="sexport">Export for Claude</button>' +
+  '<button class="btn" id="sdownload">Download .md</button>' +
+  '<button class="btn" id="sclear">Clear all</button></div>' +
+  '<div id="exportbox"><p style="font-size:.78rem;margin:.2rem 0 .4rem">Copied to clipboard (also below) — paste it to Claude in chat:</p><textarea readonly></textarea></div>';
+document.body.appendChild(sidebar);
+tab.addEventListener('click', () => sidebar.classList.toggle('open'));
+sidebar.querySelector('#sclose').addEventListener('click', () => sidebar.classList.remove('open'));
+sidebar.querySelector('#sgeneral').addEventListener('click', () => showForm({type:'sel', section:'general'}, window.innerWidth - 440, 120));
+
+function renderSidebar(){
+  tab.textContent = '💬 ' + comments.length + ' comments';
+  const body = sidebar.querySelector('.sbody');
+  body.innerHTML = comments.length ? '' :
+    '<p style="font-size:.82rem;color:var(--ink-soft)">No comments yet. Select any text on the page and hit 💬 Comment.</p>';
+  comments.forEach(c => {
+    const d = document.createElement('div'); d.className = 'sitem';
+    const acts = document.createElement('span'); acts.className = 'acts';
+    const edit = document.createElement('button'); edit.textContent = '✎'; edit.title = 'edit';
+    const del = document.createElement('button'); del.textContent = '✕'; del.className = 'del'; del.title = 'delete';
+    acts.append(edit, del);
+    const a = document.createElement('span'); a.className = 'anchor'; a.textContent = anchorLabel(c.target);
+    const q = document.createElement('div');
+    if (c.target.quote){ q.className = 'quote'; q.textContent = '“' + c.target.quote + '”'; q.title = c.target.quote; }
+    const p = document.createElement('div'); p.textContent = c.text;
+    del.addEventListener('click', () => { comments = comments.filter(x => x.id !== c.id); save(comments); });
+    edit.addEventListener('click', () => {
+      if (d.querySelector('textarea')) return;
+      const ta = document.createElement('textarea'); ta.value = c.text;
+      const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:.4rem;justify-content:flex-end;margin-top:.3rem';
+      const sv = document.createElement('button'); sv.className = 'btn primary'; sv.textContent = 'Save';
+      const cx = document.createElement('button'); cx.className = 'btn'; cx.textContent = 'Cancel';
+      row.append(cx, sv);
+      p.replaceWith(ta); d.appendChild(row); ta.focus();
+      sv.addEventListener('click', () => { c.text = ta.value.trim() || c.text; save(comments); });
+      cx.addEventListener('click', () => renderSidebar());
+    });
+    d.append(acts, a);
+    if (c.target.quote) d.appendChild(q);
+    d.appendChild(p);
+    body.appendChild(d);
+  });
+}
+function buildMd(){
+  const lines = ['# Review comments — orcr CLI reference v2', ''];
+  comments.forEach(c => {
+    lines.push('- **[' + anchorLabel(c.target) + ']**' + (c.target.quote ? ' — re: “' + c.target.quote.slice(0,160) + '”' : ''));
+    c.text.split('\n').forEach(t => lines.push('  ' + t));
+  });
+  return lines.join('\n');
+}
+sidebar.querySelector('#sexport').addEventListener('click', () => {
+  const md = buildMd();
+  const box = sidebar.querySelector('#exportbox'); const ta = box.querySelector('textarea');
+  ta.value = md; box.style.display = 'block'; ta.focus(); ta.select();
+  if (navigator.clipboard) navigator.clipboard.writeText(md).catch(()=>{});
+});
+sidebar.querySelector('#sdownload').addEventListener('click', () => {
+  const blob = new Blob([buildMd()], {type: 'text/markdown'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'orcr-cliref-comments.md'; a.click(); URL.revokeObjectURL(a.href);
+});
+sidebar.querySelector('#sclear').addEventListener('click', () => {
+  comments = []; save(comments); sidebar.querySelector('#exportbox').style.display = 'none';
+});
+renderSidebar();
+})();
+</script>
