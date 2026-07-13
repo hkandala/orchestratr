@@ -348,12 +348,11 @@ Injected into every managed agent pane and every loop-run command:
 
 ```
 ORCR_ID           this agent's uuid — or, in a loop-run command, the run's uuid
-ORCR_PATH         this agent's absolute path — or, for a loop-run command, the
-                  run's absolute scope <loop_name>/<run_id> (a run is a directory,
-                  not an agent, so its "path" has no name segment; agents it
-                  creates get full paths beneath it)
+ORCR_PATH         your absolute path, always ending in your own leaf: for an agent
+                  that's its name (review/fanout/file_1); for a loop-run command
+                  it's the run id (nightly/r82c9s) — same shape in both cases
 ORCR_PARENT_ID    the uuid of the context that spawned this agent (unset at root)
-ORCR_PARENT_PATH  the absolute path / run scope of that context (unset at root)
+ORCR_PARENT_PATH  the parent context's absolute path (unset at root)
 ORCR_AGENT_DATA_DIR this agent's data dir (§8) — the data tree mirrors the path:
                     ~/.orcr/data/<path segments as folders>/<uuid>
                     (unset in loop-run commands — they aren't agents)
@@ -365,12 +364,18 @@ ORCR_LOOP_DATA_DIR  the LOOP's data dir: ~/.orcr/data/<loop_name> — one shared
 
 All values are absolute.
 
-Loop-run commands are parentless (their `ORCR_PARENT_*` are unset) but **not
-scope-less**: agents they spawn get `ORCR_PARENT_ID`/`ORCR_PARENT_PATH` = the run's
-uuid/path. The caller-scope algorithm, once: resolve `ORCR_ID` — an agent row →
-scope = its path minus name; a loop-run row → scope = the full run path; absent or
-unrecognized → no scope. SDK `orcr.scope()` composes on top; a leading `/` strips
-everything.
+Loop-run commands are parentless (their `ORCR_PARENT_*` are unset); agents they
+spawn get `ORCR_PARENT_ID`/`ORCR_PARENT_PATH` = the run's uuid/path. `ORCR_PATH` is
+the same *shape* everywhere — what differs is how your **scope** is derived from
+it, and that's the deliberate files-vs-directories rule: an **agent is a file**, so
+its scope is its directory (`ORCR_PATH` minus the name — children land as
+*siblings*, `review/worker` spawning `--name child` → `review/child`); a **run is a
+directory**, so its scope is its whole `ORCR_PATH` (children land *inside*,
+`nightly/r82c9s/…`). The caller-scope algorithm, once: resolve `ORCR_ID` — agent
+row → path minus name; loop-run row → the full run path; absent → no scope. SDK
+`orcr.scope()` composes on top; a leading `/` strips everything. (Want children
+*inside* your own path instead of beside you? Say so:
+`--path "$ORCR_PATH/child"`… works because env paths are absolute.)
 
 Everything scope-related derives from the path: an agent's scope = `ORCR_PATH` minus
 the name segment; a loop's name is the first segment of a run path
@@ -1098,11 +1103,15 @@ agent's folder is its path, segment by segment, with the uuid as the last folder
 reused paths never collide, and every generation stays browsable):
 
 ```
-agent  review/fanout/file_1        → ~/.orcr/data/review/fanout/file_1/<uuid>/
-loop   nightly                     → ~/.orcr/data/nightly/          (ORCR_LOOP_DATA_DIR)
-loop   nightly, run r82c9s         → ~/.orcr/data/nightly/r82c9s/   (the run's folder)
-agent  nightly/r82c9s/triage       → ~/.orcr/data/nightly/r82c9s/triage/<uuid>/
-  prompt.md · response.md · memory.md · out/ …   # suggested names — pure convention
+agent  review/fanout/file_1  → data/review/fanout/file_1/<uuid>/
+                                 launch.json · response.md (orcr-written)
+                                 + whatever the agent writes (memory.md, out/ …)
+loop   nightly               → data/nightly/            (ORCR_LOOP_DATA_DIR)
+                                 loop.json · cross-run state the loop keeps
+run    nightly/r82c9s        → data/nightly/r82c9s/
+                                 run.log (the run's JSONL log) · run scratch
+agent  nightly/r82c9s/triage → data/nightly/r82c9s/triage/<uuid>/
+                                 launch.json · response.md · …
 ```
 
 Note the loop case: `ORCR_LOOP_DATA_DIR` points at the **loop's** folder — one
