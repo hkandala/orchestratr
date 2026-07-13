@@ -14,9 +14,9 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
 - Resolution: uuid / unambiguous uuid prefix → any row; fqn → active first, else most
   recent ended. Subtree selectors (segment-boundary matching) for bulk verbs; exact
   targets for singleton verbs.
-- Group inheritance: effective group = inherited prefix + `--group`/`--fqn`; caller
+- Group inheritance: effective group = inherited prefix + `--group` (always relative);
+  `--fqn` always absolute; caller
   resolution by `ORCR_ID` (agent → its group; loop-run handling stubs until M5);
-  leading `/` = absolute.
 
 ### Queue & promotion (spec §5.5)
 - Every run enqueues (`queued`, FIFO `queue_seq`); atomic promotion with capacity

@@ -208,8 +208,13 @@ Every agent has **two identifiers**, and every command accepts either:
 - **Resolution**: a uuid (or unambiguous prefix) resolves to its row directly, active
   or ended — this is how history is addressed. An fqn resolves to the active agent
   first, else the most recent ended agent with that fqn (older reuses: use the uuid,
-  from `ls --all`). `send`/`attach`/`kill` act on **active agents only** — a target
-  that resolves to an ended row is `not_found`/`state_conflict`.
+  from `ls --all`). Results always **say which one you got**: JSON carries
+  `resolved: "active" | "latest_ended"`, and a TTY command that lands on an ended
+  agent prints a stderr note (*"resolved to an ended agent created 14:02 — use the
+  uuid for a specific one"*). `send`/`attach`/`kill` act on **active agents only** —
+  a target that resolves to an ended row is `not_found`/`state_conflict`. Rule of
+  thumb: persist the **uuid** when you mean this exact historical agent; use the
+  **fqn** for the current live role or subtree.
 - `agent run` prints **`<fqn> <uuid>`** on one stdout line (space-separated — `cut`
   friendly; JSON carries both fields).
 - **Prefix vs exact — one rule.** Bulk verbs (`ls`, `wait`, `kill`) treat an fqn
@@ -221,8 +226,7 @@ Every agent has **two identifiers**, and every command accepts either:
 - **Same name = same group, by definition.** No auto-suffixing. And **active loop
   names are reserved as level-1 groups**: while loop `nightly` is active, no agent
   can be created anywhere under `nightly.*` from outside the loop — not via
-  `--group nightly`, not via an absolute `/nightly...` escape, not via `--fqn`
-  (`invalid_name`). Agents land under an active loop only as descendants of one of
+  `--group nightly`, not via `--fqn nightly....` (`invalid_name`). Agents land under an active loop only as descendants of one of
   its own runs (`nightly.<run_id>.…`), so the loop's workspace stays exactly what
   the loop produced. Scripts wanting
   per-run isolation stamp their own suffix (`--group "refactor.$(date +%s)"`).
@@ -233,6 +237,33 @@ underscores → spaces, words title-cased, dots → " / ".
 carries the machine fqn alongside the display form; TTY output always shows the machine
 fqn so prefixes can be copied, not guessed.
 
+**The grammar, in one place** (every surface — CLI validation, SDK, socket schema —
+derives from this block; it is defined nowhere else):
+
+```
+segment   = [a-z0-9_]{1,64}
+group     = segment ("." segment)*        # ≤ 7 segments (8 incl. the name)
+name      = segment                       # auto: "a" + 5 alnum   (a4hg7s)
+fqn       = group "." name                # ≤ 256 chars total
+loop name = segment                       # one segment, mandatory
+run id    = "r" + 5 alnum                 # r82c9s — generated, never user-chosen
+run path  = loop_name "." run_id
+```
+
+**Reserved level-1 names** — who owns each top-level group:
+
+| level-1 segment | user may create groups here? | owned by | what it is |
+| --- | --- | --- | --- |
+| `default` | yes | everyone | where ungrouped agents live |
+| `idle` | no | orcr | the parking workspace (GC) |
+| `unmanaged` | no | orcr | agents you started by hand, auto-tracked |
+| an **active** loop's name | only from inside that loop's runs | the loop | its runs and their agents |
+| an **ended** loop's name | yes | free again | history stays reachable by uuid |
+
+Reserved names are also rejected as *loop* names (a loop called `default` or `idle`
+would make those trees ambiguous). Violations → `invalid_request` with
+`details.reason: "reserved_name"`.
+
 **Inheritance — creation only, and only via `--group`.** Two plain rules:
 
 1. *Creating* an agent inside a managed context nests it automatically: effective
@@ -240,11 +271,11 @@ fqn so prefixes can be copied, not guessed.
    alone if no prefix; `default` if neither). The inherited prefix comes from the
    caller's `ORCR_ID` (§5.3): a loop run contributes its full run path
    `<loop_name>.<run_id>`; an agent contributes its group (fqn minus name); a plain
-   script contributes nothing. A **leading `/` makes `--group` absolute** (`/` is
-   outside the segment charset, so this is unambiguous). `--fqn` is different: it is
-   **always absolute** — you are spelling out the complete identity, so nothing is
-   prefixed and no `/` is needed. The normal style is `--group` + `--name`; reach for
-   `--fqn` only when you already hold a complete path.
+   script contributes nothing. **`--group` is always relative — there is no escape
+   syntax.** The one way to place an agent absolutely is `--fqn <group.name>`, which
+   is **always absolute**: you are spelling out the complete identity, so nothing is
+   ever prefixed. The normal style is `--group` + `--name`; reach for `--fqn` when
+   you need an exact placement.
 2. *Targeting* agents never inherits anything. Whatever fqn you type into `send`,
    `logs`, `wait`, `kill`, `ls`, or `attach` is used exactly as typed — an agent in
    group `review` that runs `orcr agent kill fanout` kills `fanout.*`, not
@@ -543,10 +574,10 @@ stdin — the long-prompt escape hatch (there is no file flag). `-a` is optional
 means the provider on both `run` and `ls`; it falls back to `defaults.agent` in
 config (default `claude`); precedence is CLI > config.
 
-**Naming**: the normal style is `--group` (relative to your context; leading `/`
-for absolute) plus `--name`. `--fqn <group.name>` sets both at once and is **always
-absolute** — no prefixing, no `/` needed; use it only when you hold a complete path.
-Exactly one of `--name`/`--fqn` may be given (`--fqn` and `--group` are mutually
+**Naming**: the normal style is `--group` (always relative to your context) plus
+`--name`. `--fqn <group.name>` sets both at once and is **always absolute** — the
+only way to place an agent at an exact path from inside a nested context. Exactly
+one of `--name`/`--fqn` may be given (`--fqn` and `--group` are mutually
 exclusive).
 
 **run** — **async, always**: validates, enqueues, prints **`<fqn> <uuid>`** on one
@@ -1593,7 +1624,8 @@ agent run        {agent:{uuid,fqn,name,group,group_display,status,agent,managed,
                   cwd,data_dir,queue_position?,parent_id?,parent_fqn?}, permissions:"bypass"}
 agent ask        raw response text on stdout · --json {uuid, fqn, response:{text,final}}
 agent send       {uuid, fqn, delivered_while:"working|idle|parked", input_seq}
-agent logs       {uuid, fqn, entries:[…]} · --last-response {uuid, fqn, response:{text,final}}
+agent logs       {uuid, fqn, resolved:"active|latest_ended", entries:[…]}
+                 · --last-response {uuid, fqn, resolved, response:{text,final}}
 agent wait       {targets:[{uuid,fqn,status,ok,reason,exit_reason?,
                             next:{kind,command}}],
                   all_ok:bool, timed_out:bool, decision_seq}
