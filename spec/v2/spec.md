@@ -538,12 +538,12 @@ reads prefer the native files.
 matching any target, **snapshotted at invocation** (historical ended rows are never
 wait targets; no match at all → exit 6). `--status` (default `idle`) is the status
 being waited for. Semantics per target: `idle` — the latest turn is complete (a parked
-agent is turn-complete by definition; an already-complete agent returns immediately;
-an agent that ended with `exit_reason: completed` — e.g. `gc immediate` closing the
-pane right after capture — **also counts as reached**: its turn completed, which is
-what idle means); `working` — the agent has started working (useful right after
-`send`); `blocked` — needs a human; `ended` — any terminal outcome counts as reached
-(scripts that care read `exit_reason` in the JSON). Returns when **all** targets reach the status.
+agent is turn-complete by definition; an already-complete agent returns immediately);
+`working` — the agent has started working (useful right after `send`); `blocked` —
+needs a human; `ended` — any terminal outcome counts as reached (scripts that care
+read `exit_reason` in the JSON — for `gc immediate` agents, whose pane closes as soon
+as the turn completes and the response is captured, `--status ended` is the natural
+done signal). Returns when **all** targets reach the status.
 Exits: `0` all reached · `4` a target blocked while a non-blocked status was awaited ·
 `5` a target reached a terminal status that precludes the awaited non-terminal status ·
 `3` `--timeout` expired · `6` no target matched. JSON reports every target as
@@ -888,8 +888,9 @@ the skill's `references/patterns.md`, §10.) Two conventions used throughout: gr
 names are **descriptive** (`fix_build`, `review.pr_1423`) — no timestamp suffixes
 needed, since an fqn only has to be unique among *live* agents and these flows clean
 up after themselves (`gc: immediate`, `killOnThrow`, explicit kills); and one-shot
-agents use `gc: "immediate"`, whose completion still satisfies
-`wait({status: "idle"})` (a completed-then-closed agent counts as reached, §6.1).
+`gc: "immediate"` agents are awaited with `wait({status: "ended"})` — their pane
+closes as soon as the turn completes and the response is captured, so `ended`
+(`exit_reason: completed`) *is* the done signal (§6.1).
 
 ### 9.1 Fix-until-green (goal-style: worker + verifier loop)
 
@@ -951,8 +952,9 @@ await orcr.group("review", async () => {
                Write your findings to $ORCR_DATA_DIR/response.md, then say DONE.`,
     })));
 
-  // gc:immediate agents complete → close; "idle" is still satisfied (turn completed)
-  await orcr.agent.wait("review.fanout", { status: "idle" });
+  // gc:immediate → the pane closes once the turn completes and the response is
+  // captured; ended (exit_reason: completed) is the done signal
+  await orcr.agent.wait("review.fanout", { status: "ended" });
 
   const findings = await Promise.all(reviewers.map(async r =>
     `## ${r.fqn}\n` + await readFile(`${r.dataDir}/response.md`, "utf8")));
