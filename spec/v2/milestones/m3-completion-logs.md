@@ -25,8 +25,8 @@ said. M3 ships the turns machinery, `wait`, the claude/codex transcript adapters
   fresh transition, never trust a stale idle.
 
 ### wait (spec §6.1)
-- Targets: subtree selectors + uuids; membership snapshotted at invocation; active
-  agents only. No status flag — one meaning: block until every target **settles**
+- Targets: positional subtree selectors + uuids (absolute) or --group (relative to
+  the caller's context); membership snapshotted at invocation; active agents only. No status flag — one meaning: block until every target **settles**
   (turn complete / ended-completed = success; blocked → exit 4; other terminal →
   exit 5; timeout → 3; no match → 6).
 - Uniform results: one `<fqn> <reason>` line per agent (single token reason:

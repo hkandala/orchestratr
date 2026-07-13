@@ -276,10 +276,15 @@ would make those trees ambiguous). Violations → `invalid_request` with
    is **always absolute**: you are spelling out the complete identity, so nothing is
    ever prefixed. The normal style is `--group` + `--name`; reach for `--fqn` when
    you need an exact placement.
-2. *Targeting* agents never inherits anything. Whatever fqn you type into `send`,
-   `logs`, `wait`, `kill`, `ls`, or `attach` is used exactly as typed — an agent in
-   group `review` that runs `orcr agent kill fanout` kills `fanout.*`, not
-   `review.fanout.*`. (The SDK's `orcr.group()` follows the same two rules.)
+2. *Targeting* follows the same convention — **group = relative, fqn = absolute,
+   always**. Because a group path and an fqn look identical as strings, the choice
+   rides on the parameter: a **positional target** is an fqn (or fqn prefix / uuid)
+   and is taken **absolute, exactly as typed**; the **`--group` flag** (SDK:
+   `{group}`) is taken **relative to your context**, exactly like at creation. An
+   agent in group `review` that runs `orcr agent kill --group fanout` kills
+   `review.fanout.*`; `orcr agent kill fanout.file_1` kills exactly that absolute
+   fqn. In the SDK, omitting the target inside `orcr.group()` means "my whole
+   scope". One rule to remember, not two.
 
 ### 5.2 The owned session & the herdr mapping
 
@@ -561,10 +566,10 @@ orcr agent ask    [-a <provider>] [-p <prompt>] [--model <m>] [--effort <e>]
                   [--cwd <dir>] [--timeout <dur>] [--group <path>] [--json]
 orcr agent send   <fqn|uuid> (<prompt> | -p <prompt>) [--json]
 orcr agent logs   <fqn|uuid> [--last-response] [--tail <n>] [--follow] [--json]
-orcr agent wait   <fqn-prefix|uuid>... [--timeout <dur>] [--json]
+orcr agent wait   [<fqn-prefix|uuid>...] [--group <path>] [--timeout <dur>] [--json]
 orcr agent attach <fqn|uuid> [--takeover]
-orcr agent kill   <fqn-prefix|uuid>... [--force] [-y] [--json]
-orcr agent ls     [<fqn-prefix|uuid>] [-a <provider>] [--status <s>]
+orcr agent kill   [<fqn-prefix|uuid>...] [--group <path>] [--force] [-y] [--json]
+orcr agent ls     [<fqn-prefix|uuid>] [--group <path>] [-a <provider>] [--status <s>]
                   [--managed|--unmanaged] [--all] [--json]
 ```
 
@@ -615,9 +620,11 @@ the final response and a transcript locator/cursor are also **captured into the
 store** (§12) so gc-immediate agents and history survive provider file rotation; live
 reads prefer the native files.
 
-**wait** — targets are subtree selectors and/or uuids; membership = **active** agents
-matching any target, **snapshotted at invocation** (historical ended rows are never
-wait targets; no match at all → exit 6). There is no status flag — waiting has one
+**wait** — targets: positional subtree selectors / uuids (**absolute**), or
+`--group <path>` (**relative** to the caller's context — §5.1 rule 2); at least one
+of the two. Membership = **active** agents matching any target, **snapshotted at
+invocation** (historical ended rows are never wait targets; no match at all →
+exit 6). There is no status flag — waiting has one
 meaning: **block until every target settles**, i.e. reaches a point where the caller
 can or must act:
 
@@ -684,7 +691,8 @@ the CLI refreshes once by `terminal_id`. Observe by default, `--takeover` claims
 input. Queued/ended targets → `state_conflict`. The SDK exposes `prepareAttach()`
 (returns the command), not a fake interactive method.
 
-**kill** — subtree selectors and/or uuids. **Confirms by default on a TTY**: shows
+**kill** — positional subtree selectors / uuids (absolute), or `--group <path>`
+(relative — §5.1 rule 2). **Confirms by default on a TTY**: shows
 the resolved targets as a tree — the named agent marked as the root, its descendants
 indented beneath it, with a count — then asks; `-y/--yes` skips the prompt;
 non-interactive callers (no TTY, or `--json`) proceed without prompting. Graceful
@@ -965,9 +973,10 @@ for await (const e of a.followLogs()) { … }   // streaming is a separate call
 await a.lastResponse();        // → string (throws TranscriptUnavailable)
 await a.kill();
 
-// prefix collections — same subtree semantics as the CLI (fqn prefix or uuid)
-await orcr.agent.wait("refactor.phase_1", { timeout? });
-await orcr.agent.ls({ prefix?, agent?, status?, managed?, all? });
+// collections — positional string = absolute fqn prefix/uuid; {group} = relative
+await orcr.agent.wait("refactor.phase_1", { timeout? });   // absolute
+await orcr.agent.wait({ group: "phase_1" });               // relative to scope
+await orcr.agent.ls({ group?, agent?, status?, managed?, all? });
 await orcr.agent.kill("refactor", { force? });   // no interactive confirm in the SDK
 
 // the one-liner — documented sugar for: agent.run({..., gc: "immediate"})
@@ -975,11 +984,13 @@ await orcr.agent.kill("refactor", { force? });   // no interactive confirm in th
 const answer: string = await orcr.ask({ agent: "claude", prompt: "…" });
 
 // grouping — async-context scoped (AsyncLocalStorage), NOT process-global.
-// CREATION calls (agent.run, ask, nested group) compose under the prefix;
-// TARGET SELECTORS (wait/kill/ls/logs/send/attach) are exact as passed — a
-// destructive command is never silently retargeted. Returns fn's result.
+// ONE RULE everywhere: group = relative to this scope, fqn/uuid = absolute.
+// Creation:  run({group:"fanout"})            → refactor.fanout.a4hg7s
+// Targeting: wait({group:"fanout"})           → waits refactor.fanout.*
+//            wait()                           → waits the whole refactor.* scope
+//            wait("verify.worker")            → absolute fqn, outside the scope
 await orcr.group("refactor", async (g /* effective prefix */) => { … });
-// orcr.group(path, { killOnThrow: true }) → barrier-kill of <prefix> on throw
+// orcr.group(path, { killOnThrow: true }) → barrier-kill of the scope on throw
 
 // context — canonical env-derivation helper (never hand-parse ORCR_FQN)
 const ctx = orcr.context.fromEnv();
@@ -1119,7 +1130,7 @@ await orcr.group("review", async () => {
     })));
 
   // settles when every reviewer finishes: gc:immediate → ended (completed)
-  await orcr.agent.wait("review.fanout");
+  await orcr.agent.wait({ group: "fanout" });   // relative to the review scope
 
   const findings = await Promise.all(reviewers.map(async r =>
     `## ${r.fqn}\n` + await readFile(`${r.dataDir}/response.md`, "utf8")));
@@ -1308,8 +1319,9 @@ skill/
 2. **The hot path** — five lines: `orcr agent run -a codex -p "…"` → prints
    `<fqn> <uuid>`; `orcr agent wait <fqn>`; `orcr agent logs <fqn> --last-response`;
    `orcr agent send <fqn> "…"` to steer; `orcr agent kill <fqn> -y` to clean up a
-   subtree — and say it plainly: **`wait`/`kill` take fqn prefixes** (`kill review
-   -y` kills everything under `review.*`), while `send`/`logs`/`attach` are exact.
+   subtree — and say it plainly: **positional targets are absolute fqn prefixes**
+   (`kill review -y` kills everything under `review.*`; `--group` is the relative
+   form), while `send`/`logs`/`attach` are exact.
    Always `--json` when scripting; the exit-code table.
 3. **Identity & grouping in three sentences** — fqn = group.name; your children nest
    under your group automatically; pass `--group`/`--name` to organize, prefix ops to
