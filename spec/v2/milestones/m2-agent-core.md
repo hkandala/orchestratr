@@ -9,7 +9,7 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
 
 ### Identity (spec §5.1)
 - uuid (UUIDv7) + fqn (group.name); grammar + limits validation (`invalid_name`).
-- Auto-names (5-char lowercase alnum); one-transaction allocation against the partial
+- Auto-names (`a` + 5 lowercase alnum, e.g. `a4hg7s`); one-transaction allocation against the partial
   unique index (concurrent spawns can never double-allocate).
 - Resolution: uuid / unambiguous uuid prefix → any row; fqn → active first, else most
   recent ended. Subtree selectors (segment-boundary matching) for bulk verbs; exact
@@ -71,8 +71,8 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
 - 50 concurrent `run`s with caps of 5: FIFO order held, never over cap, queue drains.
 - Concurrent same-fqn spawns: exactly one wins, the other gets `invalid_name`/
   conflict.
-- `kill` during `starting`: canceled cleanly at every pipeline step (fault-injection
-  around each herdr call).
+- `kill` during `starting`: canceled cleanly between pipeline steps (fault-injection
+  around herdr calls).
 - A provider that reports idle immediately after start is held at `working` (no
   false completion before M3).
 - Crash mid-spawn (kill -9 between herdr steps) → restart → launch-token recovery

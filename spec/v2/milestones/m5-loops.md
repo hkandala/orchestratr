@@ -18,7 +18,7 @@ exists so loops fire after a reboot).
 - `--max-concurrency` (default 1), `--overlap queue|skip`, `--timeout` (no default).
 
 ### Runs & identity (spec §6.2, §12)
-- Every run: uuid + **run_id** (5-char alnum, unique per loop); path
+- Every run: uuid + **run_id** (`r` + 5 alnum, e.g. `r82c9s`, unique per loop); path
   `<loop_name>.<run_id>`; `due_at` = scheduled fire time.
 - Own process group (pid/pgid recorded); env = §5.3 contract (run uuid + run path);
   cwd = loop's creation cwd; stdin `/dev/null`; stdout/stderr captured line-tagged,

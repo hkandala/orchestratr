@@ -145,7 +145,7 @@ you / a script / another agent
 - **Server** — the single long-lived process and the **single writer**. Owns the store,
   the admission queue, GC, loop scheduling, **reconciliation** (the periodic drift
   repair between what the store says and what herdr actually shows — re-finding lost
-  panes, adopting orphans, finishing half-done moves, discovering unmanaged agents;
+  panes, finishing half-done moves, discovering unmanaged agents;
   §11.5), and the event stream. Exposes everything over a Unix socket (§11.6) — the
   same shape as herdr itself. Auto-started on demand by any CLI/SDK call
   (single-instance locking in §11.6); `orcr server enable` registers it to start at
@@ -188,11 +188,12 @@ Every agent has **two identifiers**, and every command accepts either:
   operate on:
 
 ```
-<group>.<name>        default.k3f9x · refactor.phase_1.file_1
+<group>.<name>        default.a4hg7s · refactor.phase_1.file_1
 ```
 
 - **Name** — one segment, `[a-z0-9_]+`, ≤ 64 chars. User-provided via `--name`, or
-  auto-generated as a short 5-char lowercase alphanumeric sequence (e.g. `k3f9x`).
+  auto-generated as **`a` + 5 lowercase alphanumeric chars** (e.g. `a4hg7s`) — the
+  `a` prefix makes auto agent names instantly tellable from loop run ids (`r…`).
 - **Group** — dot-separated segments, each `[a-z0-9_]+`; ≤ 8 segments total in the
   fqn (a loop run prefix `<loop>.<run_id>` consumes two of them), ≤ 64
   chars/segment, ≤ 256 chars total (name included). Violations are rejected at spawn
@@ -218,9 +219,12 @@ Every agent has **two identifiers**, and every command accepts either:
   agent and the subtree. A uuid argument always selects exactly one agent. Singleton
   verbs (`send`, `logs`, `attach`) require an exact fqn or uuid.
 - **Same name = same group, by definition.** No auto-suffixing. And **active loop
-  names are reserved as level-1 groups**: `agent run --group nightly` is rejected
-  (`invalid_name`) while loop `nightly` is active, unless the caller is inside that
-  loop's own runs — keeps the tree legible (one `nightly` node means one loop). Scripts wanting
+  names are reserved as level-1 groups**: while loop `nightly` is active, no agent
+  can be created anywhere under `nightly.*` from outside the loop — not via
+  `--group nightly`, not via an absolute `/nightly...` escape, not via `--fqn`
+  (`invalid_name`). Agents land under an active loop only as descendants of one of
+  its own runs (`nightly.<run_id>.…`), so the loop's workspace stays exactly what
+  the loop produced. Scripts wanting
   per-run isolation stamp their own suffix (`--group "refactor.$(date +%s)"`).
 
 **Display transform** (derives human labels from machine slugs; no stored metadata):
@@ -229,15 +233,22 @@ underscores → spaces, words title-cased, dots → " / ".
 carries the machine fqn alongside the display form; TTY output always shows the machine
 fqn so prefixes can be copied, not guessed.
 
-**Inheritance — relative by default.** *Effective group = inherited prefix `.`
-explicit `--group`* (prefix alone if no flag; flag alone if no prefix; `default` if
-neither). The inherited prefix is resolved by the server from the caller's `ORCR_ID`
-(§5.3): if it is a loop run, the prefix is the full run path `<loop_name>.<run_id>`;
-if it is an agent, the prefix is that agent's group (fqn minus name); otherwise the
-caller is a root context (no prefix). A **leading `/` makes `--group` absolute** — it
-ignores any inherited prefix (`/` is outside the segment charset, so this is
-unambiguous). Plain scripts outside any agent compose their own prefixes explicitly
-(or via SDK `orcr.group()`, §8).
+**Inheritance — creation only, and only via `--group`.** Two plain rules:
+
+1. *Creating* an agent inside a managed context nests it automatically: effective
+   group = inherited prefix `.` explicit `--group` (prefix alone if no flag; flag
+   alone if no prefix; `default` if neither). The inherited prefix comes from the
+   caller's `ORCR_ID` (§5.3): a loop run contributes its full run path
+   `<loop_name>.<run_id>`; an agent contributes its group (fqn minus name); a plain
+   script contributes nothing. A **leading `/` makes `--group` absolute** (`/` is
+   outside the segment charset, so this is unambiguous). `--fqn` is different: it is
+   **always absolute** — you are spelling out the complete identity, so nothing is
+   prefixed and no `/` is needed. The normal style is `--group` + `--name`; reach for
+   `--fqn` only when you already hold a complete path.
+2. *Targeting* agents never inherits anything. Whatever fqn you type into `send`,
+   `logs`, `wait`, `kill`, `ls`, or `attach` is used exactly as typed — an agent in
+   group `review` that runs `orcr agent kill fanout` kills `fanout.*`, not
+   `review.fanout.*`. (The SDK's `orcr.group()` follows the same two rules.)
 
 ### 5.2 The owned session & the herdr mapping
 
@@ -250,10 +261,11 @@ config `herdr.session`). The user's daily herdr session never sees a subagent pa
   the current terminal from anywhere — no session switching.
 - **Ownership marker**: every pane orcr creates carries `ORCR_ID` in its env (plus an
   internal launch token, §11.1) and has a matching store row. Reconciliation (§11.5)
-  closes panes only when marker **and** store row agree; marked panes with no matching
-  row are **adopted as orphans, never auto-closed**. Unmarked panes in the owned
-  session (a shell you opened while debugging) are reported in `server status` and
-  never touched.
+  closes panes only when marker **and** store row agree; a marked pane with no
+  matching row (the store was moved/reset under a live session) is **reported in
+  `server status` and left alone** — clean it up through herdr directly. Unmarked
+  panes in the owned session (a shell you opened while debugging) are reported and
+  never touched either.
 
 Within the session, herdr's hierarchy is used as follows. (herdr facts: workspaces are
 per-session, purely visual containers with a label and no cwd; only panes have a cwd
@@ -325,8 +337,8 @@ addresses the live `terminal_id` after location confirmation — never a pre-mov
 pane id. Un-park recreates the tab in the home workspace (labeled from the fqn) if
 the original tab is gone.
 
-**Interlocks** (all status transitions are versioned compare-and-swap on the agent
-row): `send` cancels a pending park/reap atomically *before* delivering input;
+**Interlocks** (all status transitions are serialized through the single-writer
+server's store transactions): `send` cancels a pending park/reap atomically *before* delivering input;
 completion capture and GC-kill are ordered (the response is recorded before the pane
 dies); GC never moves or reaps a pane with an **active attach** — attach sessions are
 persisted as leases (agent, mode, connection, started_at, heartbeat) so the guard
@@ -362,13 +374,11 @@ Every managed agent passes through the same statuses:
   the row is marked `failed` and **stops holding its slot** — otherwise one hung herdr
   call could block the whole queue forever. Progress markers are herdr-reported
   facts only (pane created; `agent_session` pointer reported) — transcript *parsing*
-  is never a startup requirement. If a herdr start call was already **issued** when
-  the guard expires, the row goes through `canceling_start` instead of straight to
-  `failed`: only after reconciliation confirms no pane carries the attempt's launch
-  token does it become `failed` (a late-appearing pane is adopted back or closed per
-  `cancel_requested`). `kill` on a `starting` agent sets
-  `cancel_requested`; the promoter checks it **before and after every herdr step** —
-  once a pane exists, cancellation closes it and ends the row (`canceled`).
+  is never a startup requirement. The rule is deliberately simple: guard expires
+  with no pane recorded → `failed`; a pane that shows up later (matched by its
+  launch token) is closed. `kill` on a `starting` agent sets `cancel_requested`,
+  checked between pipeline steps — once a pane exists, cancellation closes it and
+  ends the row (`canceled`).
 - `wait` on a queued agent waits through promotion; `kill` on a queued agent dequeues
   it (`exit_reason: canceled`).
 - Loops have a separate, unrelated knob: `--max-concurrency` caps concurrent *runs of
@@ -392,7 +402,7 @@ agents can't be queued, parked, or start-tracked, so their set is smaller.
 | `blocked` | needs a human — question / usage limit / login (`blocked_kind`) |
 | `parked` | was idle ≥ `idle_after`; pane moved to the `idle` workspace to keep things tidy — still alive, still resumable; any `send` revives it to its home workspace |
 | `ended` | gone; `exit_reason` says why (table below) |
-| `lost` | the pane vanished outside orcr's control (herdr crash, manual close); the fqn stays reserved. `lost` is a **quarantine**: it resolves to `ended` (`exit_reason: lost`) only on a *positive* fact — a stable herdr snapshot after reconnect confirms the `terminal_id` is gone, or an explicit `kill` — never on a single missing observation (a herdr outage must not free fqns) |
+| `lost` | the pane vanished outside orcr's control (herdr crash, manual close); the fqn stays reserved until reconciliation confirms the terminal is really gone (herdr reachable + one confirming poll, or an explicit `kill`) → `ended` (`exit_reason: lost`) |
 
 **Unmanaged lifecycle** (tracked from herdr's reporting only):
 `working · idle · blocked · unknown · ended` — no queue, no parking, no start
@@ -516,6 +526,8 @@ orcr agent run    [-a <provider>] [-p <prompt>]
                   [--name <n> | --fqn <group.name>] [--group <path>]
                   [--gc auto|immediate|never] [--model <m>] [--effort <e>]
                   [--cwd <dir>] [--timeout <dur>] [--json]
+orcr agent ask    [-a <provider>] [-p <prompt>] [--model <m>] [--effort <e>]
+                  [--cwd <dir>] [--timeout <dur>] [--group <path>] [--json]
 orcr agent send   <fqn|uuid> (<prompt> | -p <prompt>) [--json]
 orcr agent logs   <fqn|uuid> [--last-response] [--tail <n>] [--follow] [--json]
 orcr agent wait   <fqn-prefix|uuid>... [--timeout <dur>] [--json]
@@ -531,21 +543,26 @@ stdin — the long-prompt escape hatch (there is no file flag). `-a` is optional
 means the provider on both `run` and `ls`; it falls back to `defaults.agent` in
 config (default `claude`); precedence is CLI > config.
 
-**Naming**: `--name` sets the name (group comes from `--group` + inheritance);
-`--fqn <group.name>` sets both at once. Note `--fqn` is **relative to the inherited
-group unless it starts with `/`** (inside `parent.worker`, `--fqn review.file_1` →
-`parent.review.file_1`; `--fqn /review.file_1` → `review.file_1`) — CLI help states
-this bluntly. Exactly one of `--name`/`--fqn` may be given (`--fqn` and `--group`
-are mutually exclusive).
+**Naming**: the normal style is `--group` (relative to your context; leading `/`
+for absolute) plus `--name`. `--fqn <group.name>` sets both at once and is **always
+absolute** — no prefixing, no `/` needed; use it only when you hold a complete path.
+Exactly one of `--name`/`--fqn` may be given (`--fqn` and `--group` are mutually
+exclusive).
 
 **run** — **async, always**: validates, enqueues, prints **`<fqn> <uuid>`** on one
 stdout line and returns; a TTY also gets a stderr hint (`wait: orcr agent wait
-refactor.k3f9x · response: orcr agent logs refactor.k3f9x --last-response · attach:
-orcr agent attach refactor.k3f9x`). There is no blocking flag — request/response is
+refactor.a4hg7s · response: orcr agent logs refactor.a4hg7s --last-response · attach:
+orcr agent attach refactor.a4hg7s`). There is no blocking flag — request/response is
 `run` + `wait` + `logs --last-response` (one call in the SDK: `ask()`). Placement per
 §5.2, admission per §5.5, identity per §5.1, gc per §5.4. Prompts are plain text; if a
 step needs files attached or a guaranteed-format answer, say so in the prompt (§8's
 file convention and the `~/.orcr/data` convention).
+
+**ask** — the request/response one-liner, as a real CLI verb (documented sugar —
+exactly `run --gc immediate` → `wait` → `logs --last-response`, nothing more): spawns,
+blocks through the queue and the first completion, prints the final response on
+stdout, cleans up the pane. Any language gets the three-step dance in one call
+without the SDK. Blocked → exit 4; no identifiable response → `transcript_unavailable`.
 
 **send** — exact target only (§5.1). Types the prompt into the agent's TUI and
 submits, whatever status the agent is in (provider TUIs queue mid-turn input
@@ -636,8 +653,9 @@ the CLI refreshes once by `terminal_id`. Observe by default, `--takeover` claims
 input. Queued/ended targets → `state_conflict`. The SDK exposes `prepareAttach()`
 (returns the command), not a fake interactive method.
 
-**kill** — subtree selectors and/or uuids. **Confirms by default on a TTY**: prints
-the resolved targets (count + fqns) and asks; `-y/--yes` skips the prompt;
+**kill** — subtree selectors and/or uuids. **Confirms by default on a TTY**: shows
+the resolved targets as a tree — the named agent marked as the root, its descendants
+indented beneath it, with a count — then asks; `-y/--yes` skips the prompt;
 non-interactive callers (no TTY, or `--json`) proceed without prompting. Graceful
 per-integration shutdown recipe (`shutdown_grace_ms`) → **pane closed** (so herdr can
 clear empty tabs/workspaces); status ends `ended` (`exit_reason: killed`); history
@@ -691,7 +709,7 @@ DSL.
 
 - **Name = group, and it is mandatory** (the positional first argument — no
   auto-generated loop names: an auto name would be a 5-char alnum just like run ids,
-  and `loop_k3f9x.p8w2q` is unreadable; `nightly.p8w2q` is not). A loop's name is one
+  and `loop_x4gk2.r82c9s` is unreadable; `nightly.r82c9s` is not). A loop's name is one
   group segment (`[a-z0-9_]+`). The loop gets its own workspace (level-1 group = its
   name). **Loops are always root-level** — a loop created from inside an agent does
   *not* inherit the agent's group (loops are global entities, not children). Names
@@ -709,14 +727,15 @@ DSL.
   `next_fire_at` · or `--once-at <time>` (fires once then ends). There is no
   `--every` — intervals are cron expressions (`*/30 * * * *`). Fires missed while the
   machine slept or the server was down are skipped and logged, never replayed.
-- **Runs & run ids**: every run — scheduled or manual — gets a **run id**: a 5-char
-  lowercase alphanumeric (like agent auto-names), unique within the loop, plus a uuid
-  in the store. The run's path is **`<loop_name>.<run_id>`** (e.g. `nightly.k3f9x`) —
+- **Runs & run ids**: every run — scheduled or manual — gets a **run id**:
+  **`r` + 5 lowercase alphanumeric chars** (e.g. `r82c9s`; the `r` prefix keeps run
+  ids visually distinct from auto agent names `a…`), unique within the loop, plus a
+  uuid in the store. The run's path is **`<loop_name>.<run_id>`** (e.g. `nightly.r82c9s`) —
   this is its fqn-style handle everywhere: log tags, `--run` filters, the group prefix
   for its agents. The *scheduled* fire time is recorded as `due_at`. The run command
   executes in its **own process group** (pid/pgid recorded) with
   `ORCR_FQN=<loop_name>.<run_id>`, so every agent it spawns lands under that path: a
-  script's `--group review --name file_1` yields `nightly.k3f9x.review.file_1`.
+  script's `--group review --name file_1` yields `nightly.r82c9s.review.file_1`.
   `orcr agent ls --all nightly` is the loop's full agent history.
 - **Every run is a durable row from the moment it's asked for** — including at
   capacity. Run statuses: `pending · running · ok · failed · timeout · stopped ·
@@ -761,7 +780,7 @@ DSL.
   continue unless `--kill-active`. Confirms on a TTY (`-y` skips). Definition + run
   history remain queryable.
 - **`loop logs`** — two interleaved sources, each line tagged with its run
-  (`[nightly.k3f9x]`): the **command's** captured stdout/stderr, and **orcr's own
+  (`[nightly.r82c9s]`): the **command's** captured stdout/stderr, and **orcr's own
   actions** on the loop (fired, coalesced, skipped, paused-hold, timed out, stopped —
   from the event log). `--run <run_id|run_uuid>` filters to one run (essential when concurrent
   runs interleave); `--source orcr` / `--source command` filters to one side;
@@ -803,7 +822,7 @@ The orcr server (§4): single writer, queue, GC, loops, reconciliation, socket A
   stopping is for upgrades/debugging, not a pause switch (that's `loop pause`).
 - **status** — health probe: version, protocol version, socket path, store path, herdr
   binary/version/socket reachability + session, counts (live/queued/blocked/unmanaged/
-  orphaned/unmarked panes), whether loop firing is enabled, loop schedule and next
+  unmarked panes), whether loop firing is enabled, loop schedule and next
   fires, reconciliation drift.
 - **logs** — the server's own log (`~/.orcr/logs/server.log`): startup, herdr
   connection events, reconciliation actions, GC decisions, errors. `--tail <n>` /
@@ -852,7 +871,7 @@ not a control surface — acting on an agent is what the CLI verbs (and
 │     ├─ file_2     ● working    claude · opus        8m12s          │
 │     └─ review     ◐ blocked ⚠  codex · question    11m03s          │
 │ ▼ Nightly (nightly) · loop · next 09:00                            │
-│   └─ ▼ run k3f9x   ⟳ running · due 08:00 · 12m                     │
+│   └─ ▼ run r82c9s  ⟳ running · due 08:00 · 12m                     │
 │       ├─ triage   ○ idle       claude               done 3m ago    │
 │       └─ fix_1    ● working    codex                4m40s          │
 │ ▼ Unmanaged (unmanaged)                                            │
@@ -865,7 +884,7 @@ not a control surface — acting on an agent is what the CLI verbs (and
 
 - **Tree = groups + lineage.** Level-1 groups are the top nodes (matching herdr
   workspaces); loops appear as nodes with their active runs as subtrees
-  (`run k3f9x`, with `due_at` and elapsed); parked agents collapse into an `Idle`
+  (`run r82c9s`, with `due_at` and elapsed); parked agents collapse into an `Idle`
   node; unmanaged agents group under their session. Parent→child edges come from
   `ORCR_PARENT_*`.
 - **Rows** show name, status glyph + status, provider·model (and blocked kind when
@@ -905,7 +924,7 @@ const a = await orcr.agent.run({
 });
 
 a.uuid;                        // permanent id
-a.fqn;                         // "refactor.phase_1.k3f9x"
+a.fqn;                         // "refactor.phase_1.a4hg7s"
 a.name; a.group;
 a.dataDir;                     // = ORCR_AGENT_DATA_DIR  (the data convention, below)
 await a.wait({ timeout? });    // agent wait — settles: turn complete | blocked | ended
@@ -944,7 +963,7 @@ for await (const ev of sub) { /* typed events: agent.status_changed, queue.promo
 await orcr.loop.create({ cron: "*/30 * * * *", name: "burn_down",
                          maxConcurrency?, overlap?, timeout?,
                          command: ["npx", "tsx", "burn-down.ts"] });
-const run = await orcr.loop.run.start("burn_down");  // → {path: "burn_down.k3f9x", uuid}
+const run = await orcr.loop.run.start("burn_down");  // → {path: "burn_down.r82c9s", uuid}
 await orcr.loop.run.stop("burn_down", { runId? });
 await orcr.loop.run.ls("burn_down", { all? });
 await orcr.loop.ls(); await orcr.loop.logs("burn_down", { run?, source? });
@@ -963,7 +982,7 @@ non-interactive CLI calls (`-y` semantics).
 
 Errors: failures become typed errors carrying `{ code, message, details }` from the
 protocol error enum (§13) — `TranscriptUnavailable`, `IntegrationMissing`,
-`StateConflict`, `NotFound`, `ForceRequired`, ….
+`StateConflict`, `NotFound`, `EnvironmentError`, ….
 
 **The file convention.** When a step needs a guaranteed-format answer, the prompt says
 where to write it — then the caller reads and **validates** the file itself (orcr
@@ -1307,13 +1326,12 @@ so explicitly), keeping the always-on footprint minimal.
 
 Crash safety: recovery matches panes to rows by `ORCR_ID` **and launch token** —
 never by location guessing. A `starting` row whose guard expired with no pane →
-`failed`; a marked pane whose row lacks late fields → the row is repaired (adopted);
-two marked panes claiming the same row (crash between start and record) → the one
-matching the recorded token is kept, the other is closed as a duplicate attempt.
+`failed`; a marked pane whose row lacks late fields → the row is repaired; a pane
+whose token matches no live attempt → closed.
 
 ### 11.2 GC engine (server)
 
-Tick ~30s, all transitions CAS-versioned: `gc auto` agents turn-complete + idle ≥
+Tick ~30s, every transition one store transaction: `gc auto` agents turn-complete + idle ≥
 `idle_after` → two-phase move to the `idle` workspace (`move_state: parking` → status
 `parked`, home workspace recorded); parked ≥ `kill_after` → graceful kill
 (`exit_reason: reaped`) and **pane closed**. `gc immediate` agents: two-phase — stable
@@ -1385,7 +1403,7 @@ worth carrying. So:
 the provider's native session files into a common shape (ordered messages, roles, tool
 calls, token counts). **Identity is a gate, not a guess**: adapters select transcripts
 by the pane's `agent_session` id and the agent's `created_at` — never by cwd mtime
-alone; multiple candidates → structured error listing them (`transcript_ambiguous`).
+alone; multiple candidates → `transcript_unavailable` with the candidates in `details` (never a silent pick).
 **Freshness**: a final response is only reported once the transcript has advanced past
 the observed completion (bounded by `transcript_freshness_timeout_ms`); otherwise
 `transcript_unavailable`. On each completion the final response text + transcript
@@ -1395,19 +1413,14 @@ live reads prefer native files).
 ### 11.5 Reconciliation & unmanaged discovery
 
 Reconciliation = the drift repair between the store and herdr reality, on server start
-and periodically: managed agents whose panes vanished → `lost` (fqn reserved;
-resolved to `ended (lost)` only on positive confirmation — a stable post-reconnect
-snapshot missing the `terminal_id`, or an explicit kill; `lost_since` recorded);
-panes carrying an `ORCR_ID` marker with **no matching store row** → adopted as
-**orphan** rows — this happens when the store was moved/reset under a live session,
-or a crash left a duplicate launch attempt. Orphans get their own identity, not a
-fake one: fqn `orphaned.<uuid8>` (the marker's original fqn stored separately —
-never inserted into the active-fqn index, so it can't collide with a live agent),
-and a *real* observed status (`working`/`idle`/`blocked`/`unknown`), since the pane
-is alive — `lost` stays reserved for "row exists, pane missing". Orphans are
-reported in `server status` and **never auto-closed**; `kill --force` removes them
-(and works even when the pane is already gone — the row ends and the name frees);
-unmarked panes in the owned session → counted and reported, never touched; half-done
+and periodically: managed agents whose panes vanished → `lost` (fqn reserved); a
+`lost` agent resolves to `ended (lost)` once herdr is reachable and one following
+poll still doesn't show the terminal (or on an explicit kill) — a herdr outage alone
+never frees names, but there is no indefinite quarantine either;
+panes carrying an `ORCR_ID` marker with **no matching store
+row** (store moved/reset under a live session, or a crashed duplicate attempt) →
+**counted and reported in `server status` as unknown marked panes, never touched**
+(clean up via herdr); unmarked panes in the owned session → counted and reported, never touched; half-done
 park/un-park moves (`move_state` set) → completed or rolled back. In the user's other
 sessions, herdr-detected agents are discovered into the store as unmanaged rows keyed
 by (session, `terminal_id`) (§5.7) and kept current while the server runs; rows whose
@@ -1452,7 +1465,7 @@ terminal disappears are marked `ended`.
   subscription under one server-side cursor pin**, so high churn can't expire
   `snapshot_seq` before the subscribe lands (no re-snapshot livelock). Replay
   retention is bounded; a too-old cursor on an unpinned subscribe gets
-  `cursor_expired` and re-snapshots.
+  a `server_error` (`cause: cursor_expired`) and re-snapshots.
 
 ### 11.7 The herdr driver contract (M0 deliverable)
 
@@ -1494,11 +1507,8 @@ agents:    uuid PK (UUIDv7 — permanent identity; events/turns/attaches referen
              UNIQUE (group_path, name) WHERE status NOT IN ('ended'),
              -- fqn reservation: active agents only; ended fqns reusable
            managed (0|1),
-           origin (run|detected|orphaned),
-             -- run: created by orcr · detected: found in a user session ·
-             -- orphaned: a pane with an ORCR_ID marker but no surviving store row
-             --           (store moved/reset, or a crashed duplicate launch) —
-             --           adopted for visibility, never auto-closed (§11.5)
+           origin (run|detected),
+             -- run: created by orcr · detected: found in a user session
            herdr_session, terminal_id,                 -- unmanaged identity key (§5.7)
            parent_id (uuid), parent_fqn,               -- lineage (§5.3)
            agent (provider), model, effort, gc_mode, cwd,
@@ -1508,9 +1518,9 @@ agents:    uuid PK (UUIDv7 — permanent identity; events/turns/attaches referen
            agent_session_kind, agent_session_value,    -- transcript identity gate
            status,       -- managed: queued|starting|working|idle|blocked|parked|ended|lost
                          -- unmanaged: working|idle|blocked|unknown|ended
-           version, updated_at,                        -- CAS: UPDATE … WHERE uuid=? AND version=?
+           updated_at,
            move_state (none|parking|unparking),        -- exclusive move lease
-           move_token, lost_since, orphan_original_fqn,
+           move_token,
            blocked_kind (question|limit|login|unknown),
            input_seq, cancel_requested (0|1),
            exit_reason (completed|killed|canceled|reaped|timeout|failed|lost),
@@ -1532,12 +1542,12 @@ loops:     uuid PK (permanent identity — runs/events reference it),
            cadence_kind (cron|once), cadence_value, tz, cwd,
            command_json (argv), max_concurrency, overlap, timeout_s (nullable),
            status (active|paused|ended), next_fire_at, last_fire_at,
-           version, updated_at, created_at, ended_reason (removed|removed_by_run|fired)
+           updated_at, created_at, ended_reason (removed|removed_by_run|fired)
 loop_runs: uuid PK, loop_uuid, run_id (5-char alnum; UNIQUE per loop),
            kind (scheduled|manual), due_at, created_at, timeout_at (nullable),
            status (pending|running|stopping|ok|failed|timeout|stopped|canceled),
            pid, pgid, pgid_start_time,                 -- signal only on start-time match
-           exit_code, signal, log_path, started_at, ended_at, version, updated_at
+           exit_code, signal, log_path, started_at, ended_at, updated_at
            -- pending runs replace the old single pending-fire marker: at most one
            -- pending scheduled run per loop (coalesced); manual runs always allocate
 events:    seq PK AUTOINCREMENT, ts, kind, ref_uuid, payload_json
@@ -1581,6 +1591,7 @@ return `{}` or an obvious echo, e.g. `server start → {status:"started|already_
 ```
 agent run        {agent:{uuid,fqn,name,group,group_display,status,agent,managed,
                   cwd,data_dir,queue_position?,parent_id?,parent_fqn?}, permissions:"bypass"}
+agent ask        raw response text on stdout · --json {uuid, fqn, response:{text,final}}
 agent send       {uuid, fqn, delivered_while:"working|idle|parked", input_seq}
 agent logs       {uuid, fqn, entries:[…]} · --last-response {uuid, fqn, response:{text,final}}
 agent wait       {targets:[{uuid,fqn,status,ok,reason,exit_reason?,
@@ -1600,27 +1611,37 @@ loop ls          {loops:[{uuid,name,status,ended_reason?,cadence,tz,next_fire_at
 loop logs        {lines:[{run,source:"orcr|command",ts,text}]}
 server status    {version,protocol,socket,store,herdr:{bin,version,socket,session},
                   integrations:{claude:{orcr:true,herdr:true}, …},
-                  counts:{live,queued,blocked,unmanaged,orphaned,unmarked_panes},
+                  counts:{live,queued,blocked,unmanaged,unmarked_panes},
                   loops_firing:bool, loops:[{name,status,next_fire_at}],
                   drift:{lost,repaired}}
 ```
 
-**Error enum** (exhaustive; each code carries the listed `details` and maps to the
-exit code shown): `not_found{target}→6` · `ambiguous_target{candidates}→6` ·
-`state_conflict{current_status}→7` · `force_required{target,reason}→7` ·
-`invalid_request{field}→1` · `invalid_name{value,rule}→1` ·
-`invalid_duration{value}→1` · `invalid_cron{value,reason}→1` · `timeout{elapsed}→3`
-(an agent's/run's own deadline — never a wait's, §6) · `blocked{blocked_kind}→4` ·
-`transcript_unavailable{uuid,status}→1` · `transcript_ambiguous{candidates}→1` ·
-`integration_missing{provider,missing:[orcr|herdr],install}→2` ·
-`unknown_provider{provider}→2` · `server_unreachable→2` · `server_start_failed→2` ·
-`server_stopping→2` · `store_locked{path,pid?}→2` ·
-`store_schema_mismatch{expected,actual}→2` · `config_invalid{field,problem}→2` ·
-`herdr_unreachable→2` · `unsafe_home{path,problem}→2` · `unsupported_platform→2` ·
-`unsupported_version{client,server}→2` · `method_not_found{method}→1` ·
-`unimplemented{method}→1` · `invalid_json→1` · `frame_too_large{limit}→1` ·
-`command_spawn_failed{argv,cause}→1` · `process_control_failed{pgid,signal,cause}→1`
-· `cursor_expired{oldest}→1` · `limit_exceeded{limit}→1` · `lost_pane{uuid}→1`.
+**Error enum** — deliberately small; nine stable codes, with everything finer in
+`details` (adding codes later is easy, removing them is not). Exit mapping shown:
+
+```
+not_found        {target, candidates?}                                  → 6
+invalid_request  {field?, value?, reason}   bad flags/names/durations/  → 1
+                                            cron/frames/methods/json
+state_conflict   {current_status, reason?}  wrong state for the verb;   → 7
+                                            reason:"force_required" for
+                                            unmanaged kills
+blocked          {blocked_kind}                                         → 4
+timeout          {elapsed}                  an agent's/run's own        → 3
+                                            deadline — never a wait's (§6)
+integration_missing {provider, missing:[orcr|herdr], install}           → 2
+transcript_unavailable {uuid, status, cause?}  incl. ambiguous/stale    → 1
+environment_error {cause, …}                server/store/herdr/home/    → 2
+                                            platform/version problems
+                                            (cause: herdr_unreachable,
+                                            server_start_failed, store_locked,
+                                            config_invalid, unsafe_home,
+                                            unsupported_platform,
+                                            unsupported_version, …)
+server_error     {cause, …}                 internal failures (spawn/    → 1
+                                            signal/cursor problems in
+                                            details.cause)
+```
 
 ## 14 · Configuration
 
@@ -1664,10 +1685,11 @@ exit code shown): `not_found{target}→6` · `ambiguous_target{candidates}→6` 
 }
 ```
 
-Validation happens at server start (and on reload), with precise errors: unknown keys
-are rejected (with the nearest valid name), durations require units and must be
-positive, `concurrency.max ≥ 1`, per-provider caps are clamped to `max` with a
-warning, `herdr.session` must be a valid session name. Precedence: CLI flag → config →
+Validation happens at server start (and on reload): **unknown keys warn and are
+ignored** (with the nearest valid name suggested — forward/backward compatible for
+early users), while known keys are validated strictly: durations require units and
+must be positive, `concurrency.max ≥ 1`, per-provider caps are clamped to `max` with
+a warning, `herdr.session` must be a valid session name. Precedence: CLI flag → config →
 built-in default. Env: `ORCR_HOME` relocates `~/.orcr` (store, socket, lock, config,
 logs, data — tests/sandboxes; pair it with a distinct `herdr.session`);
 `ORCR_HERDR_BIN` overrides herdr discovery.
@@ -1725,7 +1747,7 @@ detailed plan in [`spec/v2/milestones/`](milestones/).
 | **[M1 · Server & protocol](milestones/m1-server-protocol.md)** | `server start/stop/status/logs`; single-instance lock + auto-start handshake; socket API skeleton (`api schema`, `api snapshot`, envelopes, version negotiation); events table + snapshot-then-subscribe. | two clients race auto-start → one server; kill -9 → clean restart; schema validates. |
 | **[M2 · Agent core](milestones/m2-agent-core.md)** | `agent run` (queue → promotion → spawn pipeline), identity (uuid + fqn, partial unique index), env contract, claude + codex integrations (launch/startup/shutdown), `send`, `kill` (+ confirm/-y), `ls`, stuck-start guard, status model. | spawn/send/kill e2e on both providers; concurrent-spawn uniqueness; cancel-during-starting. |
 | **[M3 · Completion & logs](milestones/m3-completion-logs.md)** | turns table + input epochs + external-turn detection; `wait` (all statuses, snapshot-then-subscribe); transcript adapters (claude, codex); `logs`/`--last-response`/`--tail`/`--follow`; final-response capture; `gc immediate`. | send→wait→last-response round-trips; stale-idle never satisfies a newer send; restart mid-turn. |
-| **[M4 · GC & reconciliation](milestones/m4-gc-reconciliation.md)** | `gc auto` park/reap (two-phase moves, home workspace), `attach` + leases, reconciler (lost/orphaned/unmarked, move repair), unmanaged discovery (session + terminal_id). | park→send→un-park e2e; kill server mid-move → reconciler repairs; foreign panes never touched. |
+| **[M4 · GC & reconciliation](milestones/m4-gc-reconciliation.md)** | `gc auto` park/reap (two-phase moves, home workspace), `attach` + leases, reconciler (lost/unmarked, move repair), unmanaged discovery (session + terminal_id). | park→send→un-park e2e; kill server mid-move → reconciler repairs; foreign panes never touched. |
 | **[M5 · Loops](milestones/m5-loops.md)** | `loop create/pause/resume/rm/ls/logs` + `loop run start/stop/ls`; scheduler (tz-correct cron, run ids, process groups, overlap/coalescing, restart recovery); `server enable/disable` (launchd/systemd). | DST boundary tests; overlap coalescing; `loop run stop <name> <run_id>`; reboot-simulation recovery. |
 | **[M6 · top](milestones/m6-top.md)** | The TUI (§7): view-only tree, live statuses, filters, navigation; snapshot+event rendering. | renders 100-agent trees from snapshot+events without drops; filter parity with `ls`; mid-storm restart. |
 | **[M7 · SDK & skill](milestones/m7-sdk-skill.md)** | TS SDK (generated protocol client + helpers + `orcr.group()`/`ask()`/`watch()`); §9 examples as tested recipes; SKILL.md + references; docs; npm publish. | examples run end-to-end against live providers; SDK covers 100% of schema methods. |

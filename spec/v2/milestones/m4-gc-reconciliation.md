@@ -26,15 +26,14 @@ and the owned session stays tidy without ever harming a pane it shouldn't.
   queued/ended targets → `state_conflict`.
 
 ### Reconciliation (spec §11.5)
-- On server start + periodically: vanished panes → `lost` (quarantine: fqn stays
-  reserved; resolved to `ended (lost)` only on positive confirmation — stable
-  post-reconnect snapshot or explicit kill; `lost_since` recorded); marked panes
-  with no row → **orphan adoption** under their own namespace (fqn
-  `orphaned.<uuid8>`, original fqn stored aside, live observed status; never
-  auto-closed; `kill --force` removes even if the pane is already gone); unmarked
-  panes in the owned session → counted, reported, untouched; half-done `move_state`
-  moves (token-owned exclusive leases) → completed or rolled back.
-- `server status` gains the drift/orphan/unmarked counts.
+- On server start + periodically: vanished panes → `lost` (fqn reserved; resolved
+  to `ended (lost)` once herdr is reachable and one following poll still misses the
+  terminal, or on explicit kill — outage never frees names, no indefinite quarantine
+  either); marked panes with no store row → **counted and reported in
+  `server status` as unknown marked panes, never touched** (clean up via herdr);
+  unmarked panes in the owned session → counted, reported, untouched; half-done
+  `move_state` moves (token-owned exclusive leases) → completed or rolled back.
+- `server status` gains the drift/unknown-marked/unmarked counts.
 
 ### Unmanaged discovery (spec §5.7)
 - Poll/stream herdr for agents in non-owned sessions every few seconds — **supported
@@ -53,8 +52,8 @@ and the owned session stays tidy without ever harming a pane it shouldn't.
   reconciler completes or rolls back; status/location always agree afterward.
 - Attach guard: park/reap deferred while attached (including after a server restart
   with a live lease); resumes after detach.
-- Orphan drill: delete the agent's store row under a live pane → reconciler adopts as
-  orphan, never closes; `kill --force` cleans it.
+- Unknown-marked-pane drill: delete the agent's store row under a live pane →
+  reconciler reports it in `server status`, never closes it.
 - Foreign-pane safety: a user shell opened inside the owned session is reported and
   never touched across many GC cycles.
 - Unmanaged drill: hand-start an agent in a user session → appears in `ls` within

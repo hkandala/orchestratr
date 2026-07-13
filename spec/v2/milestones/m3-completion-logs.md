@@ -47,6 +47,10 @@ said. M3 ships the turns machinery, `wait`, the claude/codex transcript adapters
 - On completion: `final_response`, `response_captured_at`, `transcript_locator`,
   `transcript_cursor` captured into the store.
 
+### ask (spec §6.1)
+- `orcr agent ask` — the CLI one-liner: run (gc immediate) → wait → last-response on
+  stdout; exactly the documented sugar, no extra semantics.
+
 ### logs (spec §6.1)
 - `agent logs <fqn|uuid>`: structured entries; `--tail <n>`; `--follow` (subscription
   under the hood); `--last-response` (fails loudly: `transcript_unavailable` /
