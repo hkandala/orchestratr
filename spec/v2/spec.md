@@ -229,9 +229,13 @@ globs**:
   `BEGIN IMMEDIATE` transaction**, so concurrent spawns can never double-allocate.
   Paths of ended agents are reusable — the uuid is what stays unique forever, which
   is exactly why both exist.
-- **Resolution**: a uuid resolves to its row directly, active or ended — this is how
-  history is addressed. A path resolves to the active agent first, else the most
-  recent ended agent with that path (older reuses: use the uuid, from `ls --all`).
+- **Resolution**: a full uuid (it contains dashes, which names never do) resolves
+  to its row directly, active or ended — this is how history is addressed. A bare
+  target is tried **as a path first** (active agent, else most recent ended with
+  that path); only if nothing matches as a path is it tried as a uuid prefix
+  (≥ 8 hex chars). So `send deadbeef` means the agent *named* deadbeef when one is
+  active, else the uuid lookup — deterministic, path-first. (Older reuses of a
+  path: use the uuid, from `ls --all`.)
   Results always **say which one you got**: JSON carries
   `resolved: "active" | "latest_ended"`, and a TTY command that lands on an ended
   agent prints a stderr note (*"resolved to an ended agent created 14:02 — use the
@@ -280,7 +284,12 @@ a legal name character and a LIKE wildcard).
 | an **ended** loop's name | yes | free again | history stays reachable by uuid |
 
 Reserved names are reserved **at level 1 only** (inside a scope, `--name idle`
-resolving to `review/idle` is fine) and are also rejected as *loop* names.
+resolving to `review/idle` is fine) and are also rejected as *loop* names. Loop
+protection applies to **creation only**: observing agents under an active loop
+(`ls`, `wait`, `logs`, `top`) always works, and `kill "/nightly/**"` works too, with
+the normal confirmation — the escape hatch for a runaway loop (note it kills the
+run's *agents*; the scheduler keeps firing — pause or stop the loop for that;
+`loop run stop` is the polite path).
 Enforcement order, always on the **effective** path: parse → resolve against the
 caller's scope (unless absolute) → validate grammar + depth (`invalid_request`,
 `details.reason: "path_too_deep"` with the effective path and count) → reserved
@@ -1103,10 +1112,14 @@ may delete a shared ancestor while any child row still has data below it.
 Complete shapes for the common orchestration patterns — **spec snippets** (helpers
 like `stillCheap()`/`queueSize()` are illustrative); the repo ships them as
 self-contained, CI-tested fixtures against the mock provider (M7), which also feed
-the skill's `references/patterns.md` (§10). Two conventions used throughout: paths
-are **descriptive** (`fix_build/fixer`, `review/fanout/file_1`) — no timestamp
-suffixes needed, since a path only has to be unique among *live* agents and these
-flows clean up after themselves (`gc: immediate`, `killOnThrow`, explicit kills);
+the skill's `references/patterns.md` (§10). Three conventions used throughout:
+paths are **descriptive** (`fix_build/fixer`, `review/fanout/file_1`) — no
+timestamp suffixes, since a path only has to be unique among *live* agents and
+these flows clean up after themselves (`gc: immediate`, `killOnThrow`, explicit
+kills); recipes are **singletons by design** — a second concurrent copy fails fast
+with `path_in_use`, which is usually what you want (no two fix_builds fighting over
+one repo); when you genuinely want N copies, parameterize the top scope yourself
+(`orcr.scope(\`review_${prNumber}\`, …)`);
 and `wait()` has no status to pick — it settles on turn-complete for live agents and
 on `ended (completed)` for `gc: immediate` ones, which is exactly the done signal
 each flow needs (§6.1).
