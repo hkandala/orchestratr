@@ -8,11 +8,11 @@ future work).
 ## Scope
 
 ### Rendering
-- Tree = group hierarchy (level-1 groups as top nodes, matching herdr workspaces) +
+- Tree = path tree (level-1 path segments as top nodes, matching herdr workspaces) +
   parent→child edges from `ORCR_PARENT_*` lineage; loops as nodes with active runs as
   subtrees (`run <run_id>`); parked agents collapsed into an `Idle` node; unmanaged
   agents grouped under `unmanaged.<session>`.
-- Display transform for headings (machine fqn shown alongside); status glyphs
+- Display transform for headings (machine path shown alongside); status glyphs
   (`●` working · `○` idle · `◐` blocked, pulsing + floated upward · `⟳` running loop
   run · dimmed queued/starting with queue position).
 - Rows: name, status glyph + status, provider·model, blocked kind when relevant,
@@ -29,9 +29,9 @@ future work).
   burst is one redraw).
 
 ### Interaction
-- Navigation only: `/` fqn-prefix filter · arrows collapse/expand · `q` quit. No
+- Navigation only: `/` path-prefix filter · arrows collapse/expand · `q` quit. No
   action keys in this milestone.
-- CLI filters pre-scope the tree: `orcr top [<fqn-prefix|uuid>] [-a <provider>]
+- CLI filters pre-scope the tree: `orcr top [<path-prefix|uuid>] [-a <provider>]
   [--status <s>] [--managed|--unmanaged] [--loops]`; live-only by design (`--all` is
   `ls --all`'s job).
 

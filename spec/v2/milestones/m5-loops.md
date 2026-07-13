@@ -11,9 +11,9 @@ exists so loops fire after a reboot).
   (DST-correct), occurrences persisted as UTC `next_fire_at`; or `--once-at <time>`.
 - Payload: argv after `--`, exec'd directly (no shell); creation echoes parsed argv,
   cadence in words (local + UTC), and the cancel command.
-- Name = one group segment, **mandatory** (positional first argument; no
+- Name = one path segment, **mandatory** (positional first argument; no
   auto-generated loop names); always root-level (never inherits a creator agent's
-  group); unique among active loops; internal uuid so removed names are reusable
+  scope); unique among active loops; internal uuid so removed names are reusable
   without history collisions.
 - `--max-concurrency` (default 1), `--overlap queue|skip`, `--timeout` (no default).
 
@@ -61,7 +61,7 @@ exists so loops fire after a reboot).
 - `loop pause|resume <name>...` — pending fire held/released.
 - `loop rm <name>... [--kill-active] [-y]` — end the definition
   (`removed`/`removed_by_run`); history queryable; self-termination from inside a run
-  via `orcr loop rm "${ORCR_FQN%%.*}"`.
+  via `orcr loop rm "${ORCR_PATH%%.*}"`.
 
 ### server enable/disable (spec §6.4)
 - macOS launchd agent (`dev.orchestratr.orcr`, `RunAtLoad`, `KeepAlive`); Linux

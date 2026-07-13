@@ -8,15 +8,18 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
 ## Scope
 
 ### Identity (spec §5.1)
-- uuid (UUIDv7) + fqn (group.name); grammar + limits validation (`invalid_name`).
-- Auto-names (`a` + 5 lowercase alnum, e.g. `a4hg7s`); one-transaction allocation against the partial
+- uuid (UUIDv7) + path (dot-separated; last segment = the mandatory name); grammar
+  + limits validation (`invalid_request`).
+- Mandatory naming (--name|--path; the only generated leaves are ask_<5 alnum> for
+  unnamed `agent ask` one-shots); one-transaction allocation against the partial
   unique index (concurrent spawns can never double-allocate).
-- Resolution: uuid / unambiguous uuid prefix → any row; fqn → active first, else most
+- Resolution: uuid / unambiguous uuid prefix → any row; path → active first, else most
   recent ended. Subtree selectors (segment-boundary matching) for bulk verbs; exact
   targets for singleton verbs.
-- Group inheritance: effective group = inherited prefix + `--group` (always relative);
-  `--fqn` always absolute; caller
-  resolution by `ORCR_ID` (agent → its group; loop-run handling stubs until M5);
+- Path resolution: `--name`|`--path` (exactly one, mandatory); relative paths
+  resolve against the caller's scope, leading `/` = absolute; caller resolution
+  by `ORCR_ID` (an agent's scope = its path minus name; loop-run handling stubs
+  until M5).
 
 ### Queue & promotion (spec §5.5)
 - Every run enqueues (`queued`, FIFO `queue_seq`); atomic promotion with capacity
@@ -29,7 +32,7 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
 - Durable row (full `launch_json`) before any herdr call; data dir created
   (`~/.orcr/data/agents/<uuid>/`).
 - Placement: level-1 workspace ensured; new tab labeled per §5.2; pane env = the §5.3
-  contract (`ORCR_ID`/`ORCR_FQN`/`ORCR_PARENT_ID`/`ORCR_PARENT_FQN`/`ORCR_AGENT_DATA_DIR`, plus `ORCR_LOOP_DATA_DIR` in loop contexts) + launch token.
+  contract (`ORCR_ID`/`ORCR_PATH`/`ORCR_PARENT_ID`/`ORCR_PARENT_PATH`/`ORCR_AGENT_DATA_DIR`, plus `ORCR_LOOP_DATA_DIR` in loop contexts) + launch token.
 - Location columns updated after each herdr call.
 - Startup recipe per integration; `agent_session_*` captured when reported.
 - First prompt delivery (two-call rule: send-text → ~1s → enter).
@@ -43,12 +46,12 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
   integration state surfaced in `server status`.
 
 ### Verbs
-- `agent run` — full flag surface (`-a`, `-p`/`-p -`, `--name`/`--fqn`/`--group`,
+- `agent run` — full flag surface (`-a`, `-p`/`-p -`, `--name`|`--path`,
   `--gc` accepted and stored, `--model`, `--effort`, `--cwd`, `--timeout`, `--json`);
-  prints `<fqn> <uuid>`; TTY stderr hints.
+  prints `<path> <uuid>`; TTY stderr hints.
 - `agent send` — exact target; delivery confirmation; `delivered_while` + `input_seq`
   (epoch bookkeeping rows written; semantics completed in M3).
-- `agent kill` — subtree selectors + uuids; TTY confirmation by default, `-y` skips;
+- `agent kill` — patterns + uuids; TTY confirmation by default, `-y` skips;
   graceful recipe → pane close; `killed`/`canceled` exit reasons; result
   classification (§6.1).
 - `agent ls` — tree rendering with display transform, filters (prefix, `-a`,
@@ -69,7 +72,7 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
   under the right workspace/tab; env contract present in the pane; send delivers;
   kill confirms, shuts down gracefully, closes the pane, empties the workspace.
 - 50 concurrent `run`s with caps of 5: FIFO order held, never over cap, queue drains.
-- Concurrent same-fqn spawns: exactly one wins, the other gets `invalid_name`/
+- Concurrent same-path spawns: exactly one wins, the other gets `invalid_name`/
   conflict.
 - `kill` during `starting`: canceled cleanly between pipeline steps (fault-injection
   around herdr calls).

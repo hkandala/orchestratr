@@ -35,7 +35,7 @@ kill, steer, or watch any of them.
 orcr's answer: run every agent as a **real interactive TUI in a herdr-managed terminal
 pane**, and expose the smallest possible surface to spawn, message, await, read, and
 stop them — from a shell, from any programming language, or from *inside another
-agent*. herdr supplies the terminal substrate; orcr supplies identity, grouping,
+agent*. herdr supplies the terminal substrate; orcr supplies identity, paths,
 lifecycle, scheduling, and a uniform cross-provider contract.
 
 ### Goals
@@ -47,14 +47,14 @@ lifecycle, scheduling, and a uniform cross-provider contract.
   is the API** (mirroring herdr's own design); the CLI and the SDK are thin clients of
   it.
 - Agents can orchestrate agents: any orcr-spawned agent can call `orcr` itself; lineage
-  and grouping assemble automatically.
+  and placement assemble automatically.
 - Safe at scale: a single queue with global and per-provider concurrency caps (RAM
   protection), automatic lifecycle GC, one owned herdr session so the user's own
   workspace is never polluted.
-- Organized at scale: hierarchical groups double as **addressing** — every agent has a
-  human handle, its **fqn** (fully-qualified name: group path + name), alongside a
-  permanent uuid — and make a 200-agent workflow legible, operable (`wait`/`kill` by
-  fqn prefix), and visualizable both in herdr's native UI and in `orcr top`.
+- Organized at scale: every agent lives at a **path** (dot-separated, filesystem
+  style — the last segment is its name), alongside a permanent uuid — making a
+  200-agent workflow legible, operable (`wait`/`kill` by `*` patterns), and
+  visualizable both in herdr's native UI and in `orcr top`.
 - Durable scheduling: run any command on a cadence, surviving the caller's shell.
 
 Non-goals for this version are collected in §17 · Future work.
@@ -75,7 +75,7 @@ attach over SSH. Everything below is verified against the installed herdr (0.7.x
 | Lifecycle state | per-pane `agent_status: working \| idle \| blocked \| unknown` | completion and blocked detection — **reported by herdr's per-provider integrations** (`herdr integration install claude` etc.); without that integration installed, status is `unknown` |
 | Transcript pointer | `agent_session {kind, value}` per pane | locates the provider's native transcript — the basis for `logs` |
 | Stable pane identity | **`terminal_id`** (globally unique, never reused) alongside the workspace-scoped `pane_id` (`w8:p1`) | unmanaged-agent identity key (§5.7) |
-| Organization | session → workspace → tab → pane; orcr never relies on workspace-level cwd — **pane cwd is authoritative**; empty workspaces auto-remove; `pane move` works across workspaces | the group → workspace/tab mapping and GC parking (§5.2) |
+| Organization | session → workspace → tab → pane; orcr never relies on workspace-level cwd — **pane cwd is authoritative**; empty workspaces auto-remove; `pane move` works across workspaces | the path → workspace/tab mapping and GC parking (§5.2) |
 | Attach from anywhere | `herdr agent attach` streams any pane into the current terminal | `orcr agent attach` |
 | Notifications | `notification show` | blocked-agent alerts (future) |
 | Remote | `herdr --remote <ssh-target>` attaches to a herdr server on the remote host — servers are per-host | shapes orcr's remote story (§11.8) |
@@ -119,10 +119,11 @@ subscription-plan pricing safe as providers restrict headless usage (interactive
 sessions are the durable path).
 
 Lineage assembles itself through an environment contract: every pane orcr launches
-carries the agent's ids (`ORCR_ID`/`ORCR_FQN`) and its parent's
-(`ORCR_PARENT_ID`/`ORCR_PARENT_FQN`). When an agent inside such a pane calls
-`orcr agent run`, the server reads the caller's identity, records lineage, and nests
-the child's group automatically — no cooperation from the provider needed. The tree
+carries the agent's ids (`ORCR_ID`/`ORCR_PATH`) and its parent's
+(`ORCR_PARENT_ID`/`ORCR_PARENT_PATH`). When an agent inside such a pane calls
+`orcr agent run`, the server reads the caller's identity, records lineage, and
+resolves the child's path relative to the caller's scope — no cooperation from the
+provider needed. The tree
 builds itself, and `orcr top` draws it.
 
 ## 4 · Architecture
@@ -137,7 +138,7 @@ you / a script / another agent
         │            owns: store (sqlite) · queue · GC · loops · reconcile · events
         ▼  (herdr's own socket API, spoken directly)
   herdr server (external — discovered, never embedded)
-        └─ session "orcr" ─ workspaces (= level-1 groups) ─ tabs (= agents) ─ panes
+        └─ session "orcr" ─ workspaces (= level-1 path segments) ─ tabs (= agents) ─ panes
                                 └─ real TUIs: claude / codex / …
         └─ integrations read each provider's native transcript files
 ```
@@ -175,116 +176,109 @@ you / a script / another agent
 
 ## 5 · Core concepts
 
-### 5.1 Identity: uuid + fqn
+### 5.1 Identity: uuid + path
 
 Every agent has **two identifiers**, and every command accepts either:
 
 - **uuid** — a UUIDv7, generated at creation, the agent's permanent identity and the
   store's primary key. Never reused, unique across all history. Any unambiguous uuid
-  prefix of ≥ 8 hex chars is accepted (git-style; `ambiguous_target` lists the
-  shortest disambiguating prefixes).
-- **fqn** — the **fully-qualified name**: the agent's group path plus its name, joined
-  with dots. The human handle — what you type, what herdr displays, what prefixes
-  operate on:
+  prefix of ≥ 8 hex chars is accepted (git-style; `not_found` lists the shortest
+  disambiguating prefixes when ambiguous).
+- **path** — the agent's address, dot-separated like a filesystem path; **the last
+  segment is the agent's name**:
 
 ```
-<group>.<name>        default.a4hg7s · refactor.phase_1.file_1
+review.fanout.file_1        an agent named file_1, living under review.fanout
+nightly.r82c9s.triage       an agent named triage inside a run of loop nightly
 ```
 
-- **Name** — one segment, `[a-z0-9_]+`, ≤ 64 chars. User-provided via `--name`, or
-  auto-generated as **`a` + 5 lowercase alphanumeric chars** (e.g. `a4hg7s`) — the
-  `a` prefix makes auto agent names instantly tellable from loop run ids (`r…`).
-- **Group** — dot-separated segments, each `[a-z0-9_]+`; ≤ 8 segments total in the
-  fqn (a loop run prefix `<loop>.<run_id>` consumes two of them), ≤ 64
-  chars/segment, ≤ 256 chars total (name included). Violations are rejected at spawn
-  (`invalid_name`), never truncated. Default group: `default`.
-- **fqn uniqueness** — `(group, name)` must be unique among **active** agents (active =
-  any non-ended status, including `lost`, which reserves its fqn until resolved).
-  Enforced by a partial unique index; name validation, auto-name generation, and row
-  insertion happen in **one `BEGIN IMMEDIATE` transaction**, so concurrent spawns can
-  never double-allocate. The same name may exist in different groups. Fqns of ended
-  agents are reusable — the uuid is what stays unique forever, which is exactly why
-  both exist.
-- **Resolution**: a uuid (or unambiguous prefix) resolves to its row directly, active
-  or ended — this is how history is addressed. An fqn resolves to the active agent
-  first, else the most recent ended agent with that fqn (older reuses: use the uuid,
-  from `ls --all`). Results always **say which one you got**: JSON carries
+There is exactly one mental model, and it is the one you already have — **paths and
+globs**:
+
+- **Naming is mandatory.** `agent run` requires `--name <segment>` (the agent lands
+  directly in your scope) or `--path <path>` (the last segment is the name, the rest
+  is where it lives) — exactly one of the two. There are no auto-generated agent
+  names. (`agent ask`'s throwaway one-shots are the single documented exception —
+  below.)
+- **Relative by default, `/` for absolute.** Every path you write — creating or
+  targeting — is interpreted **relative to your scope**: inside the SDK's
+  `orcr.scope("review")` or inside a managed agent, `--path fanout.file_1` means
+  `review.fanout.file_1`. A **leading `/` anchors to the root**:
+  `--path /verify.file_1` means exactly `verify.file_1`. At a plain shell there is
+  no scope, so relative and absolute are the same thing.
+- **What a scope is**: an agent is a file, its scope is its directory — its path
+  minus its name (`review.fanout.file_1` acts in scope `review.fanout`). A loop run
+  is a directory, so its scope is its full run path (`nightly.r82c9s`). A plain
+  shell or script has no scope.
+- **Targeting is exact, `*` is the only wildcard.** A path with no `*` matches
+  exactly one agent. `*` expands like `.*` in regex — any characters, dots included:
+  `review.*` = everything **under** review (not the agent named `review` itself —
+  strict glob; self + subtree is `kill review "review.*"`); `review.phase_*` =
+  phase_1, phase_2, and their descendants. A trailing bare dot (`review.`) is
+  invalid syntax, not a wildcard. Patterns are accepted by the bulk verbs (`wait`,
+  `kill`, `ls`); the exact-target verbs (`send`, `logs`, `attach`) reject `*`.
+  **Quote patterns in the shell** (`kill "review.*"`) so your shell doesn't expand
+  them against filenames first. Note glob honesty: `phase_1*` matches `phase_10`
+  too — write `phase_1` or `phase_1.*` when you mean that segment.
+- **Path uniqueness** — a full path must be unique among **active** agents (any
+  non-ended status, including `lost`, which reserves its path until resolved).
+  Enforced by a partial unique index; validation and row insertion happen in **one
+  `BEGIN IMMEDIATE` transaction**, so concurrent spawns can never double-allocate.
+  Paths of ended agents are reusable — the uuid is what stays unique forever, which
+  is exactly why both exist.
+- **Resolution**: a uuid resolves to its row directly, active or ended — this is how
+  history is addressed. A path resolves to the active agent first, else the most
+  recent ended agent with that path (older reuses: use the uuid, from `ls --all`).
+  Results always **say which one you got**: JSON carries
   `resolved: "active" | "latest_ended"`, and a TTY command that lands on an ended
   agent prints a stderr note (*"resolved to an ended agent created 14:02 — use the
-  uuid for a specific one"*). `send`/`attach`/`kill` act on **active agents only** —
-  a target that resolves to an ended row is `not_found`/`state_conflict`. Rule of
-  thumb: persist the **uuid** when you mean this exact historical agent; use the
-  **fqn** for the current live role or subtree.
-- `agent run` prints **`<fqn> <uuid>`** on one stdout line (space-separated — `cut`
-  friendly; JSON carries both fields).
-- **Prefix vs exact — one rule.** Bulk verbs (`ls`, `wait`, `kill`) treat an fqn
-  argument as a **subtree selector**: it matches the fqn equal to the prefix *and*
-  every fqn extending it past a dot (segment boundaries — `phase_1` never matches
-  `phase_10`). So if agent `a.b.c` has children `a.b.c.*`, `kill a.b.c` kills the
-  agent and the subtree. A uuid argument always selects exactly one agent. Singleton
-  verbs (`send`, `logs`, `attach`) require an exact fqn or uuid.
-- **Same name = same group, by definition.** No auto-suffixing. And **active loop
-  names are reserved as level-1 groups**: while loop `nightly` is active, no agent
-  can be created anywhere under `nightly.*` from outside the loop — not via
-  `--group nightly`, not via `--fqn nightly....` (`invalid_name`). Agents land under an active loop only as descendants of one of
-  its own runs (`nightly.<run_id>.…`), so the loop's workspace stays exactly what
-  the loop produced. Scripts wanting
-  per-run isolation stamp their own suffix (`--group "refactor.$(date +%s)"`).
-
-**Display transform** (derives human labels from machine slugs; no stored metadata):
-underscores → spaces, words title-cased, dots → " / ".
-`phase_1.review.file_1` → **Phase 1 / Review / File 1**. Every result and `ls` row
-carries the machine fqn alongside the display form; TTY output always shows the machine
-fqn so prefixes can be copied, not guessed.
+  uuid for a specific one"*). `send`/`attach`/`kill` act on **active agents only**.
+  Rule of thumb: persist the **uuid** when you mean this exact historical agent; use
+  **paths/patterns** for the current live roles.
+- `agent run` prints **`<path> <uuid>`** on one stdout line (space-separated —
+  `cut` friendly; JSON carries both fields).
+- **Same path = same agent slot, by definition.** No auto-suffixing. Runs wanting
+  per-invocation isolation stamp their own segment
+  (`--path "review_$(date +%s).file_1"`).
 
 **The grammar, in one place** (every surface — CLI validation, SDK, socket schema —
 derives from this block; it is defined nowhere else):
 
 ```
 segment   = [a-z0-9_]{1,64}
-group     = segment ("." segment)*        # ≤ 7 segments (8 incl. the name)
-name      = segment                       # auto: "a" + 5 alnum   (a4hg7s)
-fqn       = group "." name                # ≤ 256 chars total
+path      = segment ("." segment)*        # ≤ 8 segments, ≤ 256 chars total;
+                                          # the last segment is the name
+abs_path  = "/" path                      # anchored to the root
+pattern   = path with "*" allowed         # * matches any chars (dots included);
+                                          # bulk verbs only; "seg." alone is invalid
 loop name = segment                       # one segment, mandatory
 run id    = "r" + 5 alnum                 # r82c9s — generated, never user-chosen
 run path  = loop_name "." run_id
 ```
 
-**Reserved level-1 names** — who owns each top-level group:
+**Reserved level-1 names** — who owns each top-level path segment:
 
-| level-1 segment | user may create groups here? | owned by | what it is |
+| level-1 segment | user may create paths here? | owned by | what it is |
 | --- | --- | --- | --- |
-| `default` | yes | everyone | where ungrouped agents live |
 | `idle` | no | orcr | the parking workspace (GC) |
 | `unmanaged` | no | orcr | agents you started by hand, auto-tracked |
 | an **active** loop's name | only from inside that loop's runs | the loop | its runs and their agents |
 | an **ended** loop's name | yes | free again | history stays reachable by uuid |
 
-Reserved names are also rejected as *loop* names (a loop called `default` or `idle`
-would make those trees ambiguous). Violations → `invalid_request` with
-`details.reason: "reserved_name"`.
+Reserved names are also rejected as *loop* names. Violations → `invalid_request`
+with `details.reason: "reserved_name"`. And **active loop names are fully
+protected**: while loop `nightly` is active, nothing outside its own runs can create
+an agent anywhere under `nightly.*` — not via a relative path, not via an absolute
+`/nightly.…` (`invalid_request`). Agents land under an active loop only as
+descendants of one of its runs (`nightly.r82c9s.…`), so the loop's workspace stays
+exactly what the loop produced.
 
-**Inheritance — creation only, and only via `--group`.** Two plain rules:
-
-1. *Creating* an agent inside a managed context nests it automatically: effective
-   group = inherited prefix `.` explicit `--group` (prefix alone if no flag; flag
-   alone if no prefix; `default` if neither). The inherited prefix comes from the
-   caller's `ORCR_ID` (§5.3): a loop run contributes its full run path
-   `<loop_name>.<run_id>`; an agent contributes its group (fqn minus name); a plain
-   script contributes nothing. **`--group` is always relative — there is no escape
-   syntax.** The one way to place an agent absolutely is `--fqn <group.name>`, which
-   is **always absolute**: you are spelling out the complete identity, so nothing is
-   ever prefixed. The normal style is `--group` + `--name`; reach for `--fqn` when
-   you need an exact placement.
-2. *Targeting* follows the same convention — **group = relative, fqn = absolute,
-   always**. Because a group path and an fqn look identical as strings, the choice
-   rides on the parameter: a **positional target** is an fqn (or fqn prefix / uuid)
-   and is taken **absolute, exactly as typed**; the **`--group` flag** (SDK:
-   `{group}`) is taken **relative to your context**, exactly like at creation. An
-   agent in group `review` that runs `orcr agent kill --group fanout` kills
-   `review.fanout.*`; `orcr agent kill fanout.file_1` kills exactly that absolute
-   fqn. In the SDK, omitting the target inside `orcr.group()` means "my whole
-   scope". One rule to remember, not two.
+**Display transform** (derives human labels from machine slugs; no stored metadata):
+underscores → spaces, words title-cased, dots → " / ".
+`phase_1.review.file_1` → **Phase 1 / Review / File 1**. Every result and `ls` row
+carries the machine path alongside the display form; TTY output always shows the
+machine path so patterns can be copied, not guessed. Display labels are never
+accepted as input.
 
 ### 5.2 The owned session & the herdr mapping
 
@@ -309,8 +303,8 @@ and a process.)
 
 | herdr level | orcr's use |
 | --- | --- |
-| workspace | = the agent's **level-1 group segment**: everything under `refactor.*` → workspace `refactor`; agents with no group → workspace `default`; each loop → one workspace named after the loop. GC-parked agents → workspace `idle`. |
-| tab | one per agent; label = **remaining group path + name**: fqn `refactor.phase_1.review.xyz123` → workspace `refactor`, tab `phase_1.review.xyz123`. |
+| workspace | = the path's **level-1 segment**: everything under `refactor.*` → workspace `refactor`; each loop → one workspace named after the loop. GC-parked agents → workspace `idle`. |
+| tab | one per agent; label = **the path after the first segment**: path `refactor.phase_1.review.worker` → workspace `refactor`, tab `phase_1.review.worker`. |
 | pane | the agent's TUI; cwd = caller's cwd or `--cwd`. A pane's location ids are **not agent identifiers**: GC moves agents across panes/workspaces over their lifetime. The store tracks the agent's *current* pane as a location column, nothing more. |
 
 herdr removes a workspace automatically once it has no panes — so orcr always **closes
@@ -324,24 +318,25 @@ Injected into every managed agent pane and every loop-run command:
 
 ```
 ORCR_ID           this agent's uuid — or, in a loop-run command, the run's uuid
-ORCR_FQN          this agent's fqn (group.name) — or the run path <loop_name>.<run_id>
+ORCR_PATH         this agent's path — or the run path <loop_name>.<run_id>
 ORCR_PARENT_ID    the uuid of the context that spawned this agent (unset at root)
-ORCR_PARENT_FQN   the fqn / run path of that context (unset at root)
-ORCR_AGENT_DATA_DIR this agent's data dir (§8): ~/.orcr/data/agents/<uuid>
+ORCR_PARENT_PATH  the path / run path of that context (unset at root)
+ORCR_AGENT_DATA_DIR this agent's data dir (§8) — the data tree mirrors the path:
+                    ~/.orcr/data/<path segments as folders>/<uuid>
                     (unset in loop-run commands — they aren't agents)
-ORCR_LOOP_DATA_DIR  the loop run's data dir: ~/.orcr/data/loops/<loop_uuid>/<run_id> —
+ORCR_LOOP_DATA_DIR  the loop run's data dir: ~/.orcr/data/<loop_name>/<run_id> —
                     set for the run command and every agent descended from it (a
                     shared scratch space for the run); unset outside loops
 ```
 
 Loop-run commands are root contexts themselves: their `ORCR_PARENT_*` are unset, and
-agents they spawn get `ORCR_PARENT_ID`/`ORCR_PARENT_FQN` = the run's uuid/path.
+agents they spawn get `ORCR_PARENT_ID`/`ORCR_PARENT_PATH` = the run's uuid/path.
 
-Everything group-related derives from the fqn: group = `ORCR_FQN` minus the name
-segment; a loop's name is the first segment of a run path (`"${ORCR_FQN%%.*}"` in
-shell; `loopNameFrom()` in the SDK). When `orcr agent run` executes inside a managed
-context, the server resolves the caller by `ORCR_ID`, records lineage, and computes
-the effective group per §5.1. Parent lineage is what `orcr top` draws. (One internal
+Everything scope-related derives from the path: an agent's scope = `ORCR_PATH` minus
+the name segment; a loop's name is the first segment of a run path
+(`"${ORCR_PATH%%.*}"` in shell; `loopNameFrom()` in the SDK). When `orcr agent run`
+executes inside a managed context, the server resolves the caller by `ORCR_ID`,
+records lineage, and resolves relative paths against the caller's scope per §5.1. Parent lineage is what `orcr top` draws. (One internal
 variable — a launch token, §11.1 — also rides in pane env for crash recovery; it is
 not part of the contract and scripts must not rely on it.)
 
@@ -370,7 +365,7 @@ the store and the actual herdr pane location agree, and the reconciler completes
 rolls back half-done moves after a crash. A `send` that arrives mid-move completes
 or rolls back *that exact move* (by token) before delivering, and delivery always
 addresses the live `terminal_id` after location confirmation — never a pre-move
-pane id. Un-park recreates the tab in the home workspace (labeled from the fqn) if
+pane id. Un-park recreates the tab in the home workspace (labeled from the path) if
 the original tab is gone.
 
 **Interlocks** (all status transitions are serialized through the single-writer
@@ -392,7 +387,7 @@ use `--gc never` for agents known to fan out background work.
 ### 5.5 Queue & concurrency
 
 **Every `agent run` enqueues.** The verb's job is to validate, persist, and print
-`<fqn> <uuid>`; the **server** processes the queue and manages the whole lifecycle.
+`<path> <uuid>`; the **server** processes the queue and manages the whole lifecycle.
 Every managed agent passes through the same statuses:
 `queued → starting → working → idle → … → ended`.
 
@@ -438,7 +433,7 @@ agents can't be queued, parked, or start-tracked, so their set is smaller.
 | `blocked` | needs a human — question / usage limit / login (`blocked_kind`) |
 | `parked` | was idle ≥ `idle_after`; pane moved to the `idle` workspace to keep things tidy — still alive, still resumable; any `send` revives it to its home workspace |
 | `ended` | gone; `exit_reason` says why (table below) |
-| `lost` | the pane vanished outside orcr's control (herdr crash, manual close); the fqn stays reserved until reconciliation confirms the terminal is really gone (herdr reachable + one confirming poll, or an explicit `kill`) → `ended` (`exit_reason: lost`) |
+| `lost` | the pane vanished outside orcr's control (herdr crash, manual close); the path stays reserved until reconciliation confirms the terminal is really gone (herdr reachable + one confirming poll, or an explicit `kill`) → `ended` (`exit_reason: lost`) |
 
 **Unmanaged lifecycle** (tracked from herdr's reporting only):
 `working · idle · blocked · unknown · ended` — no queue, no parking, no start
@@ -503,8 +498,8 @@ their own sessions — but only *manages* the ones it created.
   ignored entirely). The server discovers them into the store and keeps them current
   while it runs (state changes, closure — polled/streamed from herdr every few
   seconds). Identity is
-  auto-assigned: a uuid like any other row, and an fqn under group
-  `unmanaged.<session_slug>` with name derived from the pane (e.g.
+  auto-assigned: a uuid like any other row, and a path under
+  `unmanaged.<session_slug>` with the leaf derived from the pane (e.g.
   `unmanaged.main.w6_p1`; slug collisions after normalization get a deterministic
   `_<short hash>` suffix inside the insertion transaction) — the tree groups by
   session. Internally each row is keyed
@@ -520,7 +515,7 @@ their own sessions — but only *manages* the ones it created.
 | `run` (create) | ✓ | ✗ — by definition, orcr didn't create them |
 | queue + concurrency caps | ✓ | ✗ |
 | GC (park / reap / gc modes) | ✓ | ✗ — orcr never touches their panes |
-| custom `--name` / `--group` | ✓ | ✗ — identity is auto-assigned |
+| custom `--name` / `--path` | ✓ | ✗ — identity is auto-assigned |
 | parent lineage (`top` tree edges) | ✓ | ✗ — `ORCR_PARENT_*` unknowable |
 | status tracking | full lifecycle (§5.6) | herdr-reported only: working/idle/blocked/unknown/ended |
 | turn completion (verified idle) | ✓ | approximate — herdr state only, no input epochs for turns orcr didn't deliver |
@@ -551,27 +546,30 @@ the envelope is still `ok:true` (the call succeeded; the result is partial —
 `timed_out:true`, exit 3); the `timeout` *error code* is reserved for an agent's or
 run's own `--timeout` expiring.
 
-Wherever a command takes a target, `<fqn|uuid>` means: an fqn (`refactor.file_1`) or a
-uuid / unambiguous uuid prefix. `<fqn-prefix|uuid>` additionally allows an fqn
-**subtree selector** (§5.1).
+Wherever a command takes a target, `<path|uuid>` means: a path
+(`refactor.file_1` — relative to your scope, `/` for absolute) or a uuid /
+unambiguous uuid prefix. `<pattern|uuid>` additionally allows `*` wildcards (§5.1).
 
 ### 6.1 agent
 
 ```
-orcr agent run    [-a <provider>] [-p <prompt>]
-                  [--name <n> | --fqn <group.name>] [--group <path>]
+orcr agent run    (--name <segment> | --path <path>) [-a <provider>] [-p <prompt>]
                   [--gc auto|immediate|never] [--model <m>] [--effort <e>]
                   [--cwd <dir>] [--timeout <dur>] [--json]
-orcr agent ask    [-a <provider>] [-p <prompt>] [--model <m>] [--effort <e>]
-                  [--cwd <dir>] [--timeout <dur>] [--group <path>] [--json]
-orcr agent send   <fqn|uuid> (<prompt> | -p <prompt>) [--json]
-orcr agent logs   <fqn|uuid> [--last-response] [--tail <n>] [--follow] [--json]
-orcr agent wait   [<fqn-prefix|uuid>...] [--group <path>] [--timeout <dur>] [--json]
-orcr agent attach <fqn|uuid> [--takeover]
-orcr agent kill   [<fqn-prefix|uuid>...] [--group <path>] [--force] [-y] [--json]
-orcr agent ls     [<fqn-prefix|uuid>] [--group <path>] [-a <provider>] [--status <s>]
+orcr agent ask    [-a <provider>] [-p <prompt>] [--path <path>] [--model <m>]
+                  [--effort <e>] [--cwd <dir>] [--timeout <dur>] [--json]
+orcr agent send   <path|uuid> (<prompt> | -p <prompt>) [--json]
+orcr agent logs   <path|uuid> [--last-response] [--tail <n>] [--follow] [--json]
+orcr agent wait   <pattern|uuid>... [--timeout <dur>] [--json]
+orcr agent attach <path|uuid> [--takeover]
+orcr agent kill   <pattern|uuid>... [--force] [-y] [--json]
+orcr agent ls     [<pattern|uuid>] [-a <provider>] [--status <s>]
                   [--managed|--unmanaged] [--all] [--json]
 ```
+
+Paths and patterns follow §5.1 throughout: relative to the caller's scope, leading
+`/` for absolute, `*` the only wildcard (bulk verbs only), quote patterns in the
+shell.
 
 **Prompts**: `run` takes `-p/--prompt <text>`; `send` takes the prompt as its
 positional argument (and also accepts `-p`). In both, `-p -` reads the prompt from
@@ -579,16 +577,15 @@ stdin — the long-prompt escape hatch (there is no file flag). `-a` is optional
 means the provider on both `run` and `ls`; it falls back to `defaults.agent` in
 config (default `claude`); precedence is CLI > config.
 
-**Naming**: the normal style is `--group` (always relative to your context) plus
-`--name`. `--fqn <group.name>` sets both at once and is **always absolute** — the
-only way to place an agent at an exact path from inside a nested context. Exactly
-one of `--name`/`--fqn` may be given (`--fqn` and `--group` are mutually
-exclusive).
+**Naming — mandatory**: exactly one of `--name <segment>` (the agent lands directly
+in your scope) or `--path <path>` (the last segment is the name, the rest is where
+it lives; relative to your scope, `/` for absolute). No auto-generated agent
+names.
 
-**run** — **async, always**: validates, enqueues, prints **`<fqn> <uuid>`** on one
+**run** — **async, always**: validates, enqueues, prints **`<path> <uuid>`** on one
 stdout line and returns; a TTY also gets a stderr hint (`wait: orcr agent wait
-refactor.a4hg7s · response: orcr agent logs refactor.a4hg7s --last-response · attach:
-orcr agent attach refactor.a4hg7s`). There is no blocking flag — request/response is
+refactor.worker · response: orcr agent logs refactor.worker --last-response ·
+attach: orcr agent attach refactor.worker`). There is no blocking flag — request/response is
 `run` + `wait` + `logs --last-response` (one call in the SDK: `ask()`). Placement per
 §5.2, admission per §5.5, identity per §5.1, gc per §5.4. Prompts are plain text; if a
 step needs files attached or a guaranteed-format answer, say so in the prompt (§8's
@@ -598,7 +595,11 @@ file convention and the `~/.orcr/data` convention).
 exactly `run --gc immediate` → `wait` → `logs --last-response`, nothing more): spawns,
 blocks through the queue and the first completion, prints the final response on
 stdout, cleans up the pane. Any language gets the three-step dance in one call
-without the SDK. Blocked → exit 4; no identifiable response → `transcript_unavailable`.
+without the SDK. `--path` is optional here — **the one exception to mandatory
+naming**: an unnamed ask gets a generated leaf `ask_<5 alnum>` in the caller's
+scope, because parallel one-shots must not collide on a path and the agent is gone
+the moment the answer is printed. Blocked → exit 4; no identifiable response →
+`transcript_unavailable`.
 
 **send** — exact target only (§5.1). Types the prompt into the agent's TUI and
 submits, whatever status the agent is in (provider TUIs queue mid-turn input
@@ -607,7 +608,7 @@ or failure — the result reports `delivered_while: working|idle|parked` + `inpu
 Sending to a parked agent un-parks it (atomically, before delivery). Ended target →
 `not_found` (exit 6). *Planned: per-provider steer/stop options (§17).*
 
-**logs** — exact target; an fqn resolves to the active agent first, else the most
+**logs** — exact target; a path resolves to the active agent first, else the most
 recent ended one — **history is addressed by uuid** (from `ls --all`). Reads the
 provider's **native transcript** via the integration's adapter (structured turns, tool
 calls, token counts where available). `--tail <n>` = how much history (last *n*
@@ -620,11 +621,10 @@ the final response and a transcript locator/cursor are also **captured into the
 store** (§12) so gc-immediate agents and history survive provider file rotation; live
 reads prefer the native files.
 
-**wait** — targets: positional subtree selectors / uuids (**absolute**), or
-`--group <path>` (**relative** to the caller's context — §5.1 rule 2); at least one
-of the two. Membership = **active** agents matching any target, **snapshotted at
-invocation** (historical ended rows are never wait targets; no match at all →
-exit 6). There is no status flag — waiting has one
+**wait** — targets are patterns and/or uuids (§5.1: relative to your scope, `/` for
+absolute, `*` the wildcard). Membership = **active** agents matching any target,
+**snapshotted at invocation** (historical ended rows are never wait targets; no
+match at all → exit 6). There is no status flag — waiting has one
 meaning: **block until every target settles**, i.e. reaches a point where the caller
 can or must act:
 
@@ -646,7 +646,7 @@ simultaneously settled at one event sequence** (the `decision_seq`, included in 
 JSON) — a target that un-settles discards its earlier reason and is waited on again.
 The result is therefore the actual state at decision time, not a stale reading.
 
-**The result is one line per agent — `<fqn> <reason>` — always**, whether you waited
+**The result is one line per agent — `<path> <reason>` — always**, whether you waited
 on one agent or a subtree, so callers parse a single format. The reason tokens map
 exhaustively from `status × exit_reason`:
 
@@ -671,7 +671,7 @@ Every target is listed on every outcome — including a timed-out wait, where se
 targets show their real reason and unsettled ones show `wait_timeout`. **Wait is
 idempotent**: targets already settled (idle, blocked, ended) report immediately —
 running `wait` again right after returns the same listing at once. JSON carries the
-same per target: `{uuid, fqn, status, ok, reason, exit_reason?, next}` — `next` is
+same per target: `{uuid, path, status, ok, reason, exit_reason?, next}` — `next` is
 **structured**, `{kind, command}` from a stable enum (`logs_last_response`,
 `attach`, `logs_history`, `none`), rendered as a command string by the CLI — plus
 `all_ok:bool`, `timed_out:bool`, and `decision_seq`. Implementation is
@@ -691,30 +691,29 @@ the CLI refreshes once by `terminal_id`. Observe by default, `--takeover` claims
 input. Queued/ended targets → `state_conflict`. The SDK exposes `prepareAttach()`
 (returns the command), not a fake interactive method.
 
-**kill** — positional subtree selectors / uuids (absolute), or `--group <path>`
-(relative — §5.1 rule 2). **Confirms by default on a TTY**: shows
-the resolved targets as a tree — the named agent marked as the root, its descendants
-indented beneath it, with a count — then asks; `-y/--yes` skips the prompt;
+**kill** — targets are patterns and/or uuids. **Confirms by default on a TTY**:
+shows every matched agent as a tree with a count, then asks; `-y/--yes` skips the
+prompt;
 non-interactive callers (no TTY, or `--json`) proceed without prompting. Graceful
 per-integration shutdown recipe (`shutdown_grace_ms`) → **pane closed** (so herdr can
 clear empty tabs/workspaces); status ends `ended` (`exit_reason: killed`); history
 remains. Queued agents are dequeued (`canceled`); `starting` agents are canceled via
 the `cancel_requested` interlock (§5.5). Result classification: no matched targets →
 exit 6; matched but every target skipped (already ended / needs `--force`) → exit 7;
-any kills performed → exit 0 with `killed[]`, `skipped[{uuid,fqn,reason}]`, and
+any kills performed → exit 0 with `killed[]`, `skipped[{uuid,path,reason}]`, and
 `all_killed:bool`. Unmanaged targets require `--force`. Cleanup paths that must not
 race new spawns — SDK `killOnThrow`, `loop run stop`, `loop rm --kill-active` — use
 an internal **barrier kill**: a prefix tombstone rejects/cancels new `agent run`s
 inheriting that prefix while the kill loops until a final snapshot under the write
 lock shows no active descendants.
 
-**ls** — active agents (managed and unmanaged) rendered as the group tree; headings
-show the display label *and* the machine fqn. TTY columns:
-`FQN UUID STATUS AGENT AGE` (uuid shown as a short prefix). Filters: a subtree
-selector or uuid, `-a <provider>`, `--status <s>` (`--status blocked` = who needs a
+**ls** — active agents (managed and unmanaged) rendered as the path tree; headings
+show the display label *and* the machine path. TTY columns:
+`PATH UUID STATUS AGENT AGE` (uuid shown as a short prefix). Filters: a pattern or
+uuid, `-a <provider>`, `--status <s>` (`--status blocked` = who needs a
 human), `--managed`/`--unmanaged`, `--all` (include ended agents — history, including
-every past loop run; reused fqns are disambiguated by uuid + `created_at`). JSON rows
-are flat: `{uuid, fqn, name, group, group_display, status, managed, agent, cwd,
+every past loop run; reused paths are disambiguated by uuid + `created_at`). JSON rows
+are flat: `{uuid, path, name, path_display, status, managed, agent, cwd,
 pane_id, queue_position?, parent_id?, blocked_kind?, created_at, ended_at?,
 exit_reason?}`.
 
@@ -746,12 +745,11 @@ exact cancel command. The command spawns agents via CLI/SDK like any other calle
 loop owns *time only*: no provider flags, no prompts, no judge logic, no stop-condition
 DSL.
 
-- **Name = group, and it is mandatory** (the positional first argument — no
-  auto-generated loop names: an auto name would be a 5-char alnum just like run ids,
-  and `loop_x4gk2.r82c9s` is unreadable; `nightly.r82c9s` is not). A loop's name is one
-  group segment (`[a-z0-9_]+`). The loop gets its own workspace (level-1 group = its
-  name). **Loops are always root-level** — a loop created from inside an agent does
-  *not* inherit the agent's group (loops are global entities, not children). Names
+- **The loop's name is its level-1 path, and it is mandatory** (the positional
+  first argument; no auto-generated loop names). One segment (`[a-z0-9_]+`). The
+  loop gets its own workspace. **Loops are always root-level** — a loop created from
+  inside an agent does *not* inherit the agent's scope (loops are global entities,
+  not children). Names
   are unique among **active** loops; a removed loop's name is reusable — internally
   each definition has its own uuid and runs/events reference it, so histories of
   same-named definitions never collide (`loop logs <name>` resolves the active
@@ -770,11 +768,11 @@ DSL.
   **`r` + 5 lowercase alphanumeric chars** (e.g. `r82c9s`; the `r` prefix keeps run
   ids visually distinct from auto agent names `a…`), unique within the loop, plus a
   uuid in the store. The run's path is **`<loop_name>.<run_id>`** (e.g. `nightly.r82c9s`) —
-  this is its fqn-style handle everywhere: log tags, `--run` filters, the group prefix
+  this is its handle everywhere: log tags, `--run` filters, the path prefix
   for its agents. The *scheduled* fire time is recorded as `due_at`. The run command
   executes in its **own process group** (pid/pgid recorded) with
-  `ORCR_FQN=<loop_name>.<run_id>`, so every agent it spawns lands under that path: a
-  script's `--group review --name file_1` yields `nightly.r82c9s.review.file_1`.
+  `ORCR_PATH=<loop_name>.<run_id>`, so every agent it spawns lands under that path: a
+  script's `--path review.file_1` yields `nightly.r82c9s.review.file_1`.
   `orcr agent ls --all nightly` is the loop's full agent history.
 - **Every run is a durable row from the moment it's asked for** — including at
   capacity. Run statuses: `pending · running · ok · failed · timeout · stopped ·
@@ -815,7 +813,7 @@ DSL.
 - **pause** — no new fires; a pending scheduled run is held, not started; active
   runs continue. **resume** — fires resume; a held pending run starts if due. **rm** —
   mark ended (`removed` / `removed_by_run` when called from inside a run:
-  `orcr loop rm "${ORCR_FQN%%.*}"`); no future fires; the active run and its agents
+  `orcr loop rm "${ORCR_PATH%%.*}"`); no future fires; the active run and its agents
   continue unless `--kill-active`. Confirms on a TTY (`-y` skips). Definition + run
   history remain queryable.
 - **`loop logs`** — two interleaved sources, each line tagged with its run
@@ -828,12 +826,12 @@ DSL.
 ### 6.3 top
 
 ```
-orcr top [<fqn-prefix|uuid>] [-a <provider>] [--status <s>]
+orcr top [<pattern|uuid>] [-a <provider>] [--status <s>]
          [--managed|--unmanaged] [--loops]
 ```
 
 The live dashboard — full description and display mock in §7. A realtime, **view-only**
-TUI tree of all **active** agents grouped by their group hierarchy, parent→child edges
+TUI tree of all **active** agents arranged by their paths, parent→child edges
 from `ORCR_PARENT_*` lineage, statuses updating live, loops and their active runs shown
 as subtrees (`--loops` filters to loops only). Live-only by design: `--all` is
 intentionally unsupported (that's `ls --all`). Rendering rides the
@@ -897,7 +895,7 @@ languages — the schema is the contract, the CLI is one client of it.
 ## 7 · The monitoring TUI (`orcr top`)
 
 The default view for tracking a running workflow or loop: a live, **view-only** tree
-that mirrors the group hierarchy (the same shape herdr's UI shows as workspaces/tabs),
+that mirrors the path tree (the same shape herdr's UI shows as workspaces/tabs),
 with parent→child edges and statuses updating in real time. It is a status display,
 not a control surface — acting on an agent is what the CLI verbs (and
 `herdr --session orcr`) are for.
@@ -921,16 +919,22 @@ not a control surface — acting on an agent is what the CLI verbs (and
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Tree = groups + lineage.** Level-1 groups are the top nodes (matching herdr
-  workspaces); loops appear as nodes with their active runs as subtrees
-  (`run r82c9s`, with `due_at` and elapsed); parked agents collapse into an `Idle`
-  node; unmanaged agents group under their session. Parent→child edges come from
-  `ORCR_PARENT_*`.
+- **Tree = paths; lineage = annotation.** The tree is drawn by **paths** — every
+  agent appears exactly once, at its path (level-1 segments are the top nodes,
+  matching herdr workspaces; loops appear with their active runs as subtrees;
+  parked agents collapse into an `Idle` node; unmanaged agents sit under their
+  session). Parent→child comes from `ORCR_PARENT_*` — and since a child can be
+  created at an absolute path *outside* its parent's scope, lineage is shown as a
+  **row annotation, never a second placement**: a row whose parent lives elsewhere
+  in the tree gets `↖ <parent path>` (e.g. `checker  ● working  ↖ fix_build.fixer`),
+  and selecting a row highlights its parent and children wherever they sit. One
+  node, one place; cross-scope edges are visible but never duplicate or re-root the
+  tree.
 - **Rows** show name, status glyph + status, provider·model (and blocked kind when
   relevant), and age. Glyphs: `●` working · `○` idle · `◐` blocked (floats upward —
   the "needs a human" queue) · `⟳` loop run in flight · queued/starting dimmed with
   their queue position.
-- **Interaction is navigation only**: `/` filters by fqn prefix, arrows
+- **Interaction is navigation only**: `/` filters by path pattern, arrows
   collapse/expand, `q` quits. The CLI filters (`-a`, `--status`, `--loops`,
   `--managed|--unmanaged`) pre-scope the tree.
 - **Data path**: one consistent snapshot (agents, loops, runs, queue positions, GC
@@ -958,13 +962,13 @@ import { orcr } from "@orchestratr/sdk";
 const a = await orcr.agent.run({
   agent: "codex",              // optional — falls back to config defaults.agent
   prompt: "…",
-  name?, fqn?, group?, gc?,    // --name/--fqn/--group/--gc
-  model?, effort?, cwd?, timeout?,
+  name: "worker",              // --name OR path: (exactly one — naming is mandatory)
+  gc?, model?, effort?, cwd?, timeout?,
 });
 
 a.uuid;                        // permanent id
-a.fqn;                         // "refactor.phase_1.a4hg7s"
-a.name; a.group;
+a.path;                        // "refactor.phase_1.worker"
+a.name;                        // "worker" (last segment)
 a.dataDir;                     // = ORCR_AGENT_DATA_DIR  (the data convention, below)
 await a.wait({ timeout? });    // agent wait — settles: turn complete | blocked | ended
 await a.send(prompt);                  // agent send
@@ -973,32 +977,34 @@ for await (const e of a.followLogs()) { … }   // streaming is a separate call
 await a.lastResponse();        // → string (throws TranscriptUnavailable)
 await a.kill();
 
-// collections — positional string = absolute fqn prefix/uuid; {group} = relative
-await orcr.agent.wait("refactor.phase_1", { timeout? });   // absolute
-await orcr.agent.wait({ group: "phase_1" });               // relative to scope
-await orcr.agent.ls({ group?, agent?, status?, managed?, all? });
-await orcr.agent.kill("refactor", { force? });   // no interactive confirm in the SDK
+// collections take patterns — §5.1 rules: relative to scope, "/" absolute, "*" wildcard
+await orcr.agent.wait("phase_1.*", { timeout? });   // relative to my scope
+await orcr.agent.wait("/refactor.*");               // absolute
+await orcr.agent.ls({ pattern?, agent?, status?, managed?, all? });
+await orcr.agent.kill("fanout.*", { force? });   // no interactive confirm in the SDK
 
 // the one-liner — documented sugar for: agent.run({..., gc: "immediate"})
-// → wait() → lastResponse()
+// → wait() → lastResponse(). path optional here (the mandatory-naming exception):
+// unnamed asks get <scope>.ask_<5 alnum> so parallel one-shots never collide.
 const answer: string = await orcr.ask({ agent: "claude", prompt: "…" });
 
-// grouping — async-context scoped (AsyncLocalStorage), NOT process-global.
-// ONE RULE everywhere: group = relative to this scope, fqn/uuid = absolute.
-// Creation:  run({group:"fanout"})            → refactor.fanout.a4hg7s
-// Targeting: wait({group:"fanout"})           → waits refactor.fanout.*
-//            wait()                           → waits the whole refactor.* scope
-//            wait("verify.worker")            → absolute fqn, outside the scope
-await orcr.group("refactor", async (g /* effective prefix */) => { … });
-// orcr.group(path, { killOnThrow: true }) → barrier-kill of the scope on throw
+// scopes — async-context scoped (AsyncLocalStorage), NOT process-global.
+// Every relative path inside fn — creating or targeting — resolves under the scope.
+await orcr.scope("refactor", async (sc /* "refactor", or nested full path */) => {
+  await orcr.agent.run({ path: "fanout.file_1", ... });  // → refactor.fanout.file_1
+  await orcr.agent.wait("fanout.*");                     // → refactor.fanout.*
+  await orcr.agent.wait();                               // → the whole scope: refactor.*
+  await orcr.agent.kill("/verify.*");                    // absolute — outside the scope
+});
+// orcr.scope(path, { killOnThrow: true }) → barrier-kill of the scope on throw
 
-// context — canonical env-derivation helper (never hand-parse ORCR_FQN)
+// context — canonical env-derivation helper (never hand-parse ORCR_PATH)
 const ctx = orcr.context.fromEnv();
-// → {kind:"agent"|"loopRun"|"root", id?, fqn?, parent?, loop?:{name,runId,dataDir}}
-// loop membership is detected via ORCR_LOOP_DATA_DIR, not fqn parsing
+// → {kind:"agent"|"loopRun"|"root", id?, path?, scope?, parent?,
+//    loop?:{name, runId, dataDir}}  — loop membership via ORCR_LOOP_DATA_DIR
 
 // live events — snapshot-then-subscribe (what `orcr top` renders)
-const sub = await orcr.watch({ prefix?, agent?, status?, managed?, sinceSeq? });
+const sub = await orcr.watch({ pattern?, agent?, status?, managed?, sinceSeq? });
 for await (const ev of sub) { /* typed events: agent.status_changed, queue.promoted, … */ }
 
 // durable scheduling
@@ -1010,7 +1016,7 @@ await orcr.loop.run.stop("burn_down", { runId? });
 await orcr.loop.run.ls("burn_down", { all? });
 await orcr.loop.ls(); await orcr.loop.logs("burn_down", { run?, source? });
 await orcr.loop.pause("burn_down"); await orcr.loop.resume("burn_down");
-await orcr.loop.rm(orcr.loopNameFrom(process.env.ORCR_FQN!));  // self-terminate
+await orcr.loop.rm(orcr.loopNameFrom(process.env.ORCR_PATH!));  // self-terminate
 
 // server & api are covered too; attach is terminal-mediated (prepareAttach()
 // returns the exec command + lease — no fake interactive method)
@@ -1036,19 +1042,22 @@ to …"), the caller reading the same path from the handle's `dataDir` — and *
 completion sentinel in the prompt** (*"…then say DONE"*). `ask()`/`lastResponse()` cover the casual cases via
 transcripts.
 
-**The `~/.orcr/data` convention.** orcr reserves a per-identity scratch namespace so
-callers don't have to invent paths:
+**The `~/.orcr/data` convention.** The data tree **mirrors the path tree** — an
+agent's folder is its path, segment by segment, with the uuid as the last folder (so
+reused paths never collide, and every generation stays browsable):
 
 ```
-~/.orcr/data/agents/<agent-uuid>/     # created at spawn; orcr never reads or writes it
+agent  review.fanout.file_1        → ~/.orcr/data/review/fanout/file_1/<uuid>/
+loop   nightly, run r82c9s         → ~/.orcr/data/nightly/r82c9s/
+agent  nightly.r82c9s.triage       → ~/.orcr/data/nightly/r82c9s/triage/<uuid>/
   prompt.md · response.md · memory.md · out/ …   # suggested names — pure convention
-~/.orcr/data/loops/<loop-uuid>/<run_id>/         # created per run
 ```
 
-The directory is created when the agent (or loop run) is created and handed to the
-context itself as **env** (§5.3): `ORCR_AGENT_DATA_DIR` (the agent's own dir) and
-`ORCR_LOOP_DATA_DIR` (the loop run's dir — a scratch space shared by all agents of
-that run). The SDK exposes the same as `a.dataDir` / the run's `dataDir`;
+Note the loop case: because agents inside a run live under the run's path, their data
+folders land *inside the run's folder* automatically — no extra rule. The directory
+is created when the agent (or run) is created and handed to the context as env
+(§5.3): `ORCR_AGENT_DATA_DIR` (your own) and `ORCR_LOOP_DATA_DIR` (the run's, shared
+by all its agents). The SDK exposes the same as `a.dataDir` / the run's `dataDir`;
 prompts reference it (*"write your findings to `<dataDir>/response.md`"*). orcr
 guarantees existence and uniqueness — nothing else; contents are entirely the
 caller's (cleanup is future work, §17).
@@ -1060,13 +1069,13 @@ caller's (cleanup is future work, §17).
 Complete shapes for the common orchestration patterns — **spec snippets** (helpers
 like `stillCheap()`/`queueSize()` are illustrative); the repo ships them as
 self-contained, CI-tested fixtures against the mock provider (M7), which also feed
-the skill's `references/patterns.md` (§10). Two conventions used throughout: group
-names are **descriptive** (`fix_build`, `review.pr_1423`) — no timestamp suffixes
-needed, since an fqn only has to be unique among *live* agents and these flows clean
-up after themselves (`gc: immediate`, `killOnThrow`, explicit kills); and `wait()`
-has no status to pick — it settles on turn-complete for live agents and on
-`ended (completed)` for `gc: immediate` ones, which is exactly the done signal each
-flow needs (§6.1).
+the skill's `references/patterns.md` (§10). Two conventions used throughout: paths
+are **descriptive** (`fix_build.fixer`, `review.fanout.file_1`) — no timestamp
+suffixes needed, since a path only has to be unique among *live* agents and these
+flows clean up after themselves (`gc: immediate`, `killOnThrow`, explicit kills);
+and `wait()` has no status to pick — it settles on turn-complete for live agents and
+on `ended (completed)` for `gc: immediate` ones, which is exactly the done signal
+each flow needs (§6.1).
 
 ### 9.1 Fix-until-green (goal-style: worker + verifier loop)
 
@@ -1082,7 +1091,7 @@ const build = () => {
   catch (e: any) { return { ok: false, errors: String(e.stdout) }; }
 };
 
-await orcr.group("fix_build", async () => {
+await orcr.scope("fix_build", async () => {
   const fixer = await orcr.agent.run({
     agent: "claude", name: "fixer", gc: "never", cwd: process.cwd(),
     prompt: "You fix TypeScript build errors in this repo. Wait for my input.",
@@ -1093,7 +1102,7 @@ await orcr.group("fix_build", async () => {
     if (ok) {
       // independent eyes: a codex verifier judges the changes, not the author
       const verdict = await orcr.ask({
-        agent: "codex", group: "verify",
+        agent: "codex", path: `verify.iter_${iter}`,
         prompt: `The build is green. Review the uncommitted changes in ${process.cwd()}
                  for correctness and unintended edits. Reply exactly PASS or FAIL: <reason>.`,
       });
@@ -1120,23 +1129,23 @@ import { readFile } from "node:fs/promises";
 
 const files = execSync("git diff --name-only main", { encoding: "utf8" }).trim().split("\n");
 
-await orcr.group("review", async () => {
+await orcr.scope("review", async () => {
   const reviewers = await Promise.all(files.map((f, i) =>
     orcr.agent.run({
-      agent: "claude", name: `file_${i}`, group: "fanout", gc: "immediate",
+      agent: "claude", path: `fanout.file_${i}`, gc: "immediate",
       prompt: `Review the diff of ${f} against main for bugs and risky changes.
                Expand the environment variable ORCR_AGENT_DATA_DIR and write your
                findings to $ORCR_AGENT_DATA_DIR/response.md, then say DONE.`,
     })));
 
   // settles when every reviewer finishes: gc:immediate → ended (completed)
-  await orcr.agent.wait({ group: "fanout" });   // relative to the review scope
+  await orcr.agent.wait("fanout.*");    // relative to the review scope
 
   const findings = await Promise.all(reviewers.map(async r =>
-    `## ${r.fqn}\n` + await readFile(`${r.dataDir}/response.md`, "utf8")));
+    `## ${r.path}\n` + await readFile(`${r.dataDir}/response.md`, "utf8")));
 
   const summary = await orcr.ask({
-    agent: "codex", group: "merge",
+    agent: "codex", path: "merge.synthesizer",
     prompt: `Merge these per-file review findings into one prioritized report,
              deduplicating overlaps:\n\n${findings.join("\n\n")}`,
   });
@@ -1158,14 +1167,14 @@ const HANDLERS: Record<string, { agent: string; prompt: (t: string) => string }>
 };
 
 export async function triage(item: string) {
-  return orcr.group("triage", async () => {
+  return orcr.scope("triage", async () => {
     const kind = (await orcr.ask({
-      agent: "claude", group: "classify",
+      agent: "claude", path: "classify.triage_bot",
       prompt: `Classify this as exactly one word — bug, feature, or question:\n${item}`,
     })).trim().toLowerCase();
 
     const h = HANDLERS[kind] ?? HANDLERS.question;   // unknown → safest handler
-    return orcr.ask({ agent: h.agent, group: kind, prompt: h.prompt(item) });
+    return orcr.ask({ agent: h.agent, path: `${kind}.handler`, prompt: h.prompt(item) });
   });
 }
 ```
@@ -1180,7 +1189,7 @@ import { orcr } from "@orchestratr/sdk";
 
 const LENSES = ["correctness", "security", "edge cases and error handling"];
 
-await orcr.group("harden", async () => {
+await orcr.scope("harden", async () => {
   const worker = await orcr.agent.run({
     agent: "claude", name: "worker", gc: "never", cwd: process.cwd(),
     prompt: "Implement the task in TASK.md. Say DONE when finished.",
@@ -1188,9 +1197,9 @@ await orcr.group("harden", async () => {
   await worker.wait();
 
   for (let round = 1; round <= 5; round++) {
-    const verdicts = await Promise.all(LENSES.map(lens =>
+    const verdicts = await Promise.all(LENSES.map((lens, i) =>
       orcr.ask({
-        agent: "codex", group: "verify",
+        agent: "codex", path: `verify.round_${round}.lens_${i}`,
         prompt: `Adversarially review the uncommitted changes in ${process.cwd()}
                  through the lens of ${lens}. Try hard to find a real problem.
                  Reply PASS, or FAIL: <the single most important problem>.`,
@@ -1218,13 +1227,13 @@ const GENERATORS = [
   { agent: "codex" },
 ];
 
-await orcr.group("landing_copy", async () => {
+await orcr.scope("landing_copy", async () => {
   const drafts = await Promise.all(GENERATORS.map((g, i) =>
-    orcr.ask({ ...g, group: "generate", name: `gen_${i}`,
+    orcr.ask({ ...g, path: `generate.gen_${i}`,
                prompt: "Write hero copy for orchestratr.dev: one headline, one subhead." })));
 
   const pick = await orcr.ask({
-    agent: "claude", group: "judge",
+    agent: "claude", path: "judge.picker",
     prompt: `Pick the best draft. Reply with only its number.\n` +
             drafts.map((d, i) => `--- ${i} ---\n${d}`).join("\n"),
   });
@@ -1240,14 +1249,14 @@ When N is too large for one judge, run pairwise brackets; winners advance:
 import { orcr } from "@orchestratr/sdk";
 
 async function tournament(candidates: string[]): Promise<string> {
-  return orcr.group("tournament", async () => {
+  return orcr.scope("tournament", async () => {
     let pool = candidates;
     for (let round = 1; pool.length > 1; round++) {
       const next: string[] = [];
       for (let i = 0; i < pool.length; i += 2) {
         if (i + 1 >= pool.length) { next.push(pool[i]); continue; }   // bye
         const verdict = await orcr.ask({
-          agent: "claude", group: `round_${round}`,
+          agent: "claude", path: `round_${round}.match_${i / 2}`,
           prompt: `Which is better, A or B? Reply exactly A or B.\n` +
                   `--- A ---\n${pool[i]}\n--- B ---\n${pool[i + 1]}`,
         });
@@ -1290,7 +1299,7 @@ import { queueSize, workOneItem } from "./queue";
 await workOneItem();       // agents spawned here land under burn_down.<run_id>.…
 
 if (queueSize() === 0) {
-  await orcr.loop.rm(orcr.loopNameFrom(process.env.ORCR_FQN!));   // self-terminate
+  await orcr.loop.rm(orcr.loopNameFrom(process.env.ORCR_PATH!));   // self-terminate
 }
 ```
 
@@ -1317,15 +1326,15 @@ skill/
 1. **When to reach for orcr** — delegate to a different provider, parallelize,
    background something, schedule, or supervise toward a goal.
 2. **The hot path** — five lines: `orcr agent run -a codex -p "…"` → prints
-   `<fqn> <uuid>`; `orcr agent wait <fqn>`; `orcr agent logs <fqn> --last-response`;
-   `orcr agent send <fqn> "…"` to steer; `orcr agent kill <fqn> -y` to clean up a
-   subtree — and say it plainly: **positional targets are absolute fqn prefixes**
-   (`kill review -y` kills everything under `review.*`; `--group` is the relative
-   form), while `send`/`logs`/`attach` are exact.
+   `<path> <uuid>`; `orcr agent wait <path>`; `orcr agent logs <path>
+   --last-response`; `orcr agent send <path> "…"` to steer;
+   `orcr agent kill "<path>.*" -y` to clean a subtree — and say it plainly: paths
+   are **relative to your scope** (`/` = absolute), `*` is the only wildcard,
+   **quote patterns**, and `send`/`logs`/`attach` take exact paths only.
    Always `--json` when scripting; the exit-code table.
-3. **Identity & grouping in three sentences** — fqn = group.name; your children nest
-   under your group automatically; pass `--group`/`--name` to organize, prefix ops to
-   operate on subtrees.
+3. **Identity in three sentences** — every agent lives at a path; the last segment
+   is its name (naming is mandatory: `--name` or `--path`); your children nest under
+   your scope automatically, and `*` patterns operate on subtrees.
 4. **The file convention** — guaranteed outputs go to `~/.orcr/data/agents/<uuid>/`
    paths named in the prompt; never parse terminal output.
 5. **Choosing a provider/model** — a small routing table (heavy reasoning → X, cheap
@@ -1351,11 +1360,12 @@ so explicitly), keeping the always-on footprint minimal.
 
 1. CLI/SDK sends the run request over the socket (auto-starting the server if
    needed, §11.6). The server: loads config, resolves the integration, resolves the
-   effective group (inherited prefix from the caller's `ORCR_ID` per §5.1), and — in
+   effective path (relative paths resolved against the caller's scope per §5.1) —
+   and, in
    **one `BEGIN IMMEDIATE` transaction** — validates grammar/limits, allocates the
    uuid, allocates or validates the name against the partial unique index, and
    inserts the agent row with the full launch payload and status `queued`. The
-   identity is now durable — the verb returns `<fqn> <uuid>`. The agent's data dir
+   identity is now durable — the verb returns `<path> <uuid>`. The agent's data dir
    (§8) is created.
 2. Queue promotion (§5.5) picks it up (`queued → starting`, stuck-start guard armed):
    ensure the owned session's herdr server; ensure the level-1 workspace; start the
@@ -1456,7 +1466,7 @@ live reads prefer native files).
 ### 11.5 Reconciliation & unmanaged discovery
 
 Reconciliation = the drift repair between the store and herdr reality, on server start
-and periodically: managed agents whose panes vanished → `lost` (fqn reserved); a
+and periodically: managed agents whose panes vanished → `lost` (path reserved); a
 `lost` agent resolves to `ended (lost)` once herdr is reachable and one following
 poll still doesn't show the terminal (or on an explicit kill) — a herdr outage alone
 never frees names, but there is no indefinite quarantine either;
@@ -1546,14 +1556,14 @@ sqlite, WAL, under `~/.orcr/`, owned exclusively by the server (single writer).
 
 ```
 agents:    uuid PK (UUIDv7 — permanent identity; events/turns/attaches reference it),
-           fqn (group_path || '.' || name), group_path, name,
-             UNIQUE (group_path, name) WHERE status NOT IN ('ended'),
-             -- fqn reservation: active agents only; ended fqns reusable
+           path, name,   -- name = the path's last segment, stored for display
+             UNIQUE (path) WHERE status NOT IN ('ended'),
+             -- path reservation: active agents only; ended paths reusable
            managed (0|1),
            origin (run|detected),
              -- run: created by orcr · detected: found in a user session
            herdr_session, terminal_id,                 -- unmanaged identity key (§5.7)
-           parent_id (uuid), parent_fqn,               -- lineage (§5.3)
+           parent_id (uuid), parent_path,              -- lineage (§5.3)
            agent (provider), model, effort, gc_mode, cwd,
            workspace_id, tab_id, pane_id,              -- current location, not identity
            home_workspace,                             -- where un-park returns the pane
@@ -1598,26 +1608,27 @@ events:    seq PK AUTOINCREMENT, ts, kind, ref_uuid, payload_json
            -- also the source for `loop logs --source orcr`
 ```
 
-Indexes: the partial unique fqn index above; `(status, queue_seq)` for promotion;
-`(agent, status)` for per-provider capacity; `(fqn)`, `(parent_id)`, `(pane_id)`,
+Indexes: the partial unique path index above; `(status, queue_seq)` for promotion;
+`(agent, status)` for per-provider capacity; `(path)`, `(parent_id)`, `(pane_id)`,
 `(herdr_session, terminal_id)`, `(agent_session_kind, agent_session_value)`; loops
 `(status, next_fire_at)`; loop_runs `(loop_uuid, status)`; events
-`(ref_uuid, seq)`. Fqn-prefix queries are indexed scans on `fqn`, matched on `.`
-boundaries; uuid prefixes (≥ 8 hex chars) resolve against the primary key.
+`(ref_uuid, seq)`. `*` patterns compile to indexed range/`GLOB` scans on `path` —
+never naive SQL `LIKE` (`_` is a LIKE wildcard and a legal name character); uuid
+prefixes (≥ 8 hex chars) resolve against the primary key.
 
 **Derived fields** (one definition, so CLI/TUI/SDK can't drift): `queue_position` =
 rank by `queue_seq` among status `queued` (recomputed per read); `age` basis =
 `created_at` for queued/starting, `last_status_change_at` otherwise; a run's
-`agents` count = active agents whose fqn extends `<loop>.<run_id>` on a segment
-boundary; `group_display` = the §5.1 transform, computed not stored; agent/run
-**data dirs are derived, not stored** — `$ORCR_HOME/data/agents/<uuid>` and
-`$ORCR_HOME/data/loops/<loop_uuid>/<run_id>` (relocating `ORCR_HOME` relocates them;
-old absolute paths are not stable). Run logs (`log_path`) are versioned JSONL — one
+`agents` count = active agents whose path matches `<loop>.<run_id>.*`; `path_display` = the §5.1 transform, computed not stored; agent/run
+**data dirs are derived, not stored** — the data tree mirrors the path tree (§8):
+`$ORCR_HOME/data/<path segments>/<uuid>` for agents,
+`$ORCR_HOME/data/<loop_name>/<run_id>` for runs (relocating `ORCR_HOME` relocates
+them; old absolute paths are not stable). Run logs (`log_path`) are versioned JSONL — one
 record per line `{ts, source: orcr|command, stream, text}` — size-capped and rotated
 with a sidecar index.
 
 `launch_json` (versioned): provider, resolved argv, prompt (stored in full), model,
-effort, cwd (canonicalized), gc/timeout, effective group + how it was derived, env
+effort, cwd (canonicalized), gc/timeout, effective path + how it was derived, env
 injected (the §5.3 contract only — never the caller's environment), integration
 version. It is an audit/recovery payload; automatic relaunch is not a feature of this
 version.
@@ -1628,21 +1639,21 @@ Every command has `--json`; every verb is a socket method, and the full set of
 methods/params/results/events is published by `orcr api schema` — the shapes below are
 the load-bearing results (`{"ok":true,"result":…}` envelopes assumed; verbs not listed
 return `{}` or an obvious echo, e.g. `server start → {status:"started|already_running"}`,
-`attach → {uuid, fqn, attached:bool, takeover:bool}` on detach, `api snapshot →
+`attach → {uuid, path, attached:bool, takeover:bool}` on detach, `api snapshot →
 {snapshot_seq, agents:[…], loops:[…], queue:[…]}`).
 
 ```
-agent run        {agent:{uuid,fqn,name,group,group_display,status,agent,managed,
-                  cwd,data_dir,queue_position?,parent_id?,parent_fqn?}, permissions:"bypass"}
-agent ask        raw response text on stdout · --json {uuid, fqn, response:{text,final}}
-agent send       {uuid, fqn, delivered_while:"working|idle|parked", input_seq}
-agent logs       {uuid, fqn, resolved:"active|latest_ended", entries:[…]}
-                 · --last-response {uuid, fqn, resolved, response:{text,final}}
-agent wait       {targets:[{uuid,fqn,status,ok,reason,exit_reason?,
+agent run        {agent:{uuid,path,name,path_display,status,agent,managed,
+                  cwd,data_dir,queue_position?,parent_id?,parent_path?}, permissions:"bypass"}
+agent ask        raw response text on stdout · --json {uuid, path, response:{text,final}}
+agent send       {uuid, path, delivered_while:"working|idle|parked", input_seq}
+agent logs       {uuid, path, resolved:"active|latest_ended", entries:[…]}
+                 · --last-response {uuid, path, resolved, response:{text,final}}
+agent wait       {targets:[{uuid,path,status,ok,reason,exit_reason?,
                             next:{kind,command}}],
                   all_ok:bool, timed_out:bool, decision_seq}
                   -- wait timeout: ok:true + timed_out + exit 3 (§6 rule)
-agent kill       {killed:[{uuid,fqn}], skipped:[{uuid,fqn,reason:"ended|force_required|…"}],
+agent kill       {killed:[{uuid,path}], skipped:[{uuid,path,reason:"ended|force_required|…"}],
                   all_killed:bool}
 agent ls         {agents:[{…flat row, see §6.1}]}
 loop create      {loop:{uuid,name,cadence,tz,next_fire_at,argv,max_concurrency,overlap}}
@@ -1756,10 +1767,10 @@ The cases most likely to bite, and the specified behavior for each:
   (reroute-on-limit is future work, §17).
 - **Env scrubbing** — if a provider launders its subprocess environment, a child
   `orcr` call loses `ORCR_*` and becomes a root context: lineage breaks gracefully
-  (the agent still runs, just un-parented; the skill teaches passing `--group`
-  explicitly when this matters).
+  (the agent still runs, just un-parented; the skill teaches passing an absolute
+  `--path` explicitly when this matters).
 - **Runaway nesting / fan-out** — agents spawning agents recursively are bounded by
-  the fqn depth limit (≤ 6 segments) and the concurrency caps: admission control, not
+  the path depth limit (≤ 8 segments) and the concurrency caps: admission control, not
   polite requests in the skill.
 - **Prompt injection via child output** — child output flows into parent prompts by
   construction; the skill mandates treating it as data (quote it; never execute
@@ -1789,12 +1800,12 @@ detailed plan in [`spec/v2/milestones/`](milestones/).
 | --- | --- | --- |
 | **[M0 · Foundations](milestones/m0-foundations.md)** | Repo scaffold; config load/validate; `ORCR_HOME` layout (store, logs, data, lock); store schema + init; herdr **socket driver** (handshake, version check, typed requests); owned-session bootstrap; mock provider + e2e harness. | driver conformance tests against live herdr; store round-trip tests. |
 | **[M1 · Server & protocol](milestones/m1-server-protocol.md)** | `server start/stop/status/logs`; single-instance lock + auto-start handshake; socket API skeleton (`api schema`, `api snapshot`, envelopes, version negotiation); events table + snapshot-then-subscribe. | two clients race auto-start → one server; kill -9 → clean restart; schema validates. |
-| **[M2 · Agent core](milestones/m2-agent-core.md)** | `agent run` (queue → promotion → spawn pipeline), identity (uuid + fqn, partial unique index), env contract, claude + codex integrations (launch/startup/shutdown), `send`, `kill` (+ confirm/-y), `ls`, stuck-start guard, status model. | spawn/send/kill e2e on both providers; concurrent-spawn uniqueness; cancel-during-starting. |
+| **[M2 · Agent core](milestones/m2-agent-core.md)** | `agent run` (queue → promotion → spawn pipeline), identity (uuid + path, partial unique index), env contract, claude + codex integrations (launch/startup/shutdown), `send`, `kill` (+ confirm/-y), `ls`, stuck-start guard, status model. | spawn/send/kill e2e on both providers; concurrent-spawn uniqueness; cancel-during-starting. |
 | **[M3 · Completion & logs](milestones/m3-completion-logs.md)** | turns table + input epochs + external-turn detection; `wait` (all statuses, snapshot-then-subscribe); transcript adapters (claude, codex); `logs`/`--last-response`/`--tail`/`--follow`; final-response capture; `gc immediate`. | send→wait→last-response round-trips; stale-idle never satisfies a newer send; restart mid-turn. |
 | **[M4 · GC & reconciliation](milestones/m4-gc-reconciliation.md)** | `gc auto` park/reap (two-phase moves, home workspace), `attach` + leases, reconciler (lost/unmarked, move repair), unmanaged discovery (session + terminal_id). | park→send→un-park e2e; kill server mid-move → reconciler repairs; foreign panes never touched. |
 | **[M5 · Loops](milestones/m5-loops.md)** | `loop create/pause/resume/rm/ls/logs` + `loop run start/stop/ls`; scheduler (tz-correct cron, run ids, process groups, overlap/coalescing, restart recovery); `server enable/disable` (launchd/systemd). | DST boundary tests; overlap coalescing; `loop run stop <name> <run_id>`; reboot-simulation recovery. |
 | **[M6 · top](milestones/m6-top.md)** | The TUI (§7): view-only tree, live statuses, filters, navigation; snapshot+event rendering. | renders 100-agent trees from snapshot+events without drops; filter parity with `ls`; mid-storm restart. |
-| **[M7 · SDK & skill](milestones/m7-sdk-skill.md)** | TS SDK (generated protocol client + helpers + `orcr.group()`/`ask()`/`watch()`); §9 examples as tested recipes; SKILL.md + references; docs; npm publish. | examples run end-to-end against live providers; SDK covers 100% of schema methods. |
+| **[M7 · SDK & skill](milestones/m7-sdk-skill.md)** | TS SDK (generated protocol client + helpers + `orcr.scope()`/`ask()`/`watch()`); §9 examples as tested recipes; SKILL.md + references; docs; npm publish. | examples run end-to-end against live providers; SDK covers 100% of schema methods. |
 
 ## 17 · Future work
 
@@ -1824,7 +1835,7 @@ Collected from everywhere above; explicitly parked, in rough priority order:
   blocked / loop failures.
 - **Python SDK** (the socket schema makes this mostly generatable).
 - **Coordination primitives** — inboxes, decision gates, task boards (today: files +
-  groups + the SDK patterns).
+  paths + the SDK patterns).
 - **Git worktree provisioning** — per-agent isolated checkouts via herdr worktrees.
 - **Windows** — named-pipe transport, path conventions, Task Scheduler `enable`.
 - **TCP/HTTP listener** for the socket API (remote tooling; off by default) (§11.6).

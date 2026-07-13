@@ -17,7 +17,7 @@ and the owned session stays tidy without ever harming a pane it shouldn't.
   enforcement (kill with `exit_reason: timeout`).
 
 ### attach (spec §6.1)
-- `agent attach <fqn|uuid> [--takeover]` — terminal-mediated: `agent.attach.prepare`
+- `agent attach <path|uuid> [--takeover]` — terminal-mediated: `agent.attach.prepare`
   inserts the lease FIRST (same transaction as target/location resolution), returns
   the exec command; the CLI runs `herdr agent attach`, heartbeats while it runs,
   releases on exit (abrupt CLI death → `expires_at`/heartbeat expiry; fields:
@@ -26,7 +26,7 @@ and the owned session stays tidy without ever harming a pane it shouldn't.
   queued/ended targets → `state_conflict`.
 
 ### Reconciliation (spec §11.5)
-- On server start + periodically: vanished panes → `lost` (fqn reserved; resolved
+- On server start + periodically: vanished panes → `lost` (path reserved; resolved
   to `ended (lost)` once herdr is reachable and one following poll still misses the
   terminal, or on explicit kill — outage never frees names, no indefinite quarantine
   either); marked panes with no store row → **counted and reported in
@@ -38,7 +38,7 @@ and the owned session stays tidy without ever harming a pane it shouldn't.
 ### Unmanaged discovery (spec §5.7)
 - Poll/stream herdr for agents in non-owned sessions every few seconds — **supported
   providers only** (both integrations present, §11.4); others ignored entirely.
-- Rows keyed by (herdr session, `terminal_id`); fqn `unmanaged.<session>.<pane>`;
+- Rows keyed by (herdr session, `terminal_id`); path `unmanaged.<session>.<pane>`;
   uuid like any row; new terminal = new row; terminal gone → `ended`.
 - Unmanaged lifecycle statuses (working/idle/blocked/unknown/ended); the §5.7
   behavior contract enforced verb-by-verb (`kill` needs `--force`; no GC; send/wait/

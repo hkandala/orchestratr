@@ -23,8 +23,8 @@ here — M0 is done when the plumbing is provably correct against a live herdr.
 
 ### Store (spec §12)
 - sqlite (WAL) init with the full §12 schema: `agents`, `turns`, `attaches`, `loops`,
-  `loop_runs`, `events` + all indexes, including the partial unique fqn index
-  (`UNIQUE (group_path, name) WHERE status NOT IN ('ended')`).
+  `loop_runs`, `events` + all indexes, including the partial unique path index
+  (`UNIQUE (path) WHERE status NOT IN ('ended')`).
 - Typed data-access layer; all writes through `BEGIN IMMEDIATE` transaction helpers.
 - Schema version stamp + refusal-with-message on mismatch (two orcr versions sharing
   one store).
@@ -58,7 +58,7 @@ here — M0 is done when the plumbing is provably correct against a live herdr.
 
 - Driver conformance suite passes against the installed herdr: every wrapped call
   round-trips; version handshake rejects a fabricated protocol number.
-- Store round-trip tests: schema init idempotent; partial unique index enforces fqn
+- Store round-trip tests: schema init idempotent; partial unique index enforces path
   reservation semantics (insert active duplicate fails, ended duplicate succeeds).
 - Config: golden tests for every validation error; `ORCR_HOME` relocation works.
 - Session bootstrap creates/reuses the owned session; empty-workspace auto-removal

@@ -10,13 +10,13 @@ vocabulary. Ends with publishable packages and docs.
 - **Generated protocol client**: every socket method from `api schema`, 1:1, typed —
   regenerated in CI so drift fails the build.
 - **Convenience layer** (each helper documents its underlying calls):
-  - `orcr.agent.run()` → handle (`uuid`, `fqn`, `name`, `group`, `dataDir` —
+  - `orcr.agent.run()` → handle (`uuid`, `path`, `name`, `dataDir` —
     mirroring `ORCR_AGENT_DATA_DIR`/`ORCR_LOOP_DATA_DIR`,
     `wait()`, `send()`, `logs()`, `followLogs()` (AsyncIterable), `lastResponse()`,
     `kill()`).
   - Collections with CLI-identical subtree semantics: `orcr.agent.wait/ls/kill`.
   - `orcr.ask()` — run(gc: immediate) → wait(idle) → lastResponse.
-  - `orcr.group(prefix, fn, { killOnThrow? })` — AsyncLocalStorage-scoped grouping
+  - `orcr.scope(prefix, fn, { killOnThrow? })` — AsyncLocalStorage-scoped grouping
     (not process-global); nests with inherited context.
   - `orcr.watch({ prefix?, agent?, status?, managed?, sinceSeq? })` —
     snapshot-then-subscribe AsyncIterable of typed events.
@@ -55,7 +55,7 @@ vocabulary. Ends with publishable packages and docs.
 - SDK covers 100% of schema methods (generated-client CI check).
 - Every §9 recipe runs end-to-end against the mock provider in CI; fix-until-green
   and fan-out-merge smoke-tested against real claude + codex.
-- `orcr.group` nesting: SDK-in-loop-in-agent composes the same effective groups as
+- `orcr.scope` nesting: SDK-in-loop-in-agent composes the same effective paths as
   the CLI path (property test).
 - Skill drill: fresh agent + SKILL.md only → completes the hot path; reference files
   contain no stale flags (doc-test against `--help`).

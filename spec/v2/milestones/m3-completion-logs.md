@@ -25,11 +25,9 @@ said. M3 ships the turns machinery, `wait`, the claude/codex transcript adapters
   fresh transition, never trust a stale idle.
 
 ### wait (spec §6.1)
-- Targets: positional subtree selectors + uuids (absolute) or --group (relative to
-  the caller's context); membership snapshotted at invocation; active agents only. No status flag — one meaning: block until every target **settles**
-  (turn complete / ended-completed = success; blocked → exit 4; other terminal →
-  exit 5; timeout → 3; no match → 6).
-- Uniform results: one `<fqn> <reason>` line per agent (single token reason:
+- Targets: patterns + uuids (§5.1 — relative to the caller's scope, `/` absolute,
+  `*` wildcard); membership snapshotted at invocation; active agents only.
+- Uniform results: one `<path> <reason>` line per agent (single token reason:
   turn_complete/completed/blocked:<kind>/killed/…), identical for single-agent and
   subtree waits; idempotent (already-settled targets report immediately); JSON adds
   `{uuid, status, ok, exit_reason?, next}` per target.
@@ -52,7 +50,7 @@ said. M3 ships the turns machinery, `wait`, the claude/codex transcript adapters
   stdout; exactly the documented sugar, no extra semantics.
 
 ### logs (spec §6.1)
-- `agent logs <fqn|uuid>`: structured entries; `--tail <n>`; `--follow` (subscription
+- `agent logs <path|uuid>`: structured entries; `--tail <n>`; `--follow` (subscription
   under the hood); `--last-response` (fails loudly: `transcript_unavailable` /
   `integration_missing`); history via uuid.
 - Works on any agent with a reported `agent_session` + an orcr integration.
