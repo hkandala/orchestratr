@@ -1,8 +1,9 @@
 # M6 · top
 
-The live dashboard (spec §7): one TUI that shows the whole tree — groups, lineage,
-loops and their runs, statuses in real time — and lets a human act (attach, send,
-kill, logs) without leaving it.
+The live dashboard (spec §7): one **view-only** TUI that shows the whole tree —
+groups, lineage, loops and their runs, statuses in real time. A status display, not a
+control surface: acting on agents stays in the CLI (a detail panel with actions is
+future work).
 
 ## Scope
 
@@ -14,10 +15,10 @@ kill, logs) without leaving it.
 - Display transform for headings (machine fqn shown alongside); status glyphs
   (`●` working · `○` idle · `◐` blocked, pulsing + floated upward · `⟳` running loop
   run · dimmed queued/starting with queue position).
-- Detail panel for the selected node: uuid, status + age, provider/model/effort,
-  parent, cwd, turn/input_seq, gc mode + clocks, `last ►` response snippet (from the
-  captured `final_response` or the transcript adapter).
-- Layout per the §7 mock; graceful degradation on narrow terminals.
+- Rows: name, status glyph + status, provider·model, blocked kind when relevant,
+  age; loop-run nodes show due_at + elapsed.
+- Layout per the §7 mock (single tree, no detail panel); graceful degradation on
+  narrow terminals.
 
 ### Data path (spec §11.6)
 - Strict snapshot-then-subscribe: one consistent snapshot (agents, loops, runs, queue
@@ -28,10 +29,8 @@ kill, logs) without leaving it.
   burst is one redraw).
 
 ### Interaction
-- `enter` attach (hand the terminal to the pane; return on detach) · `s` inline send
-  prompt · `k` kill (same confirmation contract as the CLI) · `l` logs view
-  (tail + follow) · `w` wait-marker on a node (visual) · `/` fqn-prefix filter ·
-  collapse/expand · `q` quit.
+- Navigation only: `/` fqn-prefix filter · arrows collapse/expand · `q` quit. No
+  action keys in this milestone.
 - CLI filters pre-scope the tree: `orcr top [<fqn-prefix|uuid>] [-a <provider>]
   [--status <s>] [--managed|--unmanaged] [--loops]`; live-only by design (`--all` is
   `ls --all`'s job).
@@ -43,12 +42,10 @@ kill, logs) without leaving it.
   state exactly (golden tree diff); repeated with a mid-storm server restart.
 - Scale: 100-agent tree renders and updates under the frame budget without dropped
   events.
-- Keys drive real agents e2e: attach round-trip, send from the TUI lands a turn, kill
-  confirms and reaps, logs view follows.
 - Filters: each CLI filter and the `/` filter produce the same node sets as the
   equivalent `ls` query.
 
 ## Out of scope
 
-Per-agent live activity feed (tool calls / response summaries in the tree) — future
-work (§17).
+Action keys (attach/send/kill/logs from the TUI) and the per-agent live activity
+feed — future work (§17).

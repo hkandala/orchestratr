@@ -83,7 +83,7 @@ attach over SSH. Everything below is verified against the installed herdr (0.7.x
 Two constraints: herdr exposes **no token/cost fields** and **no structured
 last-message** — both come from orcr's per-provider transcript adapters. And herdr's
 state detection depends on **herdr's own integrations** being installed per provider —
-the capability matrix in §11.4 spells out exactly what degrades without them.
+which is why orcr requires them for every supported provider (§11.4).
 
 herdr is **discovered, never embedded**: config `herdr.bin` → `$ORCR_HERDR_BIN` →
 `$PATH`; missing → friendly install pointer, exit 2.
@@ -166,8 +166,10 @@ you / a script / another agent
   completion-detection parameters, graceful-shutdown recipe, transcript adapter.
   **claude and codex ship built-in first**; the module boundary is the contract for
   adding more, and a future `orcr integration add|rm|ls` manages them like herdr does.
-  What exactly works without an orcr integration — and without the corresponding
-  *herdr* integration — is specified feature-by-feature in the §11.4 matrix.
+  A provider is **supported only when both layers are present** — orcr's integration
+  *and* herdr's integration for that provider (`herdr integration install <p>`);
+  anything else fails fast at `agent run` with the exact install commands, and
+  unmanaged discovery skips it. No degraded half-modes (§11.4).
 - **Store** — sqlite (WAL) under `~/.orcr/`, owned exclusively by the server. Schema
   in §12.
 
@@ -265,13 +267,18 @@ workspace forever.
 
 ### 5.3 Env contract
 
-Four variables, injected into every managed agent pane and every loop-run command:
+Injected into every managed agent pane and every loop-run command:
 
 ```
-ORCR_ID          this agent's uuid — or, in a loop-run command, the run's uuid
-ORCR_FQN         this agent's fqn (group.name) — or the run path <loop_name>.<run_id>
-ORCR_PARENT_ID   the uuid of the context that spawned this agent (unset at root)
-ORCR_PARENT_FQN  the fqn / run path of that context (unset at root)
+ORCR_ID           this agent's uuid — or, in a loop-run command, the run's uuid
+ORCR_FQN          this agent's fqn (group.name) — or the run path <loop_name>.<run_id>
+ORCR_PARENT_ID    the uuid of the context that spawned this agent (unset at root)
+ORCR_PARENT_FQN   the fqn / run path of that context (unset at root)
+ORCR_DATA_DIR     this context's data dir (§8): ~/.orcr/data/agents/<uuid> for an
+                  agent, ~/.orcr/data/loops/<loop_uuid>/<run_id> for a run command
+ORCR_RUN_DATA_DIR the enclosing loop run's data dir — set for the run command and
+                  every agent descended from it (a shared scratch space for the run);
+                  unset outside loops
 ```
 
 Loop-run commands are root contexts themselves: their `ORCR_PARENT_*` are unset, and
@@ -384,7 +391,7 @@ work finish?* — in three groups:
 | --- | --- | --- |
 | finished | `completed` | gc-immediate: the turn completed and the final response was captured before the pane closed |
 | finished | `reaped` | gc-auto tidy-up: the agent had completed its turns, sat parked past `kill_after`, and GC released the pane — nothing was cut short |
-| cut short | `killed` | explicit `agent kill` (or `loop stop` / `loop rm --kill-active`) while it may still have had work |
+| cut short | `killed` | explicit `agent kill` (or `loop run stop` / `loop rm --kill-active`) while it may still have had work |
 | cut short | `timeout` | an explicit `--timeout` expired mid-work |
 | never ran | `canceled` | killed while still `queued`/`starting` — no work was done |
 | never ran | `failed` | never started properly (stuck-start guard, startup error) |
@@ -424,9 +431,11 @@ orcr tracks **all** agents herdr can see — including ones the user started by 
 their own sessions — but only *manages* the ones it created.
 
 - **Managed** — created by `agent run` in the owned session. Full lifecycle.
-- **Unmanaged (detected)** — agents herdr detects in the user's own sessions. The
-  server discovers them into the store and keeps them current while it runs
-  (state changes, closure — polled/streamed from herdr every few seconds). Identity is
+- **Unmanaged (detected)** — agents herdr detects in the user's own sessions,
+  **for supported providers only** (both integrations present, §11.4 — others are
+  ignored entirely). The server discovers them into the store and keeps them current
+  while it runs (state changes, closure — polled/streamed from herdr every few
+  seconds). Identity is
   auto-assigned: a uuid like any other row, and an fqn under group
   `unmanaged.<session_slug>` with name derived from the pane (e.g.
   `unmanaged.main.w6_p1`) — the tree groups by session. Internally each row is keyed
@@ -449,7 +458,7 @@ their own sessions — but only *manages* the ones it created.
 | `send` | ✓ | ✓ (delivery works; the turn it starts is tracked as external) |
 | `wait` | ✓ full semantics | ✓ on herdr-reported status |
 | `attach` | ✓ | ✓ |
-| `logs` / `--last-response` | ✓ | ✓ *if* the provider's herdr integration reports an `agent_session` and orcr has the provider's integration; else `transcript_unavailable`/`integration_missing` |
+| `logs` / `--last-response` | ✓ | ✓ (both integrations are guaranteed for tracked agents; `transcript_unavailable` if the transcript can't be located/settled) |
 | `kill` | ✓ | requires `--force` (closes a pane orcr doesn't own) |
 | `ls` / `top` | ✓ | ✓ (grouped under `unmanaged.<session>`) |
 
@@ -529,10 +538,12 @@ reads prefer the native files.
 matching any target, **snapshotted at invocation** (historical ended rows are never
 wait targets; no match at all → exit 6). `--status` (default `idle`) is the status
 being waited for. Semantics per target: `idle` — the latest turn is complete (a parked
-agent is turn-complete by definition; an already-complete agent returns immediately);
-`working` — the agent has started working (useful right after `send`); `blocked` —
-needs a human; `ended` — any terminal outcome counts as reached (scripts that care
-read `exit_reason` in the JSON). Returns when **all** targets reach the status.
+agent is turn-complete by definition; an already-complete agent returns immediately;
+an agent that ended with `exit_reason: completed` — e.g. `gc immediate` closing the
+pane right after capture — **also counts as reached**: its turn completed, which is
+what idle means); `working` — the agent has started working (useful right after
+`send`); `blocked` — needs a human; `ended` — any terminal outcome counts as reached
+(scripts that care read `exit_reason` in the JSON). Returns when **all** targets reach the status.
 Exits: `0` all reached · `4` a target blocked while a non-blocked status was awaited ·
 `5` a target reached a terminal status that precludes the awaited non-terminal status ·
 `3` `--timeout` expired · `6` no target matched. JSON reports every target as
@@ -568,18 +579,23 @@ exit_reason?}`.
 
 ### 6.2 loop
 
+Two levels, deliberately: verbs on the **loop** (the definition) and verbs on its
+**runs** (executions), under the `loop run` sub-noun:
+
 ```
-orcr loop create ("<cron>" | --once-at <time>)
-                 [--name <n>] [--max-concurrency <n>] [--overlap queue|skip]
+orcr loop create <name> ("<cron>" | --once-at <time>)
+                 [--max-concurrency <n>] [--overlap queue|skip]
                  [--timeout <dur>] [--json] -- <command…>
-orcr loop run    <name>... [--json]
-orcr loop stop   <name> [--run <run_id>] [-y] [--json]
-orcr loop ls     [<name>...] [--status <s>] [--all] [--json]
-orcr loop logs   <name> [--run <run_id>] [--source orcr|command]
-                 [--tail <n>] [--follow] [--json]
 orcr loop pause  <name>... [--json]
 orcr loop resume <name>... [--json]
 orcr loop rm     <name>... [--kill-active] [-y] [--json]
+orcr loop ls     [<name>...] [--status <s>] [--all] [--json]
+orcr loop logs   <name> [--run <run_id>] [--source orcr|command]
+                 [--tail <n>] [--follow] [--json]
+
+orcr loop run start <name> [--json]               # manual trigger
+orcr loop run stop  <name> [<run_id>] [-y] [--json]
+orcr loop run ls    <name> [--all] [--json]
 ```
 
 Durable cron for **any command** — the `--` boundary captures an **argv array**,
@@ -589,14 +605,16 @@ exact cancel command. The command spawns agents via CLI/SDK like any other calle
 loop owns *time only*: no provider flags, no prompts, no judge logic, no stop-condition
 DSL.
 
-- **Name = group.** A loop's name is one group segment (`[a-z0-9_]+`); default
-  `loop_<5-char alnum>`. The loop gets its own workspace (level-1 group = its name).
-  **Loops are always root-level** — a loop created from inside an agent does *not*
-  inherit the agent's group (loops are global entities, not children). Names are
-  unique among **active** loops; a removed loop's name is reusable — internally each
-  definition has its own uuid and runs/events reference it, so histories of same-named
-  definitions never collide (`loop logs <name>` resolves the active definition first,
-  else the most recent ended one).
+- **Name = group, and it is mandatory** (the positional first argument — no
+  auto-generated loop names: an auto name would be a 5-char alnum just like run ids,
+  and `loop_k3f9x.p8w2q` is unreadable; `nightly.p8w2q` is not). A loop's name is one
+  group segment (`[a-z0-9_]+`). The loop gets its own workspace (level-1 group = its
+  name). **Loops are always root-level** — a loop created from inside an agent does
+  *not* inherit the agent's group (loops are global entities, not children). Names
+  are unique among **active** loops; a removed loop's name is reusable — internally
+  each definition has its own uuid and runs/events reference it, so histories of
+  same-named definitions never collide (`loop logs <name>` resolves the active
+  definition first, else the most recent ended one).
 - **Targets are exact names** (a loop name is one segment, so the segment-boundary
   prefix rule degenerates to equality); bulk operations pass **multiple names**:
   `orcr loop pause nightly daily`.
@@ -614,18 +632,21 @@ DSL.
   `ORCR_FQN=<loop_name>.<run_id>`, so every agent it spawns lands under that path: a
   script's `--group review --name file_1` yields `nightly.k3f9x.review.file_1`.
   `orcr agent ls --all nightly` is the loop's full agent history.
-- **`loop run`** — queues an immediate run (subject to the loop's
+- **`loop run start`** — queues an immediate run (subject to the loop's
   max-concurrency/overlap policy) and **prints `<loop_name>.<run_id> <run_uuid>`**,
   same shape as `agent run`. Works on paused loops too — it's the manual trigger.
-- **`loop stop`** — stops active run(s) without touching the definition:
-  `--run <run_id>` targets one run, otherwise all active runs of the loop. TERM to the
-  run's process group → grace → KILL → prefix-kill of the run's agents. Confirms on a
-  TTY (`-y` skips). Run status ends `stopped`.
+- **`loop run stop`** — stops active run(s) without touching the definition: an
+  optional `<run_id>` targets one run, otherwise all active runs of the loop. TERM to
+  the run's process group → grace → KILL → prefix-kill of the run's agents. Confirms
+  on a TTY (`-y` skips). Run status ends `stopped`.
+- **`loop run ls`** — the loop's runs: run_id, status (`running · ok · failed ·
+  timeout · stopped`), `due_at` vs started, duration, agent count. Active runs by
+  default; `--all` includes history.
 - **Run process rules**: cwd = the loop's recorded creation cwd; env = server env +
   the §5.3 contract (run uuid/path); stdin = `/dev/null`; stdout/stderr captured
   line-tagged to the run's log (size-capped with rotation); exit code and terminating
   signal recorded and mapped to run status (`ok` on exit 0, else `failed`; `timeout`
-  when the loop's `--timeout` killed it; `stopped` for `loop stop`).
+  when the loop's `--timeout` killed it; `stopped` for `loop run stop`).
 - **Max-concurrency & overlap**: `--max-concurrency` caps concurrent runs (default 1).
   At the cap, `--overlap queue` (default) records **at most one pending fire**
   (`pending_due_at` — later fires coalesce into it; survives server restarts);
@@ -654,10 +675,10 @@ orcr top [<fqn-prefix|uuid>] [-a <provider>] [--status <s>]
          [--managed|--unmanaged] [--loops]
 ```
 
-The live dashboard — full description and display mock in §7. A realtime TUI tree of
-all **active** agents grouped by their group hierarchy, parent→child edges from
-`ORCR_PARENT_*` lineage, statuses updating live, loops and their active runs shown as
-subtrees (`--loops` filters to loops only). Live-only by design: `--all` is
+The live dashboard — full description and display mock in §7. A realtime, **view-only**
+TUI tree of all **active** agents grouped by their group hierarchy, parent→child edges
+from `ORCR_PARENT_*` lineage, statuses updating live, loops and their active runs shown
+as subtrees (`--loops` filters to loops only). Live-only by design: `--all` is
 intentionally unsupported (that's `ls --all`). Rendering rides the
 snapshot-then-subscribe protocol (§11.6) — no missed or duplicated updates.
 
@@ -718,46 +739,50 @@ languages — the schema is the contract, the CLI is one client of it.
 
 ## 7 · The monitoring TUI (`orcr top`)
 
-The default view for tracking a running workflow or loop: a live tree that mirrors the
-group hierarchy (the same shape herdr's UI shows as workspaces/tabs), with parent→child
-edges, statuses updating in real time, and a detail panel for the selected agent.
+The default view for tracking a running workflow or loop: a live, **view-only** tree
+that mirrors the group hierarchy (the same shape herdr's UI shows as workspaces/tabs),
+with parent→child edges and statuses updating in real time. It is a status display,
+not a control surface — acting on an agent is what the CLI verbs (and
+`herdr --session orcr`) are for.
 
 ```
-┌ orcr · 9 agents (1 blocked) · 2 loops ───┬─ refactor.phase_1.file_2 ──────────┐
-│ ▼ Refactor (refactor)                    │ uuid     0198c2f3-7d41-…           │
-│   ▼ Phase 1 (phase_1)                    │ status   working · 8m12s           │
-│     ├─ file_1    ● working   claude      │ agent    claude · opus · high      │
-│     ├─ file_2    ● working   claude      │ parent   refactor.k3f9x            │
-│     └─ review    ◐ blocked ⚠ codex      │ cwd      ~/code/app                │
-│ ▼ Nightly (nightly) · loop · next 09:00  │ turn     2 (input_seq 2)           │
-│   └─ ▼ run k3f9x  ⟳ running · 12m        │ gc       auto · idle_after 5m      │
-│       ├─ triage  ○ idle      claude      │ last ►   "Rewrote the retry loop   │
-│       └─ fix_1   ● working   codex       │           to use backoff; now…"    │
-│ ▼ Unmanaged (unmanaged)                  │                                    │
-│   └─ main.w6_p1  ● working   claude      │ [enter] attach   [s]end   [k]ill   │
-│ ▶ Idle (parked · 2)                      │ [l]ogs  [w]ait   [/]filter  [q]uit │
-└──────────────────────────────────────────┴────────────────────────────────────┘
+┌ orcr · 9 agents (1 blocked) · 2 loops ─────────────────────────────┐
+│ ▼ Refactor (refactor)                                              │
+│   ▼ Phase 1 (phase_1)                                              │
+│     ├─ file_1     ● working    claude · opus        2m14s          │
+│     ├─ file_2     ● working    claude · opus        8m12s          │
+│     └─ review     ◐ blocked ⚠  codex · question    11m03s          │
+│ ▼ Nightly (nightly) · loop · next 09:00                            │
+│   └─ ▼ run k3f9x   ⟳ running · due 08:00 · 12m                     │
+│       ├─ triage   ○ idle       claude               done 3m ago    │
+│       └─ fix_1    ● working    codex                4m40s          │
+│ ▼ Unmanaged (unmanaged)                                            │
+│   └─ main.w6_p1   ● working    claude               22m            │
+│ ▶ Idle (parked · 2)                                                │
+│                                                                    │
+│  [/] filter   [←→] collapse/expand   [q] quit                      │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Tree = groups + lineage.** Level-1 groups are the top nodes (matching herdr
   workspaces); loops appear as nodes with their active runs as subtrees
-  (`run k3f9x`); parked agents collapse into an `Idle` node; unmanaged agents group
-  under their session. Parent→child edges come from `ORCR_PARENT_*`.
-- **Status glyphs**: `●` working · `○` idle · `◐` blocked (pulses, floats upward —
-  the "needs a human" queue) · `⟳` loop run in flight · queued/starting shown dimmed
-  with their queue position.
-- **Keys**: `enter` attaches to the real pane (and back on detach); `s` opens an
-  inline prompt to send without leaving the TUI; `k` kills (with the same
-  confirmation as the CLI); `l` opens logs; `/` filters by fqn prefix; the CLI
-  filters (`-a`, `--status`, `--loops`, `--managed|--unmanaged`) pre-scope the tree.
+  (`run k3f9x`, with `due_at` and elapsed); parked agents collapse into an `Idle`
+  node; unmanaged agents group under their session. Parent→child edges come from
+  `ORCR_PARENT_*`.
+- **Rows** show name, status glyph + status, provider·model (and blocked kind when
+  relevant), and age. Glyphs: `●` working · `○` idle · `◐` blocked (floats upward —
+  the "needs a human" queue) · `⟳` loop run in flight · queued/starting dimmed with
+  their queue position.
+- **Interaction is navigation only**: `/` filters by fqn prefix, arrows
+  collapse/expand, `q` quits. The CLI filters (`-a`, `--status`, `--loops`,
+  `--managed|--unmanaged`) pre-scope the tree.
 - **Data path**: one consistent snapshot (agents, loops, runs, queue positions, GC
   clocks, parent edges) at `snapshot_seq`, then the event stream from that sequence
-  (§11.6) — the tree can't miss or double-apply an update. The detail panel's
-  `last ►` snippet comes from the captured final response (§12) or the transcript
-  adapter.
+  (§11.6) — the tree can't miss or double-apply an update.
 
-*Planned (§17): per-agent live activity in the tree — tool calls and response
-summaries streamed from the transcripts.*
+*Planned (§17): a detail panel with actions (attach / send / kill / logs from the
+TUI) and per-agent live activity — tool calls and response summaries streamed from
+the transcripts.*
 
 ---
 
@@ -814,8 +839,9 @@ for await (const ev of sub) { /* typed events: agent.status_changed, queue.promo
 await orcr.loop.create({ cron: "*/30 * * * *", name: "burn_down",
                          maxConcurrency?, overlap?, timeout?,
                          command: ["npx", "tsx", "burn-down.ts"] });
-const run = await orcr.loop.run("burn_down");   // → {path: "burn_down.k3f9x", uuid}
-await orcr.loop.stop("burn_down", { run? });
+const run = await orcr.loop.run.start("burn_down");  // → {path: "burn_down.k3f9x", uuid}
+await orcr.loop.run.stop("burn_down", { runId? });
+await orcr.loop.run.ls("burn_down", { all? });
 await orcr.loop.ls(); await orcr.loop.logs("burn_down", { run?, source? });
 await orcr.loop.pause("burn_down"); await orcr.loop.resume("burn_down");
 await orcr.loop.rm(orcr.loopNameFrom(process.env.ORCR_FQN!));  // self-terminate
@@ -845,17 +871,25 @@ callers don't have to invent paths:
 ~/.orcr/data/loops/<loop-uuid>/<run_id>/         # created per run
 ```
 
-The directory is created when the agent (or loop run) is created and exposed as
-`a.dataDir` / the run's `dataDir` in the SDK; prompts reference it (*"write your
-findings to `<dataDir>/response.md`"*). orcr guarantees existence and uniqueness —
-nothing else; contents are entirely the caller's (cleanup is future work, §17).
+The directory is created when the agent (or loop run) is created and handed to the
+context itself as **env** (§5.3): `ORCR_DATA_DIR` (your own dir) and
+`ORCR_RUN_DATA_DIR` (the enclosing loop run's dir — a scratch space shared by all
+agents of that run). The SDK exposes the same as `a.dataDir` / the run's `dataDir`;
+prompts reference it (*"write your findings to `<dataDir>/response.md`"*). orcr
+guarantees existence and uniqueness — nothing else; contents are entirely the
+caller's (cleanup is future work, §17).
 
 ---
 
 ## 9 · Workflow examples
 
 Complete, runnable shapes for the common orchestration patterns. (These also ship as
-the skill's `references/patterns.md`, §10.)
+the skill's `references/patterns.md`, §10.) Two conventions used throughout: group
+names are **descriptive** (`fix_build`, `review.pr_1423`) — no timestamp suffixes
+needed, since an fqn only has to be unique among *live* agents and these flows clean
+up after themselves (`gc: immediate`, `killOnThrow`, explicit kills); and one-shot
+agents use `gc: "immediate"`, whose completion still satisfies
+`wait({status: "idle"})` (a completed-then-closed agent counts as reached, §6.1).
 
 ### 9.1 Fix-until-green (goal-style: worker + verifier loop)
 
@@ -871,7 +905,7 @@ const build = () => {
   catch (e: any) { return { ok: false, errors: String(e.stdout) }; }
 };
 
-await orcr.group(`fix_build.${Math.floor(Date.now() / 1000)}`, async () => {
+await orcr.group("fix_build", async () => {
   const fixer = await orcr.agent.run({
     agent: "claude", name: "fixer", gc: "never", cwd: process.cwd(),
     prompt: "You fix TypeScript build errors in this repo. Wait for my input.",
@@ -909,15 +943,16 @@ import { readFile } from "node:fs/promises";
 
 const files = execSync("git diff --name-only main", { encoding: "utf8" }).trim().split("\n");
 
-await orcr.group(`review.${Math.floor(Date.now() / 1000)}`, async () => {
+await orcr.group("review", async () => {
   const reviewers = await Promise.all(files.map((f, i) =>
     orcr.agent.run({
       agent: "claude", name: `file_${i}`, group: "fanout", gc: "immediate",
       prompt: `Review the diff of ${f} against main for bugs and risky changes.
-               Write your findings to <your dataDir>/response.md, then say DONE.`,
+               Write your findings to $ORCR_DATA_DIR/response.md, then say DONE.`,
     })));
 
-  await orcr.agent.wait("fanout", { status: "ended" });   // gc:immediate → ended = done
+  // gc:immediate agents complete → close; "idle" is still satisfied (turn completed)
+  await orcr.agent.wait("review.fanout", { status: "idle" });
 
   const findings = await Promise.all(reviewers.map(async r =>
     `## ${r.fqn}\n` + await readFile(`${r.dataDir}/response.md`, "utf8")));
@@ -931,29 +966,155 @@ await orcr.group(`review.${Math.floor(Date.now() / 1000)}`, async () => {
 });
 ```
 
-### 9.3 The other canonical patterns, in brief
+### 9.3 Classify-and-act
 
-- **Classify-and-act** — one cheap `ask()` triages the input (`bug | feature |
-  question`), a `switch` routes to a per-class agent/prompt. The classifier's prompt
-  ends "reply with exactly one word".
-- **Adversarial verification** — after a worker completes, spawn N verifiers with
-  *different lenses* (`correctness`, `security`, `does-it-reproduce`) via
-  `Promise.all(lenses.map(l => orcr.ask({...})))`; accept only if a majority pass;
-  otherwise feed the objections back with `worker.send(...)` (the §9.1 loop
-  generalized).
-- **Generate-and-filter** — fan out N generators with the same prompt but different
-  providers/models (`gc: immediate`), collect `lastResponse()`s, one judge `ask()`
-  picks the best; ship the winner.
-- **Tournament** — pairwise judge `ask()`s over generator outputs when N is large;
-  winners advance; log each verdict to the group's data dir for auditability.
-- **Loop-until-done + durable handoff** — a script iterates while its work queue is
-  non-empty (§9.1 shape); when the remaining work is "check back every 30 minutes",
-  it creates a loop with its own script and exits:
-  `orcr.loop.create({cron: "*/30 * * * *", command: ["npx","tsx","resume.ts"]})` —
-  set-up-and-leave. The loop's script self-terminates with
-  `orcr.loop.rm(orcr.loopNameFrom(process.env.ORCR_FQN!))` when the queue is empty.
+One cheap classification routes each item to a per-class handler:
 
----
+```ts
+import { orcr } from "@orchestratr/sdk";
+
+const HANDLERS: Record<string, { agent: string; prompt: (t: string) => string }> = {
+  bug:      { agent: "claude", prompt: t => `Reproduce and fix this bug report:\n${t}` },
+  feature:  { agent: "codex",  prompt: t => `Draft an implementation plan for:\n${t}` },
+  question: { agent: "claude", prompt: t => `Answer this user question precisely:\n${t}` },
+};
+
+export async function triage(item: string) {
+  return orcr.group("triage", async () => {
+    const kind = (await orcr.ask({
+      agent: "claude", group: "classify",
+      prompt: `Classify this as exactly one word — bug, feature, or question:\n${item}`,
+    })).trim().toLowerCase();
+
+    const h = HANDLERS[kind] ?? HANDLERS.question;   // unknown → safest handler
+    return orcr.ask({ agent: h.agent, group: kind, prompt: h.prompt(item) });
+  });
+}
+```
+
+### 9.4 Adversarial verification
+
+A worker produces; N verifiers with *different lenses* try to reject; objections loop
+back until a majority passes:
+
+```ts
+import { orcr } from "@orchestratr/sdk";
+
+const LENSES = ["correctness", "security", "edge cases and error handling"];
+
+await orcr.group("harden", async () => {
+  const worker = await orcr.agent.run({
+    agent: "claude", name: "worker", gc: "never", cwd: process.cwd(),
+    prompt: "Implement the task in TASK.md. Say DONE when finished.",
+  });
+  await worker.wait({ status: "idle" });
+
+  for (let round = 1; round <= 5; round++) {
+    const verdicts = await Promise.all(LENSES.map(lens =>
+      orcr.ask({
+        agent: "codex", group: "verify",
+        prompt: `Adversarially review the uncommitted changes in ${process.cwd()}
+                 through the lens of ${lens}. Try hard to find a real problem.
+                 Reply PASS, or FAIL: <the single most important problem>.`,
+      })));
+
+    const failures = verdicts.filter(v => !v.trim().startsWith("PASS"));
+    if (failures.length <= LENSES.length / 2) break;      // majority passed
+    await worker.send(`Reviewers rejected the work:\n${failures.join("\n")}\nFix these.`);
+    await worker.wait({ status: "idle" });
+  }
+  await worker.kill();
+}, { killOnThrow: true });
+```
+
+### 9.5 Generate-and-filter
+
+Fan the same prompt across providers/models, judge once, keep the winner:
+
+```ts
+import { orcr } from "@orchestratr/sdk";
+
+const GENERATORS = [
+  { agent: "claude", model: "opus" },
+  { agent: "claude", model: "sonnet" },
+  { agent: "codex" },
+];
+
+await orcr.group("landing_copy", async () => {
+  const drafts = await Promise.all(GENERATORS.map((g, i) =>
+    orcr.ask({ ...g, group: "generate", name: `gen_${i}`,
+               prompt: "Write hero copy for orchestratr.dev: one headline, one subhead." })));
+
+  const pick = await orcr.ask({
+    agent: "claude", group: "judge",
+    prompt: `Pick the best draft. Reply with only its number.\n` +
+            drafts.map((d, i) => `--- ${i} ---\n${d}`).join("\n"),
+  });
+  console.log(drafts[parseInt(pick.trim(), 10)] ?? drafts[0]);
+});
+```
+
+### 9.6 Tournament
+
+When N is too large for one judge, run pairwise brackets; winners advance:
+
+```ts
+import { orcr } from "@orchestratr/sdk";
+
+async function tournament(candidates: string[]): Promise<string> {
+  return orcr.group("tournament", async () => {
+    let pool = candidates;
+    for (let round = 1; pool.length > 1; round++) {
+      const next: string[] = [];
+      for (let i = 0; i < pool.length; i += 2) {
+        if (i + 1 >= pool.length) { next.push(pool[i]); continue; }   // bye
+        const verdict = await orcr.ask({
+          agent: "claude", group: `round_${round}`,
+          prompt: `Which is better, A or B? Reply exactly A or B.\n` +
+                  `--- A ---\n${pool[i]}\n--- B ---\n${pool[i + 1]}`,
+        });
+        next.push(verdict.trim().startsWith("B") ? pool[i + 1] : pool[i]);
+      }
+      pool = next;
+    }
+    return pool[0];
+  });
+}
+```
+
+### 9.7 Loop-until-done + durable handoff
+
+Work a queue interactively; when the remaining work becomes "check back later," hand
+off to a loop and exit. The loop's script does one increment per run and removes its
+own loop when the queue is empty:
+
+```ts
+// kickoff.ts — work now, then hand off
+import { orcr } from "@orchestratr/sdk";
+import { queueSize, workOneItem } from "./queue";
+
+while (queueSize() > 0 && stillCheap()) await workOneItem();   // §9.1-style inner loop
+
+if (queueSize() > 0) {
+  await orcr.loop.create({
+    name: "burn_down", cron: "*/30 * * * *", timeout: "25m",
+    command: ["npx", "tsx", "resume.ts"],
+  });
+  console.log("handed off to loop burn_down");                 // safe to exit now
+}
+```
+
+```ts
+// resume.ts — one increment per loop run (runs with the §5.3 env contract)
+import { orcr } from "@orchestratr/sdk";
+import { queueSize, workOneItem } from "./queue";
+
+await workOneItem();       // agents spawned here land under burn_down.<run_id>.…
+
+if (queueSize() === 0) {
+  await orcr.loop.rm(orcr.loopNameFrom(process.env.ORCR_FQN!));   // self-terminate
+}
+```
 
 ## 10 · The skill
 
@@ -1046,11 +1207,11 @@ never GC'd.
 ### 11.3 Loop scheduler (server)
 
 Per loop: `next_fire_at` computed in the creating timezone, persisted as UTC. On fire
-(or `loop run`): running-count < `--max-concurrency` → allocate the run (uuid +
+(or `loop run start`): running-count < `--max-concurrency` → allocate the run (uuid +
 run_id + `due_at`, one transaction) and start it in a fresh process group; else
 overlap policy (`queue`: record `pending_due_at`, coalescing; `skip`: log). On run
 exit: record status/exit code/signal; if a pending fire is recorded and a slot is
-free, fire immediately. `loop stop` / per-run timeout: TERM `-pgid` → grace → KILL
+free, fire immediately. `loop run stop` / per-run timeout: TERM `-pgid` → grace → KILL
 `-pgid` → `agent kill <name>.<run_id>`. Every scheduler action (fired, coalesced,
 skipped, paused-hold, timed out, stopped) is an event row — that's
 `loop logs --source orcr`.
@@ -1062,35 +1223,40 @@ prefix-killed) → recompute the active count → honor `paused`/`ended` → dec
 recompute `next_fire_at`, skipping missed fires with event rows explaining each
 decision.
 
-### 11.4 Integrations & the capability matrix
+### 11.4 Integrations: both layers required
 
-Two independent integration layers exist, and each degrades differently:
+Two independent integration layers exist per provider:
 
 - **herdr's integration** (installed via `herdr integration install <provider>`) —
-  hooks the provider so herdr can *observe* it: agent state
-  (working/idle/blocked) and the `agent_session` transcript pointer. herdr reports a
-  blocked *state* (sometimes with a free-text message) but no structured reason.
+  hooks the provider so herdr can *observe* it: agent state (working/idle/blocked)
+  and the `agent_session` transcript pointer. herdr reports a blocked *state*
+  (sometimes with a free-text message) but no structured reason.
 - **orcr's integration** (built into orcr; claude + codex first) — how orcr *drives*
   the provider: launch argv (bypass-permissions flags, model/effort mapping), startup
-  recipe, completion tuning, graceful-shutdown recipe, the transcript adapter, and
-  `blocked_kind` classification (best-effort, from herdr's blocked message + the
-  transcript; detailed per-provider parsing is future work).
+  recipe, completion tuning (§5.6 named parameters), graceful-shutdown recipe, the
+  transcript adapter, and `blocked_kind` classification (best-effort, from herdr's
+  blocked message + the transcript; detailed per-provider parsing is future work).
 
-| feature | both installed | orcr only (no herdr int.) | herdr only (no orcr int.) | neither |
-| --- | --- | --- | --- | --- |
-| `run` (launch, flags, model/effort) | ✓ | ✓ | degraded — bare binary launch, no flag/model mapping | degraded |
-| status working/idle/blocked | ✓ | ✗ — status stays `unknown` | ✓ | ✗ |
-| `wait` / turn completion | ✓ verified (epochs + transcript settle) | ✗ — errors with a hint to run `herdr integration install <p>` | approximate (herdr state + generic idle stability; no transcript check) | ✗ |
-| GC `auto` (park/reap) | ✓ | ✗ — treated as `gc never`, warning at spawn | ✓ (generic timings) | ✗ |
-| GC `immediate` (response capture) | ✓ | ✗ | ✗ — no adapter to capture from; falls back to close-without-capture + warning | ✗ |
-| `blocked` detection | ✓ + `blocked_kind` | ✗ | ✓ state only, `blocked_kind: unknown` | ✗ |
-| `logs` / `--last-response` | ✓ | ✗ `transcript_unavailable` (no `agent_session`) | ✗ `integration_missing` (exit 2) | ✗ |
-| graceful `kill` | ✓ recipe | ✓ recipe | pane close only | pane close only |
-| `send` / `attach` | ✓ | ✓ | ✓ | ✓ |
+**The rule: a provider is supported only when both are present.** Anything else would
+mean a lattice of half-working modes (status stuck `unknown`, waits that can't
+resolve, GC that can't see idle, logs without transcripts) — complexity that isn't
+worth carrying. So:
 
-At spawn, orcr checks both layers for the requested provider and prints exactly what
-will be degraded (and the install command that fixes it); `server status` reports the
-per-provider integration state the same way.
+- `agent run -a <p>` **fails fast** with `integration_missing` when either layer is
+  absent — `details` names which layer(s) and the exact fix
+  (`herdr integration install <p>`, or "provider not yet supported by orcr; see
+  orcr integration add (planned)"). Nothing is spawned.
+- **Unmanaged discovery only tracks supported providers.** Agents of providers
+  missing either layer are ignored (not stored, not shown); `server status` reports
+  per-provider integration state (`integrations: {claude: {orcr, herdr}, …}`) so the
+  gap is visible.
+- `server status` and `--help` list the supported provider set.
+
+| provider | orcr integration | herdr integration | supported |
+| --- | --- | --- | --- |
+| claude | built-in (first release) | `herdr integration install claude` | ✓ |
+| codex | built-in (first release) | `herdr integration install codex` | ✓ |
+| pi / opencode / … | planned (`orcr integration add`) | available in herdr | not yet — `run` fails with the message above |
 
 **Transcript adapters** (the orcr-integration piece behind `logs`): locate and parse
 the provider's native session files into a common shape (ordered messages, roles, tool
@@ -1100,7 +1266,8 @@ alone; multiple candidates → structured error listing them (`transcript_ambigu
 **Freshness**: a final response is only reported once the transcript has advanced past
 the observed completion (bounded by `transcript_freshness_timeout_ms`); otherwise
 `transcript_unavailable`. On each completion the final response text + transcript
-locator/cursor are captured into the store.
+locator/cursor are captured into the store (history survives provider file rotation;
+live reads prefer native files).
 
 ### 11.5 Reconciliation & unmanaged discovery
 
@@ -1252,8 +1419,9 @@ agent kill       {killed:[{uuid,fqn}], skipped:[{uuid,fqn,reason:"ended|force_re
                   all_killed:bool}
 agent ls         {agents:[{…flat row, see §6.1}]}
 loop create      {loop:{uuid,name,cadence,tz,next_fire_at,argv,max_concurrency,overlap}}
-loop run         {run:{uuid,path,run_id,loop}, fired:bool, pending:bool}
-loop stop        {stopped:[{run_id,path}], skipped:[…]}
+loop run start   {run:{uuid,path,run_id,loop}, fired:bool, pending:bool}
+loop run stop    {stopped:[{run_id,path}], skipped:[…]}
+loop run ls      {runs:[{run_id,path,status,due_at,started_at,ended_at?,agents}]}
 loop ls / logs   {loops:[…]} · {lines:[{run,source:"orcr|command",ts,text}]}
 server status    {version,protocol,socket,store,herdr:{bin,version,socket,session},
                   integrations:{claude:{orcr:true,herdr:true}, …},
@@ -1267,7 +1435,7 @@ exit code shown): `not_found{target}→6` · `ambiguous_target{candidates}→6` 
 `state_conflict{current_status}→7` · `force_required{target,reason}→7` ·
 `invalid_request{field}→1` · `invalid_name{value,rule}→1` · `timeout{elapsed}→3` ·
 `blocked{blocked_kind}→4` · `transcript_unavailable{uuid,status}→1` ·
-`transcript_ambiguous{candidates}→1` · `integration_missing{provider}→2` ·
+`transcript_ambiguous{candidates}→1` · `integration_missing{provider,missing:[orcr|herdr],install}→2` ·
 `unknown_provider{provider}→2` · `server_unreachable→2` · `server_start_failed→2` ·
 `herdr_unreachable→2` · `unsafe_home{path,problem}→2` · `unsupported_platform→2` ·
 `unsupported_version{client,server}→2` · `cursor_expired{oldest}→1` ·
@@ -1362,7 +1530,7 @@ detailed plan in [`spec/v2/milestones/`](milestones/).
 | **[M2 · Agent core](milestones/m2-agent-core.md)** | `agent run` (queue → promotion → spawn pipeline), identity (uuid + fqn, partial unique index), env contract, claude + codex integrations (launch/startup/shutdown), `send`, `kill` (+ confirm/-y), `ls`, stuck-start guard, status model. | spawn/send/kill e2e on both providers; concurrent-spawn uniqueness; cancel-during-starting. |
 | **[M3 · Completion & logs](milestones/m3-completion-logs.md)** | turns table + input epochs + external-turn detection; `wait` (all statuses, snapshot-then-subscribe); transcript adapters (claude, codex); `logs`/`--last-response`/`--tail`/`--follow`; final-response capture; `gc immediate`. | send→wait→last-response round-trips; stale-idle never satisfies a newer send; restart mid-turn. |
 | **[M4 · GC & reconciliation](milestones/m4-gc-reconciliation.md)** | `gc auto` park/reap (two-phase moves, home workspace), `attach` + leases, reconciler (lost/orphaned/unmarked, move repair), unmanaged discovery (session + terminal_id). | park→send→un-park e2e; kill server mid-move → reconciler repairs; foreign panes never touched. |
-| **[M5 · Loops](milestones/m5-loops.md)** | `loop create/run/stop/ls/logs/pause/resume/rm`; scheduler (tz-correct cron, run ids, process groups, overlap/coalescing, restart recovery); `server enable/disable` (launchd/systemd). | DST boundary tests; overlap coalescing; `loop stop --run`; reboot-simulation recovery. |
+| **[M5 · Loops](milestones/m5-loops.md)** | `loop create/pause/resume/rm/ls/logs` + `loop run start/stop/ls`; scheduler (tz-correct cron, run ids, process groups, overlap/coalescing, restart recovery); `server enable/disable` (launchd/systemd). | DST boundary tests; overlap coalescing; `loop run stop <name> <run_id>`; reboot-simulation recovery. |
 | **[M6 · top](milestones/m6-top.md)** | The TUI (§7): tree, live statuses, detail panel, attach/send/kill/logs keys, filters. | renders 100-agent trees from snapshot+events without drops; keys drive real agents e2e. |
 | **[M7 · SDK & skill](milestones/m7-sdk-skill.md)** | TS SDK (generated protocol client + helpers + `orcr.group()`/`ask()`/`watch()`); §9 examples as tested recipes; SKILL.md + references; docs; npm publish. | examples run end-to-end against live providers; SDK covers 100% of schema methods. |
 
@@ -1372,6 +1540,10 @@ Collected from everywhere above; explicitly parked, in rough priority order:
 
 - **pi / opencode integrations** + `orcr integration add|rm|ls` (manage integrations
   like herdr does) (§11.4).
+- **Degraded no-integration modes** — running/tracking providers with only one
+  integration layer present (cut deliberately for simplicity; §11.4).
+- **top actions** — a detail panel with attach/send/kill/logs from inside the TUI
+  (§7 is view-only in the first release).
 - **`send` steer/stop options** — interrupting an active turn or gracefully stopping
   the current task, per provider (§6.1).
 - **`top` live activity feed** — tool calls and response summaries streamed into the

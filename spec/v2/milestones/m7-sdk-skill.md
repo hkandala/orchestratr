@@ -10,7 +10,8 @@ vocabulary. Ends with publishable packages and docs.
 - **Generated protocol client**: every socket method from `api schema`, 1:1, typed —
   regenerated in CI so drift fails the build.
 - **Convenience layer** (each helper documents its underlying calls):
-  - `orcr.agent.run()` → handle (`uuid`, `fqn`, `name`, `group`, `dataDir`,
+  - `orcr.agent.run()` → handle (`uuid`, `fqn`, `name`, `group`, `dataDir` —
+    mirroring `ORCR_DATA_DIR`/`ORCR_RUN_DATA_DIR`,
     `wait()`, `send()`, `logs()`, `followLogs()` (AsyncIterable), `lastResponse()`,
     `kill()`).
   - Collections with CLI-identical subtree semantics: `orcr.agent.wait/ls/kill`.
@@ -19,7 +20,8 @@ vocabulary. Ends with publishable packages and docs.
     (not process-global); nests with inherited context.
   - `orcr.watch({ prefix?, agent?, status?, managed?, sinceSeq? })` —
     snapshot-then-subscribe AsyncIterable of typed events.
-  - `orcr.loop.*` (create/run/stop/ls/logs/pause/resume/rm), `orcr.loopNameFrom()`,
+  - `orcr.loop.*` (create/pause/resume/rm/ls/logs + `loop.run.start/stop/ls`),
+    `orcr.loopNameFrom()`,
     `orcr.server.*`, `orcr.api.*`.
   - Typed errors from the §13 enum (`TranscriptUnavailable`, `IntegrationMissing`,
     `StateConflict`, `NotFound`, `ForceRequired`, …).
@@ -27,10 +29,10 @@ vocabulary. Ends with publishable packages and docs.
   `dataDir` for loops.
 
 ### Recipes (spec §9)
-- The §9 examples as **tested** code in the repo (run in CI against the mock
-  provider; smoke-tested against real providers): fix-until-green (worker +
-  cross-provider verifier), fan-out-and-merge, classify-and-act, adversarial
-  verification, generate-and-filter, tournament, loop-until-done + durable handoff.
+- The §9 examples (9.1–9.7, full code in the spec) as **tested** code in the repo
+  (run in CI against the mock provider; smoke-tested against real providers):
+  fix-until-green, fan-out-and-merge, classify-and-act, adversarial verification,
+  generate-and-filter, tournament, loop-until-done + durable handoff.
 
 ### The skill (spec §10)
 - `skill/SKILL.md` (≤ ~150 lines: when to reach for orcr, the hot path, identity &

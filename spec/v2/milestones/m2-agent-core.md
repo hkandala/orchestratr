@@ -37,8 +37,10 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
 ### Integrations: claude + codex (spec §11.4)
 - Launch argv (bypass-permissions flags), model/effort mapping (`--model`,
   `--effort`), startup recipe (known modals), graceful-shutdown recipe.
-- Integration presence checks (orcr + herdr layers) with the degraded-mode warnings
-  from the §11.4 matrix printed at spawn.
+- Both-layers-required enforcement (§11.4): `run -a <p>` fails fast with
+  `integration_missing` (naming the missing layer + install command) unless the
+  provider has an orcr integration AND its herdr integration is installed; per-provider
+  integration state surfaced in `server status`.
 
 ### Verbs
 - `agent run` — full flag surface (`-a`, `-p`/`-p -`, `--name`/`--fqn`/`--group`,

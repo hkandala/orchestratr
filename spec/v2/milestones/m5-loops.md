@@ -11,9 +11,10 @@ exists so loops fire after a reboot).
   (DST-correct), occurrences persisted as UTC `next_fire_at`; or `--once-at <time>`.
 - Payload: argv after `--`, exec'd directly (no shell); creation echoes parsed argv,
   cadence in words (local + UTC), and the cancel command.
-- Name = one group segment; default `loop_<alnum5>`; always root-level (never
-  inherits a creator agent's group); unique among active loops; internal uuid so
-  removed names are reusable without history collisions.
+- Name = one group segment, **mandatory** (positional first argument; no
+  auto-generated loop names); always root-level (never inherits a creator agent's
+  group); unique among active loops; internal uuid so removed names are reusable
+  without history collisions.
 - `--max-concurrency` (default 1), `--overlap queue|skip`, `--timeout` (no default).
 
 ### Runs & identity (spec §6.2, §12)
@@ -38,10 +39,14 @@ exists so loops fire after a reboot).
   timed out, stopped).
 
 ### Verbs
-- `loop run <name>...` — manual trigger (works on paused loops); prints
+- Definition verbs: `loop create/pause/resume/rm/ls/logs`; run verbs under the
+  `loop run` sub-noun:
+- `loop run start <name>` — manual trigger (works on paused loops); prints
   `<loop_name>.<run_id> <run_uuid>`.
-- `loop stop <name> [--run <run_id>] [-y]` — TERM pgid → grace → KILL → prefix-kill
+- `loop run stop <name> [<run_id>] [-y]` — TERM pgid → grace → KILL → prefix-kill
   the run's agents; run status `stopped`; TTY confirmation.
+- `loop run ls <name> [--all]` — run_id, status, due_at vs started, duration, agent
+  count.
 - `loop ls [<name>...] [--status] [--all]`.
 - `loop logs <name> [--run <run_id>] [--source orcr|command] [--tail] [--follow]` —
   interleaved command output + orcr scheduler events, lines tagged
@@ -63,8 +68,8 @@ exists so loops fire after a reboot).
   transitions (fixture clock).
 - Overlap: cap 1 + slow runs → exactly one pending fire, later fires coalesce; `skip`
   drops with a log line.
-- `loop run` on a paused loop fires once; scheduled fires stay held.
-- `loop stop --run` kills one of two concurrent runs; the other survives; the
+- `loop run start` on a paused loop fires once; scheduled fires stay held.
+- `loop run stop <name> <run_id>` kills one of two concurrent runs; the other survives; the
   stopped run's agents are prefix-killed.
 - Reboot simulation: kill server with a running run + a pending fire → restart →
   dead run closed out, its agents killed, pending fire decided exactly once, missed

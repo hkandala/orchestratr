@@ -33,7 +33,8 @@ and the owned session stays tidy without ever harming a pane it shouldn't.
 - `server status` gains the drift/orphan/unmarked counts.
 
 ### Unmanaged discovery (spec §5.7)
-- Poll/stream herdr for agents in non-owned sessions every few seconds.
+- Poll/stream herdr for agents in non-owned sessions every few seconds — **supported
+  providers only** (both integrations present, §11.4); others ignored entirely.
 - Rows keyed by (herdr session, `terminal_id`); fqn `unmanaged.<session>.<pane>`;
   uuid like any row; new terminal = new row; terminal gone → `ended`.
 - Unmanaged lifecycle statuses (working/idle/blocked/unknown/ended); the §5.7
