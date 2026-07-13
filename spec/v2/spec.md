@@ -195,11 +195,10 @@ nightly.r82c9s.triage       an agent named triage inside a run of loop nightly
 There is exactly one mental model, and it is the one you already have — **paths and
 globs**:
 
-- **Naming is mandatory.** `agent run` requires `--name <segment>` (the agent lands
-  directly in your scope) or `--path <path>` (the last segment is the name, the rest
-  is where it lives) — exactly one of the two. There are no auto-generated agent
-  names. (`agent ask`'s throwaway one-shots are the single documented exception —
-  below.)
+- **Naming is mandatory.** Every agent-creating verb (`run` and `ask` alike)
+  requires `--name <segment>` (the agent lands directly in your scope) or
+  `--path <path>` (the last segment is the name, the rest is where it lives) —
+  exactly one of the two. There are no auto-generated agent names, no exceptions.
 - **Relative by default, `/` for absolute.** Every path you write — creating or
   targeting — is interpreted **relative to your scope**: inside the SDK's
   `orcr.scope("review")` or inside a managed agent, `--path fanout.file_1` means
@@ -556,8 +555,8 @@ unambiguous uuid prefix. `<pattern|uuid>` additionally allows `*` wildcards (§5
 orcr agent run    (--name <segment> | --path <path>) [-a <provider>] [-p <prompt>]
                   [--gc auto|immediate|never] [--model <m>] [--effort <e>]
                   [--cwd <dir>] [--timeout <dur>] [--json]
-orcr agent ask    [-a <provider>] [-p <prompt>] [--path <path>] [--model <m>]
-                  [--effort <e>] [--cwd <dir>] [--timeout <dur>] [--json]
+orcr agent ask    (--name <segment> | --path <path>) [-a <provider>] [-p <prompt>]
+                  [--model <m>] [--effort <e>] [--cwd <dir>] [--timeout <dur>] [--json]
 orcr agent send   <path|uuid> (<prompt> | -p <prompt>) [--json]
 orcr agent logs   <path|uuid> [--last-response] [--tail <n>] [--follow] [--json]
 orcr agent wait   <pattern|uuid>... [--timeout <dur>] [--json]
@@ -595,10 +594,9 @@ file convention and the `~/.orcr/data` convention).
 exactly `run --gc immediate` → `wait` → `logs --last-response`, nothing more): spawns,
 blocks through the queue and the first completion, prints the final response on
 stdout, cleans up the pane. Any language gets the three-step dance in one call
-without the SDK. `--path` is optional here — **the one exception to mandatory
-naming**: an unnamed ask gets a generated leaf `ask_<5 alnum>` in the caller's
-scope, because parallel one-shots must not collide on a path and the agent is gone
-the moment the answer is printed. Blocked → exit 4; no identifiable response →
+without the SDK. Naming rules are identical to `run` — `--name` or `--path`,
+exactly one (parallel asks therefore need distinct names, e.g. `verify.check_1`,
+`verify.check_2`). Blocked → exit 4; no identifiable response →
 `transcript_unavailable`.
 
 **send** — exact target only (§5.1). Types the prompt into the agent's TUI and
@@ -984,9 +982,8 @@ await orcr.agent.ls({ pattern?, agent?, status?, managed?, all? });
 await orcr.agent.kill("fanout.*", { force? });   // no interactive confirm in the SDK
 
 // the one-liner — documented sugar for: agent.run({..., gc: "immediate"})
-// → wait() → lastResponse(). path optional here (the mandatory-naming exception):
-// unnamed asks get <scope>.ask_<5 alnum> so parallel one-shots never collide.
-const answer: string = await orcr.ask({ agent: "claude", prompt: "…" });
+// → wait() → lastResponse(). Naming rules identical to run: name or path required.
+const answer: string = await orcr.ask({ agent: "claude", name: "quick_check", prompt: "…" });
 
 // scopes — async-context scoped (AsyncLocalStorage), NOT process-global.
 // Every relative path inside fn — creating or targeting — resolves under the scope.
