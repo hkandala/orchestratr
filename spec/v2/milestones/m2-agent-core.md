@@ -11,11 +11,12 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
 - uuid (UUIDv7) + path (slash-separated; last segment = the mandatory name); grammar
   + limits validation (`invalid_request`).
 - Mandatory naming (--name|--path, exactly one — run and ask alike, no generated
-  names); one-transaction allocation against the partial unique index (concurrent
-  spawns can never double-allocate).
-- Resolution: uuid / unambiguous uuid prefix → any row; path → active first, else most
-  recent ended. Subtree selectors (glob matching (`*` one segment, `**` across)) for bulk verbs; exact
-  targets for singleton verbs.
+  names); one-transaction allocation against the partial unique index; an active
+  path collision = `state_conflict` details.reason:"path_in_use" (concurrent spawns
+  can never double-allocate).
+- Resolution: uuid / unambiguous uuid prefix → any row; path → active first, else
+  most recent ended. Patterns for bulk verbs (`*` one level, `**` across —
+  anchored, §5.1 rules); exact targets for singleton verbs (wildcards rejected).
 - Path resolution: `--name`|`--path` (exactly one, mandatory); relative paths
   resolve against the caller's scope, leading `/` = absolute; caller resolution
   by `ORCR_ID` (an agent's scope = its path minus name; loop-run handling stubs
@@ -29,8 +30,8 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
 - `cancel_requested` interlock checked before/after every herdr step.
 
 ### Spawn pipeline (spec §11.1)
-- Durable row (full `launch_json`) before any herdr call; data dir created
-  (`~/.orcr/data/agents/<uuid>/`).
+- Durable row (full `launch_json`) before any herdr call; data dir created at the
+  path-mirrored location (`$ORCR_HOME/data/<path segments>/<uuid>/`, §8).
 - Placement: level-1 workspace ensured; new tab labeled per §5.2; pane env = the §5.3
   contract (`ORCR_ID`/`ORCR_PATH`/`ORCR_PARENT_ID`/`ORCR_PARENT_PATH`/`ORCR_AGENT_DATA_DIR`, plus `ORCR_LOOP_DATA_DIR` in loop contexts) + launch token.
 - Location columns updated after each herdr call.
@@ -54,7 +55,7 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
 - `agent kill` — patterns + uuids; TTY confirmation by default, `-y` skips;
   graceful recipe → pane close; `killed`/`canceled` exit reasons; result
   classification (§6.1).
-- `agent ls` — tree rendering with display transform, filters (prefix, `-a`,
+- `agent ls` — tree rendering with display transform, filters (pattern, `-a`,
   `--status`, `--managed`, `--all`), flat JSON rows.
 
 ### Status model (spec §5.6)
@@ -72,8 +73,11 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
   under the right workspace/tab; env contract present in the pane; send delivers;
   kill confirms, shuts down gracefully, closes the pane, empties the workspace.
 - 50 concurrent `run`s with caps of 5: FIFO order held, never over cap, queue drains.
-- Concurrent same-path spawns: exactly one wins, the other gets `invalid_name`/
-  conflict.
+- Concurrent same-path spawns: exactly one wins, the other gets `state_conflict`
+  (details.reason: "path_in_use").
+- Path-model conformance table (owned here, extended in M5/M7): --name in scope,
+  --path relative, leading `/` absolute, agent scope = path minus name, ended-path
+  reuse + uuid history, depth-limit errors — asserted over CLI and socket.
 - `kill` during `starting`: canceled cleanly between pipeline steps (fault-injection
   around herdr calls).
 - A provider that reports idle immediately after start is held at `working` (no

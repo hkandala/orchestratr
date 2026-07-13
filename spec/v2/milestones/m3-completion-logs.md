@@ -27,10 +27,10 @@ said. M3 ships the turns machinery, `wait`, the claude/codex transcript adapters
 ### wait (spec §6.1)
 - Targets: patterns + uuids (§5.1 — relative to the caller's scope, `/` absolute,
   `*` wildcard); membership snapshotted at invocation; active agents only.
-- Uniform results: one `<path> <reason>` line per agent (single token reason:
-  turn_complete/completed/blocked:<kind>/killed/…), identical for single-agent and
-  subtree waits; idempotent (already-settled targets report immediately); JSON adds
-  `{uuid, status, ok, exit_reason?, next}` per target.
+- Uniform results: one `<path> <reason>` line per agent (single-token reasons),
+  identical for single-agent and pattern waits; idempotent (already-settled
+  targets report immediately); JSON per target `{uuid, path, status, ok, reason,
+  exit_reason?, next}` + `all_ok`, `timed_out`, `decision_seq` (§6.1 exactly).
 - Implementation: snapshot-then-subscribe on the event stream — provably no missed
   transitions.
 
@@ -38,7 +38,8 @@ said. M3 ships the turns machinery, `wait`, the claude/codex transcript adapters
 - Locate + parse native session files → common shape (ordered messages, roles, tool
   calls, token counts where available).
 - Identity gate: select by `agent_session` + `created_at`; multiple candidates →
-  `transcript_ambiguous` (never a silent pick).
+  `transcript_unavailable` with `details.cause: "ambiguous"` + candidates (never a
+  silent pick).
 - Freshness gate: final response reported only once the transcript has advanced past
   the observed completion (`transcript_freshness_timeout_ms`) → else
   `transcript_unavailable`.
@@ -46,8 +47,11 @@ said. M3 ships the turns machinery, `wait`, the claude/codex transcript adapters
   `transcript_cursor` captured into the store.
 
 ### ask (spec §6.1)
-- `orcr agent ask` — the CLI one-liner: run (gc immediate) → wait → last-response on
-  stdout; exactly the documented sugar, no extra semantics.
+- `orcr agent ask` — the CLI one-liner: run (gc immediate) → settle wait →
+  last-response on stdout; exactly the documented sugar, no extra semantics.
+- Naming enforcement tests: ask without --name/--path → `invalid_request`; both
+  together → `invalid_request`; --name / relative --path / absolute /path resolve
+  identically to run.
 
 ### logs (spec §6.1)
 - `agent logs <path|uuid>`: structured entries; `--tail <n>`; `--follow` (subscription

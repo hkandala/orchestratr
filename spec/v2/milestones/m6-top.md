@@ -1,7 +1,7 @@
 # M6 · top
 
-The live dashboard (spec §7): one **view-only** TUI that shows the whole tree —
-groups, lineage, loops and their runs, statuses in real time. A status display, not a
+The live dashboard (spec §7): one **view-only** TUI showing the whole path tree —
+agents, lineage annotations, loops and their runs, statuses in real time. A status display, not a
 control surface: acting on agents stays in the CLI (a detail panel with actions is
 future work).
 
@@ -29,9 +29,10 @@ future work).
   burst is one redraw).
 
 ### Interaction
-- Navigation only: `/` path-prefix filter · arrows collapse/expand · `q` quit. No
-  action keys in this milestone.
-- CLI filters pre-scope the tree: `orcr top [<path-prefix|uuid>] [-a <provider>]
+- Navigation only: `/` filter using the same §5.1 pattern grammar as `ls` (no
+  implicit prefix matching) · arrows collapse/expand · `q` quit. No action keys in
+  this milestone.
+- CLI filters pre-scope the tree: `orcr top [<pattern|uuid>] [-a <provider>]
   [--status <s>] [--managed|--unmanaged] [--loops]`; live-only by design (`--all` is
   `ls --all`'s job).
 
@@ -43,7 +44,11 @@ future work).
 - Scale: 100-agent tree renders and updates under the frame budget without dropped
   events.
 - Filters: each CLI filter and the `/` filter produce the same node sets as the
-  equivalent `ls` query.
+  equivalent `ls` query (golden cases: `review`, `review/*`, `review/**`,
+  `reviewer/**`, absolute `/` input from a scoped context).
+- Lineage golden: agent `fix_build/fixer` creates `/verify/checker` → tree places
+  it under `verify` with the `↖ fix_build/fixer` annotation; selection highlights
+  lineage without duplicating or re-rooting any node.
 
 ## Out of scope
 

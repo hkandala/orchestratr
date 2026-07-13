@@ -15,7 +15,8 @@ here — M0 is done when the plumbing is provably correct against a live herdr.
 
 ### Config (spec §14)
 - `~/.orcr/config.json`, strict JSON; every key optional with built-in defaults.
-- Validation with precise errors: unknown keys rejected (suggest nearest valid name),
+- Validation with precise errors: unknown keys warn and are ignored (suggest nearest
+  valid name — forward/backward compatible),
   durations require units and must be positive, `concurrency.max ≥ 1`, per-provider
   caps clamped to max with a warning.
 - Precedence rules: CLI flag → config → default (mechanism only; consumers land in

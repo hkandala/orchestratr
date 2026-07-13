@@ -23,8 +23,8 @@ exists so loops fire after a reboot).
 - Own process group (pid/pgid recorded); env = §5.3 contract (run uuid + run path);
   cwd = loop's creation cwd; stdin `/dev/null`; stdout/stderr captured line-tagged,
   size-capped + rotated.
-- Group inheritance from run context: agents spawned inside land under
-  `<loop_name>/<run_id>.…` (completes the M2 inheritance stub).
+- Path scope from run context: agents spawned inside a run resolve relative paths
+  under `<loop_name>/<run_id>` (completes the M2 scope-resolution stub).
 
 ### Scheduler (spec §11.3)
 - Fire path (POSIX process groups; Windows is future work): transactional run
@@ -35,12 +35,13 @@ exists so loops fire after a reboot).
 - Run exit: status mapping (`pending/running/stopping/ok/failed/timeout/stopped/
   canceled` + exit code/signal); the oldest pending run starts when a slot frees.
 - Stop/timeout: run → `stopping` admission barrier (descendant `agent run`s
-  rejected/canceled) → TERM/KILL pgid → barrier prefix-kill until a clean snapshot.
+  rejected/canceled) → TERM/KILL pgid → barrier glob-kill of `<loop>/<run_id>/**`
+  until a clean snapshot.
 - Run logs: versioned JSONL `{ts, source, stream, text}`, size-capped + rotated with
   a sidecar index; `loop logs` reads it.
 - Missed fires (server down / machine asleep): skipped and logged, never replayed.
 - Restart recovery: serialized per-loop transaction (verify running pgids → close
-  dead runs + prefix-kill their agents → recompute active count → honor
+  dead runs + glob-kill their agents (`<loop>/<run_id>/**`) → recompute active count → honor
   paused/ended → decide pending fire exactly once → recompute `next_fire_at`).
 - Every scheduler action is an event row (fired, coalesced, skipped, paused-hold,
   timed out, stopped).
@@ -50,12 +51,14 @@ exists so loops fire after a reboot).
   `loop run` sub-noun:
 - `loop run start <name>` — manual trigger (works on paused loops); prints
   `<loop_name>/<run_id> <run_uuid>`.
-- `loop run stop <name> [<run_id>] [-y]` — TERM pgid → grace → KILL → prefix-kill
-  the run's agents; run status `stopped`; TTY confirmation.
+- `loop run stop <name> [<run_id|run_uuid>] [-y]` — stopping barrier → TERM pgid →
+  grace → KILL → barrier glob-kill of `<loop>/<run_id>/**`; run status `stopped`;
+  TTY confirmation.
 - `loop run ls <name> [--status <s>] [--all]` — run_id, status, due_at vs started,
   duration, agent count.
-- `loop ls [<name>...] [--status] [--all]`.
-- `loop logs <name> [--run <run_id>] [--source orcr|command] [--tail] [--follow]` —
+- `loop ls [<name>...] [--status <s>] [--all]`.
+- `loop logs <name> [--run <run_id|run_uuid>] [--source orcr|command] [--tail <n>]
+  [--follow]` —
   interleaved command output + orcr scheduler events, lines tagged
   `[<name>/<run_id>]`.
 - `loop pause|resume <name>...` — pending fire held/released.
@@ -71,6 +74,12 @@ exists so loops fire after a reboot).
   `unsupported_platform` elsewhere (Windows task lands with Windows support).
 - `disable` removes the registration; running server + store untouched.
 
+### Active-loop namespace protection
+- While loop `nightly` is active: root/unrelated contexts cannot create
+  `--path nightly/foo` nor `--path /nightly/foo` (`invalid_request`,
+  reason reserved_name); a command inside `nightly/<run_id>` can create
+  descendants; after the loop ends the name is reusable.
+
 ## Acceptance
 
 - DST boundary tests: a "9am America/New_York weekdays" loop fires at 9am across both
@@ -79,7 +88,7 @@ exists so loops fire after a reboot).
   drops with a log line.
 - `loop run start` on a paused loop fires once; scheduled fires stay held.
 - `loop run stop <name> <run_id>` kills one of two concurrent runs; the other survives; the
-  stopped run's agents are prefix-killed.
+  stopped run's agents are glob-killed.
 - Reboot simulation: kill server with a running run + a pending fire → restart →
   dead run closed out, its agents killed, pending fire decided exactly once, missed
   cron fires skipped-and-logged.

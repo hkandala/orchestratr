@@ -14,19 +14,24 @@ vocabulary. Ends with publishable packages and docs.
     mirroring `ORCR_AGENT_DATA_DIR`/`ORCR_LOOP_DATA_DIR`,
     `wait()`, `send()`, `logs()`, `followLogs()` (AsyncIterable), `lastResponse()`,
     `kill()`).
-  - Collections with CLI-identical subtree semantics: `orcr.agent.wait/ls/kill`.
-  - `orcr.ask()` — run(gc: immediate) → wait(idle) → lastResponse.
-  - `orcr.scope(prefix, fn, { killOnThrow? })` — AsyncLocalStorage-scoped grouping
-    (not process-global); nests with inherited context.
-  - `orcr.watch({ prefix?, agent?, status?, managed?, sinceSeq? })` —
+  - Collections take §5.1 patterns, CLI-identical: `orcr.agent.wait/ls/kill`.
+  - `orcr.ask()` — run(gc: immediate) → settle wait → lastResponse (naming rules
+    identical to run).
+  - `orcr.scope(path, fn, { killOnThrow? })` — AsyncLocalStorage path scope (not
+    process-global); nests with inherited context; killOnThrow = barrier-kill of
+    `<scope>/**`.
+  - `orcr.watch({ pattern?, agent?, status?, managed?, sinceSeq? })` —
     snapshot-then-subscribe AsyncIterable of typed events.
   - `orcr.loop.*` (create/pause/resume/rm/ls/logs + `loop.run.start/stop/ls`),
     `orcr.loopNameFrom()`,
     `orcr.server.*`, `orcr.api.*`.
-  - Typed errors from the §13 enum (`TranscriptUnavailable`, `IntegrationMissing`,
-    `StateConflict`, `NotFound`, `ForceRequired`, …).
-- Data conventions surfaced: `a.dataDir` (`~/.orcr/data/agents/<uuid>/`), run
-  `dataDir` for loops.
+  - Typed errors: one class per §13 code (`NotFound`, `InvalidRequest`,
+    `StateConflict`, `Blocked`, `Timeout`, `IntegrationMissing`,
+    `TranscriptUnavailable`, `EnvironmentError`, `ServerError`); force-required is
+    `StateConflict` details.reason.
+- Data conventions surfaced: `a.dataDir` mirrors `ORCR_AGENT_DATA_DIR`
+  (path-mirrored, uuid leaf); `loop.run.start()` returns the run's `dataDir`;
+  `context.fromEnv()` exposes both.
 
 ### Recipes (spec §9)
 - The §9 examples (9.1–9.7) as **self-contained tested fixtures** in the repo
@@ -36,9 +41,10 @@ vocabulary. Ends with publishable packages and docs.
   generate-and-filter, tournament, loop-until-done + durable handoff.
 
 ### The skill (spec §10)
-- `skill/SKILL.md` (≤ ~150 lines: when to reach for orcr, the hot path, identity &
-  grouping in three sentences, the file/data conventions, provider routing table,
-  discipline, guard rails, reference pointers).
+- `skill/SKILL.md` (≤ ~150 lines: when to reach for orcr, the hot path (every
+  example carries --name/--path), identity & path scopes in three sentences, the
+  file/data conventions, provider routing table, discipline, guard rails, reference
+  pointers).
 - `skill/references/`: `cli.md`, `sdk.md`, `patterns.md` (the §9 recipes), `loops.md`,
   `files.md` — loaded by agents on demand.
 - Validation: a real agent given only SKILL.md completes the hot path (spawn → wait →
@@ -58,7 +64,10 @@ vocabulary. Ends with publishable packages and docs.
 - `orcr.scope` nesting: SDK-in-loop-in-agent composes the same effective paths as
   the CLI path (property test).
 - Skill drill: fresh agent + SKILL.md only → completes the hot path; reference files
-  contain no stale flags (doc-test against `--help`).
+  contain no stale flags (doc-test against `--help`); doc-test rejects any run/ask
+  sample missing --name/--path.
+- Concurrency fixtures: two copies of fan-out-and-merge and tournament started
+  concurrently (distinct top scopes) run clean.
 - Package installs clean on a fresh machine; quickstart works as written.
 
 ## Out of scope
