@@ -29,7 +29,7 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
 - Durable row (full `launch_json`) before any herdr call; data dir created
   (`~/.orcr/data/agents/<uuid>/`).
 - Placement: level-1 workspace ensured; new tab labeled per §5.2; pane env = the §5.3
-  contract (`ORCR_ID`/`ORCR_FQN`/`ORCR_PARENT_ID`/`ORCR_PARENT_FQN`) + launch token.
+  contract (`ORCR_ID`/`ORCR_FQN`/`ORCR_PARENT_ID`/`ORCR_PARENT_FQN`/`ORCR_AGENT_DATA_DIR`, plus `ORCR_LOOP_DATA_DIR` in loop contexts) + launch token.
 - Location columns updated after each herdr call.
 - Startup recipe per integration; `agent_session_*` captured when reported.
 - First prompt delivery (two-call rule: send-text → ~1s → enter).

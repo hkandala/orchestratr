@@ -45,8 +45,8 @@ exists so loops fire after a reboot).
   `<loop_name>.<run_id> <run_uuid>`.
 - `loop run stop <name> [<run_id>] [-y]` — TERM pgid → grace → KILL → prefix-kill
   the run's agents; run status `stopped`; TTY confirmation.
-- `loop run ls <name> [--all]` — run_id, status, due_at vs started, duration, agent
-  count.
+- `loop run ls <name> [--status <s>] [--all]` — run_id, status, due_at vs started,
+  duration, agent count.
 - `loop ls [<name>...] [--status] [--all]`.
 - `loop logs <name> [--run <run_id>] [--source orcr|command] [--tail] [--follow]` —
   interleaved command output + orcr scheduler events, lines tagged

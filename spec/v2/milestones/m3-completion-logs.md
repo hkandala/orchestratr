@@ -29,8 +29,10 @@ said. M3 ships the turns machinery, `wait`, the claude/codex transcript adapters
   agents only. No status flag — one meaning: block until every target **settles**
   (turn complete / ended-completed = success; blocked → exit 4; other terminal →
   exit 5; timeout → 3; no match → 6).
-- Self-explaining results: per-target `{status, ok, exit_reason?, reason, next}` —
-  why the wait ended + the suggested next command (TTY lines and JSON alike).
+- Uniform results: one `<fqn> <reason>` line per agent (single token reason:
+  turn_complete/completed/blocked:<kind>/killed/…), identical for single-agent and
+  subtree waits; idempotent (already-settled targets report immediately); JSON adds
+  `{uuid, status, ok, exit_reason?, next}` per target.
 - Implementation: snapshot-then-subscribe on the event stream — provably no missed
   transitions.
 

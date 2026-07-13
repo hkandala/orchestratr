@@ -274,11 +274,11 @@ ORCR_ID           this agent's uuid — or, in a loop-run command, the run's uui
 ORCR_FQN          this agent's fqn (group.name) — or the run path <loop_name>.<run_id>
 ORCR_PARENT_ID    the uuid of the context that spawned this agent (unset at root)
 ORCR_PARENT_FQN   the fqn / run path of that context (unset at root)
-ORCR_DATA_DIR     this context's data dir (§8): ~/.orcr/data/agents/<uuid> for an
-                  agent, ~/.orcr/data/loops/<loop_uuid>/<run_id> for a run command
-ORCR_RUN_DATA_DIR the enclosing loop run's data dir — set for the run command and
-                  every agent descended from it (a shared scratch space for the run);
-                  unset outside loops
+ORCR_AGENT_DATA_DIR this agent's data dir (§8): ~/.orcr/data/agents/<uuid>
+                    (unset in loop-run commands — they aren't agents)
+ORCR_LOOP_DATA_DIR  the loop run's data dir: ~/.orcr/data/loops/<loop_uuid>/<run_id> —
+                    set for the run command and every agent descended from it (a
+                    shared scratch space for the run); unset outside loops
 ```
 
 Loop-run commands are root contexts themselves: their `ORCR_PARENT_*` are unset, and
@@ -550,22 +550,28 @@ A queued agent is waited through promotion and its first turn. Exits: `0` every
 target settled successfully · `4` any target blocked · `5` any target dead ·
 `3` `--timeout` expired · `6` no target matched.
 
-**The result explains itself** — every settle is reported with *why* the wait ended
-and *what to do next*, so a calling agent (or human) knows the next step without
-guessing. TTY output, one line per target:
+**The result is one line per agent — `<fqn> <reason>` — always**, whether you waited
+on one agent or a subtree, so callers parse a single format. `reason` is one token:
+`turn_complete · completed · blocked:question · blocked:limit · blocked:login ·
+killed · canceled · reaped · timeout · failed · lost`.
 
 ```
-refactor.phase_1.file_1  idle     turn complete  → orcr agent logs refactor.phase_1.file_1 --last-response
-refactor.phase_1.review  blocked  question — needs a human  → orcr agent attach refactor.phase_1.review
-refactor.phase_1.file_2  ended    killed by orcr agent kill  → history: orcr agent logs <uuid>
+refactor.phase_1.file_1  turn_complete
+refactor.phase_1.review  blocked:question
+refactor.phase_1.file_2  killed
 ```
 
-JSON carries the same per target: `{uuid, fqn, status, ok, exit_reason?, reason,
-next}` (`reason` = human-readable why, `next` = the suggested command), plus
-`all_ok:bool` and `timed_out:bool`. Implementation is snapshot-then-subscribe on the
-event stream (§11.6) — no missed transitions. (Niche waits the flag used to cover —
-"has it started working?", "watch for blocked" — belong to `send`'s confirmation,
-`top`, `ls --status`, and the SDK's `watch()` stream.)
+Every settled target is listed — a subtree wait shows each agent's line, including
+every blocked one, not just the first. **Wait is idempotent**: targets already
+settled (idle, blocked, ended) report immediately — running `wait` again right after
+returns the same listing at once. JSON carries the same per target:
+`{uuid, fqn, status, ok, reason, exit_reason?, next}` (`next` = the suggested
+follow-up command, e.g. `logs --last-response` after `turn_complete`, `attach` when
+blocked), plus `all_ok:bool` and `timed_out:bool`. Implementation is
+snapshot-then-subscribe on the event stream (§11.6) — no missed transitions. (Niche
+waits the old status flag covered — "has it started working?", "watch for blocked" —
+belong to `send`'s confirmation, `top`, `ls --status`, and the SDK's `watch()`
+stream.)
 
 **attach** — exact target. Wraps `herdr agent attach`: streams the pane into the
 current terminal from anywhere (inside or outside herdr), detach returns. Observe by
@@ -611,7 +617,7 @@ orcr loop logs   <name> [--run <run_id>] [--source orcr|command]
 
 orcr loop run start <name> [--json]               # manual trigger
 orcr loop run stop  <name> [<run_id>] [-y] [--json]
-orcr loop run ls    <name> [--all] [--json]
+orcr loop run ls    <name> [--status <s>] [--all] [--json]
 ```
 
 Durable cron for **any command** — the `--` boundary captures an **argv array**,
@@ -657,7 +663,8 @@ DSL.
   on a TTY (`-y` skips). Run status ends `stopped`.
 - **`loop run ls`** — the loop's runs: run_id, status (`running · ok · failed ·
   timeout · stopped`), `due_at` vs started, duration, agent count. Active runs by
-  default; `--all` includes history.
+  default; `--all` includes history; `--status <s>` filters (e.g. `--status failed`
+  across history).
 - **Run process rules**: cwd = the loop's recorded creation cwd; env = server env +
   the §5.3 contract (run uuid/path); stdin = `/dev/null`; stdout/stderr captured
   line-tagged to the run's log (size-capped with rotation); exit code and terminating
@@ -824,7 +831,7 @@ const a = await orcr.agent.run({
 a.uuid;                        // permanent id
 a.fqn;                         // "refactor.phase_1.k3f9x"
 a.name; a.group;
-a.dataDir;                     // ~/.orcr/data/agents/<uuid>  (the data convention, below)
+a.dataDir;                     // = ORCR_AGENT_DATA_DIR  (the data convention, below)
 await a.wait({ timeout? });    // agent wait — settles: turn complete | blocked | ended
 await a.send(prompt);                  // agent send
 await a.logs({ tail? });               // snapshot → LogEntry[]
@@ -888,9 +895,9 @@ callers don't have to invent paths:
 ```
 
 The directory is created when the agent (or loop run) is created and handed to the
-context itself as **env** (§5.3): `ORCR_DATA_DIR` (your own dir) and
-`ORCR_RUN_DATA_DIR` (the enclosing loop run's dir — a scratch space shared by all
-agents of that run). The SDK exposes the same as `a.dataDir` / the run's `dataDir`;
+context itself as **env** (§5.3): `ORCR_AGENT_DATA_DIR` (the agent's own dir) and
+`ORCR_LOOP_DATA_DIR` (the loop run's dir — a scratch space shared by all agents of
+that run). The SDK exposes the same as `a.dataDir` / the run's `dataDir`;
 prompts reference it (*"write your findings to `<dataDir>/response.md`"*). orcr
 guarantees existence and uniqueness — nothing else; contents are entirely the
 caller's (cleanup is future work, §17).
@@ -965,7 +972,7 @@ await orcr.group("review", async () => {
     orcr.agent.run({
       agent: "claude", name: `file_${i}`, group: "fanout", gc: "immediate",
       prompt: `Review the diff of ${f} against main for bugs and risky changes.
-               Write your findings to $ORCR_DATA_DIR/response.md, then say DONE.`,
+               Write your findings to $ORCR_AGENT_DATA_DIR/response.md, then say DONE.`,
     })));
 
   // settles when every reviewer finishes: gc:immediate → ended (completed)
@@ -1430,7 +1437,7 @@ agent run        {agent:{uuid,fqn,name,group,group_display,status,agent,managed,
                   cwd,data_dir,queue_position?,parent_id?,parent_fqn?}, permissions:"bypass"}
 agent send       {uuid, fqn, delivered_while:"working|idle|parked", input_seq}
 agent logs       {uuid, fqn, entries:[…]} · --last-response {uuid, fqn, response:{text,final}}
-agent wait       {targets:[{uuid,fqn,status,ok,exit_reason?,reason,next}],
+agent wait       {targets:[{uuid,fqn,status,ok,reason,exit_reason?,next}],
                   all_ok:bool, timed_out:bool}          -- timeout: ok:true + exit 3
 agent kill       {killed:[{uuid,fqn}], skipped:[{uuid,fqn,reason:"ended|force_required|…"}],
                   all_killed:bool}
