@@ -660,10 +660,12 @@ entries); `--follow` = keep streaming after that (they compose: `--tail 50 --fol
 the `tail -n` / `tail -f` pair, same as docker/kubectl). `--last-response` prints only
 the final assistant message and **fails loudly rather than guessing**: exit 1
 `transcript_unavailable` when no final response is identifiable; exit 2
-`integration_missing` when the provider has no orcr integration (§11.4). On completion
-the final response and a transcript locator/cursor are also **captured into the
-store** (§12) so gc-immediate agents and history survive provider file rotation; live
-reads prefer the native files.
+`integration_missing` when the provider has no orcr integration (§11.4). orcr never
+copies responses anywhere — `logs` always reads the provider's native transcript
+(completion records only a transcript locator/cursor, §12); the known limitation:
+if a provider later rotates or deletes its transcript files, historical
+`--last-response` fails with `transcript_unavailable` rather than returning a stale
+copy.
 
 **wait** — targets are patterns and/or uuids (§5.1: relative to your scope, `/` for
 absolute, `*` the wildcard). Membership = **active** agents matching any target,
@@ -1104,14 +1106,15 @@ reused paths never collide, and every generation stays browsable):
 
 ```
 agent  review/fanout/file_1  → data/review/fanout/file_1/<uuid>/
-                                 launch.json · response.md (orcr-written)
-                                 + whatever the agent writes (memory.md, out/ …)
+                                 launch.json (orcr-written audit)
+                                 + whatever the agent writes (response.md,
+                                   memory.md, out/ … — agent-managed, by convention)
 loop   nightly               → data/nightly/            (ORCR_LOOP_DATA_DIR)
                                  loop.json · cross-run state the loop keeps
 run    nightly/r82c9s        → data/nightly/r82c9s/
-                                 run.log (the run's JSONL log) · run scratch
+                                 run.log (the command's stdout/stderr) · run scratch
 agent  nightly/r82c9s/triage → data/nightly/r82c9s/triage/<uuid>/
-                                 launch.json · response.md · …
+                                 launch.json · agent-managed files
 ```
 
 Note the loop case: `ORCR_LOOP_DATA_DIR` points at the **loop's** folder — one
@@ -1484,8 +1487,9 @@ Tick ~30s, every transition one store transaction: `gc auto` agents turn-complet
 `idle_after` → two-phase move to the `idle` workspace (`move_state: parking` → status
 `parked`, home workspace recorded); parked ≥ `kill_after` → graceful kill
 (`exit_reason: reaped`) and **pane closed**. `gc immediate` agents: two-phase — stable
-idle → transcript settled → final response **captured into the store** → kill + pane
-closed; ends `ended` (`exit_reason: completed`). `send` un-parks:
+idle → transcript settled → final response **verified readable from the transcript**
+(locator/cursor recorded, so a waiting `ask` reads it before the pane dies) → kill +
+pane closed; ends `ended` (`exit_reason: completed`). `send` un-parks:
 `move_state: unparking`, cancel pending reap, move pane back to the home workspace
 (recreating the tab if needed), confirm location, status → `idle`, *then* deliver. No
 move/reap while an attach lease is fresh (deferred + logged). Unmanaged agents are
@@ -1556,9 +1560,10 @@ by the pane's `agent_session` id and the agent's `created_at` — never by cwd m
 alone; multiple candidates → `transcript_unavailable` with the candidates in `details` (never a silent pick).
 **Freshness**: a final response is only reported once the transcript has advanced past
 the observed completion (bounded by `transcript_freshness_timeout_ms`); otherwise
-`transcript_unavailable`. On each completion the final response text + transcript
-locator/cursor are captured into the store (history survives provider file rotation;
-live reads prefer native files).
+`transcript_unavailable`. On each completion only the transcript locator/cursor are
+recorded — orcr keeps no response copies; reads always come from the native files
+(provider file rotation makes old history `transcript_unavailable`, a documented
+limitation).
 
 ### 11.5 Reconciliation & unmanaged discovery
 
@@ -1661,11 +1666,16 @@ the store — sqlite coordinates, files carry content:
                                  path + how it was derived, injected env — never the
                                  caller's environment; versioned; written before any
                                  herdr call; audit/recovery, not auto-relaunch)
-<agent data dir>/response.md     the captured final response (gc-immediate capture
-                                 and history that survives provider file rotation)
 <loop data dir>/loop.json        the loop definition payload (argv, cadence, tz, cwd)
-<run folder>/run.log             the run's JSONL log (§6.2)
+<run folder>/run.log             the run COMMAND's stdout/stderr (JSONL:
+                                 {ts, stream, text}; orcr's own scheduler actions
+                                 live in the events table — `loop logs` interleaves
+                                 the two)
 ```
+
+orcr writes **no prompt/response files** — responses are read from the provider's
+native transcript via `agent logs`; anything an agent writes to its data dir is the
+agent's own doing (the §8 file convention).
 
 ```
 agents:    uuid PK (UUIDv7 — permanent identity; events/turns/attaches reference it),
@@ -1684,7 +1694,7 @@ agents:    uuid PK (UUIDv7 — permanent identity; events/turns/attaches referen
            blocked_kind (question|limit|login|unknown),
            input_seq, cancel_requested (0|1),
            exit_reason (completed|killed|canceled|reaped|timeout|failed|lost),
-           response_captured_at, transcript_locator, transcript_cursor,
+           transcript_locator, transcript_cursor,
            queue_seq, enqueued_at, starting_at, deadline_at,  -- deadline only if --timeout
            idle_since, parked_at, last_status_change_at, created_at, ended_at, updated_at
 turns:     agent_uuid, input_seq (PK pair),            -- one row per input/turn:
@@ -1728,9 +1738,9 @@ segments, else `default`; `queue_position` = rank by `queue_seq` among status
 `last_status_change_at` otherwise; a run's `agents` count = active agents matching
 `<loop>/<run_id>/**`; data dirs = `$ORCR_HOME/data/<path segments>/<uuid>` for
 agents, `$ORCR_HOME/data/<loop_name>` for loops and `…/<run_id>` for runs
-(relocating `ORCR_HOME` relocates them). Run logs are versioned JSONL — one record
-per line `{ts, source: orcr|command, stream, text}` — size-capped and rotated with a
-sidecar index.
+(relocating `ORCR_HOME` relocates them). Run logs are versioned JSONL — one record per
+line `{ts, stream: stdout|stderr, text}`, the command's output only — size-capped
+and rotated with a sidecar index; `loop logs` merges them with scheduler events.
 
 ## 13 · JSON result shapes & error codes (stable; part of the API contract)
 

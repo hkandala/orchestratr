@@ -43,9 +43,9 @@ said. M3 ships the turns machinery, `wait`, the claude/codex transcript adapters
 - Freshness gate: final response reported only once the transcript has advanced past
   the observed completion (`transcript_freshness_timeout_ms`) → else
   `transcript_unavailable`.
-- On completion: the final response is captured to `<data dir>/response.md`;
-  `response_captured_at`, `transcript_locator`, `transcript_cursor` recorded in the
-  store.
+- On completion: `transcript_locator`/`transcript_cursor` recorded — no response
+  copies anywhere; `logs` always reads the native transcript (rotation of provider
+  files makes old history transcript_unavailable, documented).
 
 ### ask (spec §6.1)
 - `orcr agent ask` — the CLI one-liner: run (gc immediate) → settle wait →
@@ -83,8 +83,8 @@ said. M3 ships the turns machinery, `wait`, the claude/codex transcript adapters
 - Fault: restart the server mid-turn → wait re-arms conservatively and completes.
 - External-input test: type into the pane via herdr directly → synthetic turn
   recorded; a subsequent orcr `wait` settles correctly on the external turn.
-- `gc immediate` race: response is always captured before the pane dies (fault
-  injection between capture and kill).
+- `gc immediate` race: the response is always readable from the transcript before
+  the pane dies (fault injection between verification and kill).
 - Transcript ambiguity/freshness gates hit their error paths in fixtures; no silent
   wrong-transcript reads.
 - Mock-provider matrix: fast turn (< grace), slow tool-heavy turn (idle gaps shorter
