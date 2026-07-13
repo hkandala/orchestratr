@@ -26,10 +26,11 @@ said. M3 ships the turns machinery, `wait`, the claude/codex transcript adapters
 
 ### wait (spec §6.1)
 - Targets: subtree selectors + uuids; membership snapshotted at invocation; active
-  agents only.
-- `--status idle|working|blocked|ended` (default idle) with the full outcome matrix:
-  parked counts as turn-complete; `ended` = any terminal outcome; exit codes
-  0/4/5/3/6.
+  agents only. No status flag — one meaning: block until every target **settles**
+  (turn complete / ended-completed = success; blocked → exit 4; other terminal →
+  exit 5; timeout → 3; no match → 6).
+- Self-explaining results: per-target `{status, ok, exit_reason?, reason, next}` —
+  why the wait ended + the suggested next command (TTY lines and JSON alike).
 - Implementation: snapshot-then-subscribe on the event stream — provably no missed
   transitions.
 
@@ -65,7 +66,7 @@ said. M3 ships the turns machinery, `wait`, the claude/codex transcript adapters
   idle).
 - Fault: restart the server mid-turn → wait re-arms conservatively and completes.
 - External-input test: type into the pane via herdr directly → synthetic turn
-  recorded; a subsequent orcr `wait --status idle` behaves correctly.
+  recorded; a subsequent orcr `wait` settles correctly on the external turn.
 - `gc immediate` race: response is always captured before the pane dies (fault
   injection between capture and kill).
 - Transcript ambiguity/freshness gates hit their error paths in fixtures; no silent

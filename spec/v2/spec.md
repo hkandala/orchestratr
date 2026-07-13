@@ -362,7 +362,7 @@ Every managed agent passes through the same statuses:
 ### 5.6 Status model & completion discipline
 
 **One `status` column, one public vocabulary.** Every agent has exactly one status at
-a time; the same value appears in the store, `ls`, `top`, `wait --status`, JSON, and
+a time; the same value appears in the store, `ls`, `top`, `wait` results, JSON, and
 events. Managed and unmanaged agents have **two different lifecycles** — unmanaged
 agents can't be queued, parked, or start-tracked, so their set is smaller.
 
@@ -486,8 +486,7 @@ orcr agent run    [-a <provider>] [-p <prompt>]
                   [--cwd <dir>] [--timeout <dur>] [--json]
 orcr agent send   <fqn|uuid> <prompt> [--json]
 orcr agent logs   <fqn|uuid> [--last-response] [--tail <n>] [--follow] [--json]
-orcr agent wait   <fqn-prefix|uuid>... [--status idle|working|blocked|ended]
-                  [--timeout <dur>] [--json]
+orcr agent wait   <fqn-prefix|uuid>... [--timeout <dur>] [--json]
 orcr agent attach <fqn|uuid> [--takeover]
 orcr agent kill   <fqn-prefix|uuid>... [--force] [-y] [--json]
 orcr agent ls     [<fqn-prefix|uuid>] [-a <provider>] [--status <s>]
@@ -536,20 +535,37 @@ reads prefer the native files.
 
 **wait** — targets are subtree selectors and/or uuids; membership = **active** agents
 matching any target, **snapshotted at invocation** (historical ended rows are never
-wait targets; no match at all → exit 6). `--status` (default `idle`) is the status
-being waited for. Semantics per target: `idle` — the latest turn is complete (a parked
-agent is turn-complete by definition; an already-complete agent returns immediately);
-`working` — the agent has started working (useful right after `send`); `blocked` —
-needs a human; `ended` — any terminal outcome counts as reached (scripts that care
-read `exit_reason` in the JSON — for `gc immediate` agents, whose pane closes as soon
-as the turn completes and the response is captured, `--status ended` is the natural
-done signal). Returns when **all** targets reach the status.
-Exits: `0` all reached · `4` a target blocked while a non-blocked status was awaited ·
-`5` a target reached a terminal status that precludes the awaited non-terminal status ·
-`3` `--timeout` expired · `6` no target matched. JSON reports every target as
-`{uuid, fqn, status, reached, terminal, exit_reason?}` plus `reached_all` and
-`timed_out`. Implementation is snapshot-then-subscribe on the event stream (§11.6) —
-no missed transitions.
+wait targets; no match at all → exit 6). There is no status flag — waiting has one
+meaning: **block until every target settles**, i.e. reaches a point where the caller
+can or must act:
+
+| settle point | outcome |
+| --- | --- |
+| turn complete (`idle` / `parked` — an already-complete agent settles immediately) | success — the answer is ready |
+| `ended` with `exit_reason: completed` (`gc immediate`: pane closed right after capture) | success — done and tidied up |
+| `blocked` | needs a human (exit 4) |
+| `ended` any other way, or `lost` (killed · canceled · reaped · timeout · failed) | cut short / never ran (exit 5) |
+
+A queued agent is waited through promotion and its first turn. Exits: `0` every
+target settled successfully · `4` any target blocked · `5` any target dead ·
+`3` `--timeout` expired · `6` no target matched.
+
+**The result explains itself** — every settle is reported with *why* the wait ended
+and *what to do next*, so a calling agent (or human) knows the next step without
+guessing. TTY output, one line per target:
+
+```
+refactor.phase_1.file_1  idle     turn complete  → orcr agent logs refactor.phase_1.file_1 --last-response
+refactor.phase_1.review  blocked  question — needs a human  → orcr agent attach refactor.phase_1.review
+refactor.phase_1.file_2  ended    killed by orcr agent kill  → history: orcr agent logs <uuid>
+```
+
+JSON carries the same per target: `{uuid, fqn, status, ok, exit_reason?, reason,
+next}` (`reason` = human-readable why, `next` = the suggested command), plus
+`all_ok:bool` and `timed_out:bool`. Implementation is snapshot-then-subscribe on the
+event stream (§11.6) — no missed transitions. (Niche waits the flag used to cover —
+"has it started working?", "watch for blocked" — belong to `send`'s confirmation,
+`top`, `ls --status`, and the SDK's `watch()` stream.)
 
 **attach** — exact target. Wraps `herdr agent attach`: streams the pane into the
 current terminal from anywhere (inside or outside herdr), detach returns. Observe by
@@ -809,7 +825,7 @@ a.uuid;                        // permanent id
 a.fqn;                         // "refactor.phase_1.k3f9x"
 a.name; a.group;
 a.dataDir;                     // ~/.orcr/data/agents/<uuid>  (the data convention, below)
-await a.wait({ status?, timeout? });   // agent wait — status defaults to "idle"
+await a.wait({ timeout? });    // agent wait — settles: turn complete | blocked | ended
 await a.send(prompt);                  // agent send
 await a.logs({ tail? });               // snapshot → LogEntry[]
 for await (const e of a.followLogs()) { … }   // streaming is a separate call
@@ -817,12 +833,12 @@ await a.lastResponse();        // → string (throws TranscriptUnavailable)
 await a.kill();
 
 // prefix collections — same subtree semantics as the CLI (fqn prefix or uuid)
-await orcr.agent.wait("refactor.phase_1", { status?, timeout? });
+await orcr.agent.wait("refactor.phase_1", { timeout? });
 await orcr.agent.ls({ prefix?, agent?, status?, managed?, all? });
 await orcr.agent.kill("refactor", { force? });   // no interactive confirm in the SDK
 
 // the one-liner — documented sugar for: agent.run({..., gc: "immediate"})
-// → wait({status:"idle"}) → lastResponse()
+// → wait() → lastResponse()
 const answer: string = await orcr.ask({ agent: "claude", prompt: "…" });
 
 // grouping — async-context scoped (AsyncLocalStorage), NOT process-global:
@@ -887,10 +903,10 @@ Complete, runnable shapes for the common orchestration patterns. (These also shi
 the skill's `references/patterns.md`, §10.) Two conventions used throughout: group
 names are **descriptive** (`fix_build`, `review.pr_1423`) — no timestamp suffixes
 needed, since an fqn only has to be unique among *live* agents and these flows clean
-up after themselves (`gc: immediate`, `killOnThrow`, explicit kills); and one-shot
-`gc: "immediate"` agents are awaited with `wait({status: "ended"})` — their pane
-closes as soon as the turn completes and the response is captured, so `ended`
-(`exit_reason: completed`) *is* the done signal (§6.1).
+up after themselves (`gc: immediate`, `killOnThrow`, explicit kills); and `wait()`
+has no status to pick — it settles on turn-complete for live agents and on
+`ended (completed)` for `gc: immediate` ones, which is exactly the done signal each
+flow needs (§6.1).
 
 ### 9.1 Fix-until-green (goal-style: worker + verifier loop)
 
@@ -926,7 +942,7 @@ await orcr.group("fix_build", async () => {
     } else {
       await fixer.send(`Build errors (iteration ${iter}):\n${errors}\nFix all of them.`);
     }
-    await fixer.wait({ status: "idle" });
+    await fixer.wait();
   }
   await fixer.kill();
 }, { killOnThrow: true });   // any crash cleans up the whole subtree
@@ -952,9 +968,8 @@ await orcr.group("review", async () => {
                Write your findings to $ORCR_DATA_DIR/response.md, then say DONE.`,
     })));
 
-  // gc:immediate → the pane closes once the turn completes and the response is
-  // captured; ended (exit_reason: completed) is the done signal
-  await orcr.agent.wait("review.fanout", { status: "ended" });
+  // settles when every reviewer finishes: gc:immediate → ended (completed)
+  await orcr.agent.wait("review.fanout");
 
   const findings = await Promise.all(reviewers.map(async r =>
     `## ${r.fqn}\n` + await readFile(`${r.dataDir}/response.md`, "utf8")));
@@ -1009,7 +1024,7 @@ await orcr.group("harden", async () => {
     agent: "claude", name: "worker", gc: "never", cwd: process.cwd(),
     prompt: "Implement the task in TASK.md. Say DONE when finished.",
   });
-  await worker.wait({ status: "idle" });
+  await worker.wait();
 
   for (let round = 1; round <= 5; round++) {
     const verdicts = await Promise.all(LENSES.map(lens =>
@@ -1023,7 +1038,7 @@ await orcr.group("harden", async () => {
     const failures = verdicts.filter(v => !v.trim().startsWith("PASS"));
     if (failures.length <= LENSES.length / 2) break;      // majority passed
     await worker.send(`Reviewers rejected the work:\n${failures.join("\n")}\nFix these.`);
-    await worker.wait({ status: "idle" });
+    await worker.wait();
   }
   await worker.kill();
 }, { killOnThrow: true });
@@ -1415,8 +1430,8 @@ agent run        {agent:{uuid,fqn,name,group,group_display,status,agent,managed,
                   cwd,data_dir,queue_position?,parent_id?,parent_fqn?}, permissions:"bypass"}
 agent send       {uuid, fqn, delivered_while:"working|idle|parked", input_seq}
 agent logs       {uuid, fqn, entries:[…]} · --last-response {uuid, fqn, response:{text,final}}
-agent wait       {targets:[{uuid,fqn,status,reached,terminal,exit_reason?}],
-                  reached_all:bool, timed_out:bool}     -- timeout: ok:true + exit 3
+agent wait       {targets:[{uuid,fqn,status,ok,exit_reason?,reason,next}],
+                  all_ok:bool, timed_out:bool}          -- timeout: ok:true + exit 3
 agent kill       {killed:[{uuid,fqn}], skipped:[{uuid,fqn,reason:"ended|force_required|…"}],
                   all_killed:bool}
 agent ls         {agents:[{…flat row, see §6.1}]}
