@@ -11,7 +11,7 @@ vocabulary. Ends with publishable packages and docs.
   regenerated in CI so drift fails the build.
 - **Convenience layer** (each helper documents its underlying calls):
   - `orcr.agent.run()` → handle (`uuid`, `fqn`, `name`, `group`, `dataDir` —
-    mirroring `ORCR_DATA_DIR`/`ORCR_RUN_DATA_DIR`,
+    mirroring `ORCR_AGENT_DATA_DIR`/`ORCR_LOOP_DATA_DIR`,
     `wait()`, `send()`, `logs()`, `followLogs()` (AsyncIterable), `lastResponse()`,
     `kill()`).
   - Collections with CLI-identical subtree semantics: `orcr.agent.wait/ls/kill`.
