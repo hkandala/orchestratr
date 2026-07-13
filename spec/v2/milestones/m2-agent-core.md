@@ -8,13 +8,13 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
 ## Scope
 
 ### Identity (spec §5.1)
-- uuid (UUIDv7) + path (dot-separated; last segment = the mandatory name); grammar
+- uuid (UUIDv7) + path (slash-separated; last segment = the mandatory name); grammar
   + limits validation (`invalid_request`).
 - Mandatory naming (--name|--path, exactly one — run and ask alike, no generated
   names); one-transaction allocation against the partial unique index (concurrent
   spawns can never double-allocate).
 - Resolution: uuid / unambiguous uuid prefix → any row; path → active first, else most
-  recent ended. Subtree selectors (segment-boundary matching) for bulk verbs; exact
+  recent ended. Subtree selectors (glob matching (`*` one segment, `**` across)) for bulk verbs; exact
   targets for singleton verbs.
 - Path resolution: `--name`|`--path` (exactly one, mandatory); relative paths
   resolve against the caller's scope, leading `/` = absolute; caller resolution

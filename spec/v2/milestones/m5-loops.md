@@ -19,12 +19,12 @@ exists so loops fire after a reboot).
 
 ### Runs & identity (spec §6.2, §12)
 - Every run: uuid + **run_id** (`r` + 5 alnum, e.g. `r82c9s`, unique per loop); path
-  `<loop_name>.<run_id>`; `due_at` = scheduled fire time.
+  `<loop_name>/<run_id>`; `due_at` = scheduled fire time.
 - Own process group (pid/pgid recorded); env = §5.3 contract (run uuid + run path);
   cwd = loop's creation cwd; stdin `/dev/null`; stdout/stderr captured line-tagged,
   size-capped + rotated.
 - Group inheritance from run context: agents spawned inside land under
-  `<loop_name>.<run_id>.…` (completes the M2 inheritance stub).
+  `<loop_name>/<run_id>.…` (completes the M2 inheritance stub).
 
 ### Scheduler (spec §11.3)
 - Fire path (POSIX process groups; Windows is future work): transactional run
@@ -49,7 +49,7 @@ exists so loops fire after a reboot).
 - Definition verbs: `loop create/pause/resume/rm/ls/logs`; run verbs under the
   `loop run` sub-noun:
 - `loop run start <name>` — manual trigger (works on paused loops); prints
-  `<loop_name>.<run_id> <run_uuid>`.
+  `<loop_name>/<run_id> <run_uuid>`.
 - `loop run stop <name> [<run_id>] [-y]` — TERM pgid → grace → KILL → prefix-kill
   the run's agents; run status `stopped`; TTY confirmation.
 - `loop run ls <name> [--status <s>] [--all]` — run_id, status, due_at vs started,
@@ -57,7 +57,7 @@ exists so loops fire after a reboot).
 - `loop ls [<name>...] [--status] [--all]`.
 - `loop logs <name> [--run <run_id>] [--source orcr|command] [--tail] [--follow]` —
   interleaved command output + orcr scheduler events, lines tagged
-  `[<name>.<run_id>]`.
+  `[<name>/<run_id>]`.
 - `loop pause|resume <name>...` — pending fire held/released.
 - `loop rm <name>... [--kill-active] [-y]` — end the definition
   (`removed`/`removed_by_run`); history queryable; self-termination from inside a run
