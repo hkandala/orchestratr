@@ -43,8 +43,9 @@ said. M3 ships the turns machinery, `wait`, the claude/codex transcript adapters
 - Freshness gate: final response reported only once the transcript has advanced past
   the observed completion (`transcript_freshness_timeout_ms`) → else
   `transcript_unavailable`.
-- On completion: `final_response`, `response_captured_at`, `transcript_locator`,
-  `transcript_cursor` captured into the store.
+- On completion: the final response is captured to `<data dir>/response.md`;
+  `response_captured_at`, `transcript_locator`, `transcript_cursor` recorded in the
+  store.
 
 ### ask (spec §6.1)
 - `orcr agent ask` — the CLI one-liner: run (gc immediate) → settle wait →

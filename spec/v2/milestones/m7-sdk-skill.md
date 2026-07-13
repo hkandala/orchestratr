@@ -41,10 +41,11 @@ vocabulary. Ends with publishable packages and docs.
   generate-and-filter, tournament, loop-until-done + durable handoff.
 
 ### The skill (spec §10)
-- `skill/SKILL.md` (≤ ~150 lines: when to reach for orcr, the hot path (every
-  example carries --name/--path), identity & path scopes in three sentences, the
-  file/data conventions, provider routing table, discipline, guard rails, reference
-  pointers).
+- `skill/SKILL.md` (≤ ~150 lines, per §10: trigger-phrase frontmatter, the
+  decision ladder, hot path (every example carries --name/--path), specific
+  workflow roots + {rand}, the open-top-beside-yourself rule, file/data
+  conventions, provider routing table, numeric discipline, guard rails, output
+  checklist, reference pointers).
 - `skill/references/`: `cli.md`, `sdk.md`, `patterns.md` (the §9 recipes), `loops.md`,
   `files.md` — loaded by agents on demand.
 - Validation: a real agent given only SKILL.md completes the hot path (spawn → wait →

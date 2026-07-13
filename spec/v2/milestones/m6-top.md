@@ -12,7 +12,7 @@ future work).
   parent→child edges from `ORCR_PARENT_*` lineage; loops as nodes with active runs as
   subtrees (`run <run_id>`); parked agents collapsed into an `Idle` node; unmanaged
   agents grouped under `unmanaged.<session>`.
-- Display transform for headings (machine path shown alongside); status glyphs
+- Machine paths as headings (no display transform); status glyphs
   (`●` working · `○` idle · `◐` blocked, pulsing + floated upward · `⟳` running loop
   run · dimmed queued/starting with queue position).
 - Rows: name, status glyph + status, provider·model, blocked kind when relevant,

@@ -30,8 +30,9 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
 - `cancel_requested` interlock checked before/after every herdr step.
 
 ### Spawn pipeline (spec §11.1)
-- Durable row (full `launch_json`) before any herdr call; data dir created at the
-  path-mirrored location (`$ORCR_HOME/data/<path segments>/<uuid>/`, §8).
+- Durable row before any herdr call, with the launch payload written to
+  `<data dir>/launch.json`; data dir created at the path-mirrored location
+  (`$ORCR_HOME/data/<path segments>/<uuid>/`, §8).
 - Placement: level-1 workspace ensured; new tab labeled per §5.2; pane env = the §5.3
   contract (`ORCR_ID`/`ORCR_PATH`/`ORCR_PARENT_ID`/`ORCR_PARENT_PATH`/`ORCR_AGENT_DATA_DIR`, plus `ORCR_LOOP_DATA_DIR` in loop contexts) + launch token.
 - Location columns updated after each herdr call.

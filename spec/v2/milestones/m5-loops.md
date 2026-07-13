@@ -9,8 +9,10 @@ exists so loops fire after a reboot).
 ### loop create (spec §6.2)
 - Cadence: five-field cron stored **with the creating timezone**, evaluated in it
   (DST-correct), occurrences persisted as UTC `next_fire_at`; or `--once-at <time>`.
-- Payload: argv after `--`, exec'd directly (no shell); creation echoes parsed argv,
-  cadence in words (local + UTC), and the cancel command.
+- Payload: argv after `--`, exec'd directly (no shell), persisted to
+  `<loop data dir>/loop.json`; creation echoes parsed argv, cadence in words
+  (local + UTC), and the cancel command; `ORCR_LOOP_DATA_DIR` = the loop-level dir
+  (`$ORCR_HOME/data/<loop_name>`), shared across runs.
 - Name = one path segment, **mandatory** (positional first argument; no
   auto-generated loop names); always root-level (never inherits a creator agent's
   scope); unique among active loops; internal uuid so removed names are reusable
