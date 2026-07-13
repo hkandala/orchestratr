@@ -32,12 +32,14 @@ here — M0 is done when the plumbing is provably correct against a live herdr.
 ### herdr socket driver (spec §4, §2)
 - Binary discovery: config `herdr.bin` → `$ORCR_HERDR_BIN` → `$PATH`; missing →
   friendly install pointer, exit 2.
-- Direct client for herdr's socket (`~/.config/herdr/herdr.sock`): connect, protocol
-  handshake + version check (clear error naming the required herdr version), typed
-  request/response wrappers for the operations orcr needs: pane/agent listing, agent
-  start (argv, cwd, env, no-focus), pane send-text/send-keys, pane move (across
-  workspaces), pane close, workspace/tab creation, agent_session + agent_status
-  reads, terminal_id reads.
+- **The driver contract table (spec §11.7) is an M0 acceptance prerequisite**: every
+  operation pinned to a named herdr method with fixed request/result shapes, checked
+  against a conformance fixture generated from `herdr api schema --json` (version
+  drift fails CI). Operations: `agent.start` (herdr creates tab+pane; returned ids
+  authoritative), pane/agent listing (status, `agent_session`, `terminal_id`),
+  send-text/send-keys, `pane.move` (across workspaces), `pane.close`,
+  `workspace.create`, **session enumeration** (all sessions via the single socket —
+  verified here), herdr integration-state reads, and `done`-status normalization.
 - Reconnect with backoff; `herdr_unreachable` error shape.
 
 ### Owned session bootstrap (spec §5.2)

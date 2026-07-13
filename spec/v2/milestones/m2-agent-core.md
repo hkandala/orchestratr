@@ -58,6 +58,10 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
 - The single `status` column and transitions available so far:
   `queued → starting → working`, `ended`, `lost` (reconciler stub marks vanished
   panes), `blocked` passthrough from herdr; `exit_reason` values wired.
+- **Pre-M3 normalization**: herdr `idle`/`done` reports are held as `working`
+  (completion verification doesn't exist yet — M3 flips this); startup progress
+  markers are herdr-reported facts only (pane created, `agent_session` pointer
+  present — no transcript parsing).
 
 ## Acceptance
 
@@ -69,6 +73,8 @@ real TUIs. Completion detection is *not* here (M3) — in M2 an agent's status r
   conflict.
 - `kill` during `starting`: canceled cleanly at every pipeline step (fault-injection
   around each herdr call).
+- A provider that reports idle immediately after start is held at `working` (no
+  false completion before M3).
 - Crash mid-spawn (kill -9 between herdr steps) → restart → launch-token recovery
   repairs or fails the row; no duplicate panes survive.
 

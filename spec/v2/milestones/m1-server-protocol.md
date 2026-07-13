@@ -33,8 +33,11 @@ server, and the protocol is self-describing.
   `{subscription, seq, event}` interleaved.
 - Version negotiation on first request → `unsupported_version`; unknown fields
   ignored; max frame size enforced.
-- Method registry: every future CLI verb maps 1:1 to a method; M1 ships
-  `server.status`, `api.schema`, `api.snapshot`, `events.subscribe`.
+- Method registry: **the full method namespace is registered in M1** with typed
+  param/result schemas — later milestones replace `unimplemented` stub handlers, so
+  `api schema` is complete from day one and M7's SDK generation can't drift. Live in
+  M1: `server.status`, `api.schema`, `api.snapshot`, `events.subscribe`,
+  `watch.open` (snapshot + subscription under one cursor pin).
 
 ### api noun (spec §6.5)
 - `orcr api schema` — versioned JSON Schema of all methods/params/results/events/

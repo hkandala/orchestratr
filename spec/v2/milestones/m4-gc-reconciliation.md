@@ -17,19 +17,23 @@ and the owned session stays tidy without ever harming a pane it shouldn't.
   enforcement (kill with `exit_reason: timeout`).
 
 ### attach (spec §6.1)
-- `agent attach <fqn|uuid> [--takeover]` — execs `herdr agent attach`; observe
-  default.
-- Attach leases persisted (`attaches` table: mode, connection, heartbeat); GC defers
-  moves/reaps while a lease is fresh; leases cleaned on socket disconnect/heartbeat
-  expiry; queued/ended targets → `state_conflict`.
+- `agent attach <fqn|uuid> [--takeover]` — terminal-mediated: `agent.attach.prepare`
+  inserts the lease FIRST (same transaction as target/location resolution), returns
+  the exec command; the CLI runs `herdr agent attach`, heartbeats while it runs,
+  releases on exit (abrupt CLI death → `expires_at`/heartbeat expiry; fields:
+  mode, connection, client_pid, expires_at).
+- GC defers moves/reaps while a lease is fresh — including across server restarts;
+  queued/ended targets → `state_conflict`.
 
 ### Reconciliation (spec §11.5)
-- On server start + periodically: vanished panes → `lost` (fqn stays reserved) →
-  resolved to `ended`; marked panes with no row → **orphan adoption**
-  (`origin: orphaned`, status `lost`, never auto-closed; removable only by
-  `kill --force` or a matched stale launch token); unmarked panes in the owned
-  session → counted, reported, untouched; half-done `move_state` moves → completed or
-  rolled back.
+- On server start + periodically: vanished panes → `lost` (quarantine: fqn stays
+  reserved; resolved to `ended (lost)` only on positive confirmation — stable
+  post-reconnect snapshot or explicit kill; `lost_since` recorded); marked panes
+  with no row → **orphan adoption** under their own namespace (fqn
+  `orphaned.<uuid8>`, original fqn stored aside, live observed status; never
+  auto-closed; `kill --force` removes even if the pane is already gone); unmarked
+  panes in the owned session → counted, reported, untouched; half-done `move_state`
+  moves (token-owned exclusive leases) → completed or rolled back.
 - `server status` gains the drift/orphan/unmarked counts.
 
 ### Unmanaged discovery (spec §5.7)

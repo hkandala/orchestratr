@@ -27,10 +27,17 @@ exists so loops fire after a reboot).
   `<loop_name>.<run_id>.…` (completes the M2 inheritance stub).
 
 ### Scheduler (spec §11.3)
-- Fire path: capacity check → transactional run allocation → spawn process group;
-  at cap → overlap policy (`queue`: coalescing single `pending_due_at`; `skip`: log).
-- Run exit: status mapping (`ok`/`failed`/`timeout`/`stopped` + exit code/signal);
-  pending fire fires immediately when a slot frees.
+- Fire path (POSIX process groups; Windows is future work): transactional run
+  allocation ALWAYS (uuid + run_id + kind + due_at) — `pending` at capacity;
+  scheduled fires coalesce into at most one pending scheduled run, manual runs
+  always allocate; pid/pgid recorded WITH process start time (signal only on
+  start-time match — never a reused pgid).
+- Run exit: status mapping (`pending/running/stopping/ok/failed/timeout/stopped/
+  canceled` + exit code/signal); the oldest pending run starts when a slot frees.
+- Stop/timeout: run → `stopping` admission barrier (descendant `agent run`s
+  rejected/canceled) → TERM/KILL pgid → barrier prefix-kill until a clean snapshot.
+- Run logs: versioned JSONL `{ts, source, stream, text}`, size-capped + rotated with
+  a sidecar index; `loop logs` reads it.
 - Missed fires (server down / machine asleep): skipped and logged, never replayed.
 - Restart recovery: serialized per-loop transaction (verify running pgids → close
   dead runs + prefix-kill their agents → recompute active count → honor
@@ -58,7 +65,9 @@ exists so loops fire after a reboot).
 
 ### server enable/disable (spec §6.4)
 - macOS launchd agent (`dev.orchestratr.orcr`, `RunAtLoad`, `KeepAlive`); Linux
-  systemd user unit (`Restart=on-failure`); echo unit path + verify command;
+  systemd user unit (`Restart=on-failure`); units use the **absolute binary path**
+  and explicitly propagate `ORCR_HOME`/`ORCR_HERDR_BIN` + log paths (no PATH
+  assumptions under launchd/systemd); echo unit path + verify command;
   `unsupported_platform` elsewhere (Windows task lands with Windows support).
 - `disable` removes the registration; running server + store untouched.
 

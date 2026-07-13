@@ -29,8 +29,9 @@ vocabulary. Ends with publishable packages and docs.
   `dataDir` for loops.
 
 ### Recipes (spec §9)
-- The §9 examples (9.1–9.7, full code in the spec) as **tested** code in the repo
-  (run in CI against the mock provider; smoke-tested against real providers):
+- The §9 examples (9.1–9.7) as **self-contained tested fixtures** in the repo
+  (illustrative helpers like `stillCheap()` replaced by real stubs; run in CI
+  against the mock provider; smoke-tested against real providers):
   fix-until-green, fan-out-and-merge, classify-and-act, adversarial verification,
   generate-and-filter, tournament, loop-until-done + durable handoff.
 

@@ -57,6 +57,13 @@ said. M3 ships the turns machinery, `wait`, the claude/codex transcript adapters
 - Two-phase: stable idle → transcript settled → response captured → graceful kill +
   pane closed; ends `ended (completed)`.
 
+### Also owned by M3
+- Integration tuning defaults + config overrides (`integrations.<provider>.*`,
+  spec §14); the structured `next` hint enum (`logs_last_response|attach|
+  logs_history|none`); event kinds `turn_completed` / `response_captured` with
+  snapshot-updating payloads; wait `decision_seq` consistency (all targets settled
+  at one event sequence — un-settled targets re-waited).
+
 ### SDK groundwork
 - Internal typed client grows `wait`/`logs`/`lastResponse` (used by tests); public
   SDK packaging remains M7.
