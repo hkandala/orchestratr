@@ -178,7 +178,10 @@ impl Client {
             "agent.logs",
             json!({ "target": target, "last_response": true }),
         )?;
-        Ok(r["response"]["text"].as_str().unwrap_or_default().to_string())
+        Ok(r["response"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string())
     }
 
     /// Open a subscription stream (`events.subscribe` / `watch.open`). Returns the initial

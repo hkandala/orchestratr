@@ -775,6 +775,38 @@ impl Store {
         })
     }
 
+    /// Mark a turn completed **without** flipping the public status (used by `gc immediate`,
+    /// which goes `working → ended (completed)` with no transient public `idle`, §11.2). Emits
+    /// `agent.turn_completed`. Returns the event seq (0 if the turn was already completed).
+    pub fn complete_turn_row(
+        &mut self,
+        uuid: &str,
+        input_seq: i64,
+        at: i64,
+        cursor: Option<&str>,
+    ) -> Result<i64> {
+        let uuid = uuid.to_string();
+        let cursor = cursor.map(|s| s.to_string());
+        self.with_immediate_tx(|tx| {
+            let n = tx
+                .execute(
+                    "UPDATE turns SET completed_at=?3, transcript_cursor=COALESCE(?4, transcript_cursor) \
+                     WHERE agent_uuid=?1 AND input_seq=?2 AND completed_at IS NULL",
+                    rusqlite::params![uuid, input_seq, at, cursor],
+                )
+                .map_err(map_sqlite)?;
+            if n == 0 {
+                return Ok(0);
+            }
+            append_event_tx(
+                tx,
+                "agent.turn_completed",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "input_seq": input_seq }),
+            )
+        })
+    }
+
     /// Mark an agent `blocked` (turn-scoped, §5.6): set the public status + `blocked_kind` on
     /// both the agent and its latest turn. Returns the event seq (0 if already blocked).
     pub fn mark_blocked(&mut self, uuid: &str, input_seq: i64, kind: &str) -> Result<i64> {

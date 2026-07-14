@@ -163,33 +163,39 @@ impl Server {
 
     /// Complete an open turn, then run `gc immediate` teardown if applicable (§11.2).
     fn complete(&self, driver: &HerdrDriver, a: &AgentFull, input_seq: i64, tuning: &TuningParams) {
+        let _ = tuning;
         // Capture the transcript locator/cursor *before* any teardown so a waiting `ask`
         // (and post-kill `logs`) can read the response from the native file (§11.2).
         let (locator, cursor) = self.capture(a);
+        let immediate = a.gc_mode.as_deref() == Some("immediate");
+
+        // gc immediate goes `working → ended (completed)` with **no** transient public `idle`
+        // (so a waiting `ask`/`wait` settles on `completed`, not `turn_complete`, §11.2). Other
+        // modes flip `working → idle`.
         let ev = {
             let mut store = self.inner.store.lock().unwrap();
-            store
-                .complete_turn(&a.uuid, input_seq, now_millis(), cursor.as_deref())
-                .unwrap_or(0)
+            if immediate {
+                store.complete_turn_row(&a.uuid, input_seq, now_millis(), cursor.as_deref())
+            } else {
+                store.complete_turn(&a.uuid, input_seq, now_millis(), cursor.as_deref())
+            }
+            .unwrap_or(0)
         };
         if ev == 0 {
             return; // already completed / not working — nothing to do
         }
-        if let Some(loc) = &locator {
-            if let Some(c) = &cursor {
-                let mut store = self.inner.store.lock().unwrap();
-                if let Ok(cap_ev) = store.record_capture(&a.uuid, loc, c) {
-                    drop(store);
-                    self.publish(cap_ev);
-                }
+        if let (Some(loc), Some(c)) = (&locator, &cursor) {
+            let mut store = self.inner.store.lock().unwrap();
+            if let Ok(cap_ev) = store.record_capture(&a.uuid, loc, c) {
+                drop(store);
+                self.publish(cap_ev);
             }
         }
         self.publish(ev);
         self.log()
             .info(format!("turn {input_seq} complete for {}", a.path));
 
-        if a.gc_mode.as_deref() == Some("immediate") {
-            let _ = tuning;
+        if immediate {
             self.graceful_shutdown(driver, a, a.pane_id.as_deref().unwrap_or_default());
             self.end_agent(&a.uuid, "completed");
             self.log()
