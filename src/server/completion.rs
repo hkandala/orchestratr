@@ -119,6 +119,21 @@ impl Server {
                 }
             }
             AgentStatus::Blocked => {
+                // A `blocked` report on a freshly re-armed turn we haven't yet observed
+                // `working` — and whose fast-turn grace window hasn't elapsed since delivery —
+                // is a stale report from the *previous* turn (the provider hasn't read the new
+                // input yet). Suppress it until the turn is genuinely active, so `send`
+                // reliably clears a prior block (§5.6). This mirrors the idle branch's guard
+                // against a stale idle satisfying a newer send.
+                if let Some(t) = open_turn {
+                    let armed = t.working_seen_at.is_some()
+                        || t.delivered_at
+                            .map(|d| now.saturating_sub(d) >= tuning.fast_turn_grace_ms as i64)
+                            .unwrap_or(true);
+                    if !armed {
+                        return;
+                    }
+                }
                 let input_seq = open_turn.map(|t| t.input_seq).unwrap_or(a.input_seq);
                 let kind = classify_blocked(info);
                 let ev = {
