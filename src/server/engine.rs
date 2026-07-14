@@ -267,22 +267,38 @@ impl Server {
         self.capture_agent_session(&driver, uuid, &info.pane_id);
 
         // Deliver the first prompt (two-call rule) if one was given, opening turn 1; else
-        // just move `starting → working`. The completion monitor takes over from here (§5.6).
+        // settle the primed agent to `idle`. The completion monitor takes over from here (§5.6).
         self.bail_if_cancelled(uuid, Some((&driver, &info.pane_id)))?;
-        let ev = if let Some(prompt) = payload.prompt.as_deref().filter(|p| !p.is_empty()) {
+        let phase = if let Some(prompt) = payload.prompt.as_deref().filter(|p| !p.is_empty()) {
+            // Open turn 1 / bump input_seq / re-arm to `working` BEFORE the herdr send, so the
+            // agent's public status leads delivery (§5.6: input_seq increments before delivery;
+            // a stale idle can never satisfy the new turn, and no synthetic external turn can be
+            // opened in the send gap). A herdr send failure then leaves the turn open — the agent
+            // shows `working` and never completes, visible in `top`.
+            let ev = {
+                let mut store = self.inner.store.lock().unwrap();
+                store.deliver_input(uuid, "orcr", now_millis())?.1
+            };
+            self.publish(ev);
             driver.pane_send_text(&info.pane_id, prompt)?;
             std::thread::sleep(ENTER_DELAY);
             driver.pane_send_keys(&info.pane_id, &["Enter"])?;
-            let mut store = self.inner.store.lock().unwrap();
-            let (_seq, ev) = store.deliver_input(uuid, "orcr", now_millis())?;
-            ev
+            "working"
         } else {
-            let mut store = self.inner.store.lock().unwrap();
-            store.transition_status(uuid, "working", None)?
+            // No prompt: the agent is primed and waiting for input, not processing. Settle it to
+            // `idle` (with an idle clock) so `wait` completes as turn_complete, gc-auto can park
+            // it, and a later `send` re-arms it normally (§5.6).
+            let ev = {
+                let mut store = self.inner.store.lock().unwrap();
+                let ev = store.transition_status(uuid, "idle", None)?;
+                store.set_idle_since(uuid, Some(now_millis()))?;
+                ev
+            };
+            self.publish(ev);
+            "idle"
         };
-        self.publish(ev);
         self.log().info(format!(
-            "agent {} working (pane {})",
+            "agent {} {phase} (pane {})",
             agent.path, info.pane_id
         ));
         Ok(())
@@ -727,12 +743,12 @@ impl Server {
             ))
             .with_details(json!({ "current_status": row.status }))
         })?;
-        driver.pane_send_text(&pane_id, &prompt)?;
-        std::thread::sleep(ENTER_DELAY);
-        driver.pane_send_keys(&pane_id, &["Enter"])?;
-        // Open a new turn and re-arm to `working` (a `send` cancels any pending block/idle so
-        // a `wait` issued after it cannot be satisfied by a stale idle, §5.6). An unmanaged
-        // agent's turn is tracked as `external` (§5.7): orcr doesn't own its input epochs.
+        // Open a new turn / bump input_seq / re-arm to `working` BEFORE the herdr send (§5.6:
+        // input_seq increments before delivery, so a `wait` issued after this send can never be
+        // satisfied by a stale idle and no synthetic external turn is opened in the send gap). A
+        // herdr send failure then leaves the turn open (agent shows `working`, never completes →
+        // visible in `top`) rather than dropping the input silently. An unmanaged agent's turn is
+        // tracked as `external` (§5.7): orcr doesn't own its input epochs.
         let (input_seq, ev) = {
             let mut store = self.inner.store.lock().unwrap();
             if row.managed {
@@ -742,6 +758,9 @@ impl Server {
             }
         };
         self.publish(ev);
+        driver.pane_send_text(&pane_id, &prompt)?;
+        std::thread::sleep(ENTER_DELAY);
+        driver.pane_send_keys(&pane_id, &["Enter"])?;
         Ok(json!({
             "uuid": row.uuid,
             "path": row.path,

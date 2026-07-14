@@ -70,6 +70,7 @@ impl TestServer {
         let out = Command::new(orcr_bin())
             .args(["server", "start"])
             .env("ORCR_HOME", self.home.path())
+            .env("ORCR_HERDR_SESSION", &self.session)
             .env("ORCR_ALLOW_MOCK_PROVIDER", "1")
             .env("ORCR_DISABLE_DISCOVERY", "1")
             .env("ORCR_MOCK_AGENT_BIN", mock_agent_bin())
@@ -154,7 +155,25 @@ impl Drop for TestServer {
         }
         let _ = self.bin.session_stop(&self.session);
         let _ = self.bin.session_delete(&self.session);
+        assert_no_session_leak(&self.bin, &self.session);
     }
+}
+
+/// Known-issues #1: after teardown neither this test's disposable session nor the shared
+/// `orcr` session (default `herdr.session`, only ever created by a leaked bootstrap) may
+/// survive. Skipped mid-panic so a real failure isn't masked by a double panic (abort).
+fn assert_no_session_leak(bin: &HerdrBinary, session: &str) {
+    if std::thread::panicking() {
+        return;
+    }
+    assert!(
+        matches!(bin.find_session(session), Ok(None)),
+        "disposable session `{session}` leaked after teardown"
+    );
+    assert!(
+        matches!(bin.find_session("orcr"), Ok(None)),
+        "shared `orcr` herdr session leaked (a child bootstrapped the default session)"
+    );
 }
 
 fn wait_until(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
@@ -488,8 +507,8 @@ fn e2e_kill_during_starting() {
     }));
 }
 
-/// A provider that reports idle right after start is held at `working` (no false completion
-/// before M3).
+/// An agent mid-turn is held at `working` until the turn genuinely settles — orcr never
+/// flips to idle just because the provider momentarily reports idle (§5.6).
 #[test]
 fn e2e_idle_report_held_at_working() {
     if !e2e_enabled() {
@@ -497,12 +516,28 @@ fn e2e_idle_report_held_at_working() {
         return;
     }
     let ts = TestServer::start();
-    // No prompt → the mock announces idle immediately after startup (it self-reports).
-    let (uuid, _) = ts.run("hold/worker", None);
+    // A long turn keeps the mock working; orcr holds `working` for the whole turn.
+    let (uuid, _) = ts.run("hold/worker", Some("@turn_ms=8000 work"));
     assert!(ts.wait_status(&uuid, "working", Duration::from_secs(20)));
-    // Even after the mock has reported idle to herdr, orcr holds working (§5.6 pre-M3).
     std::thread::sleep(Duration::from_secs(3));
     assert_eq!(ts.status(&uuid).as_deref(), Some("working"));
+    let _ = ts.request("agent.kill", json!({ "targets": [uuid] }));
+}
+
+/// A no-prompt `agent run` primes the agent and settles it to `idle` — it is waiting for
+/// input, not processing, so `wait` can complete and gc-auto can park it (§5.6).
+#[test]
+fn e2e_no_prompt_settles_idle() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    let ts = TestServer::start();
+    let (uuid, _) = ts.run("prime/worker", None);
+    assert!(
+        ts.wait_status(&uuid, "idle", Duration::from_secs(20)),
+        "a no-prompt agent should settle to idle"
+    );
     let _ = ts.request("agent.kill", json!({ "targets": [uuid] }));
 }
 
@@ -533,7 +568,8 @@ fn e2e_crash_recovery_repairs_running() {
         return;
     }
     let ts = TestServer::start();
-    let (uuid, _) = ts.run("survive/worker", None);
+    // A long turn keeps the agent `working` across the crash + restart window.
+    let (uuid, _) = ts.run("survive/worker", Some("@turn_ms=30000 long task"));
     assert!(ts.wait_status(&uuid, "working", Duration::from_secs(20)));
     let pane_present = |ts: &TestServer| {
         ts.driver

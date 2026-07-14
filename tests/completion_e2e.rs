@@ -82,6 +82,7 @@ impl TestServer {
         let mut cmd = Command::new(orcr_bin());
         cmd.args(["server", "start"])
             .env("ORCR_HOME", self.home.path())
+            .env("ORCR_HERDR_SESSION", &self.session)
             .env("ORCR_ALLOW_MOCK_PROVIDER", "1")
             .env("ORCR_DISABLE_DISCOVERY", "1")
             .env("ORCR_MOCK_AGENT_BIN", mock_agent_bin())
@@ -172,7 +173,25 @@ impl Drop for TestServer {
         }
         let _ = self.bin.session_stop(&self.session);
         let _ = self.bin.session_delete(&self.session);
+        assert_no_session_leak(&self.bin, &self.session);
     }
+}
+
+/// Known-issues #1: after teardown neither this test's disposable session nor the shared
+/// `orcr` session (default `herdr.session`, only ever created by a leaked bootstrap) may
+/// survive. Skipped mid-panic so a real failure isn't masked by a double panic (abort).
+fn assert_no_session_leak(bin: &HerdrBinary, session: &str) {
+    if std::thread::panicking() {
+        return;
+    }
+    assert!(
+        matches!(bin.find_session(session), Ok(None)),
+        "disposable session `{session}` leaked after teardown"
+    );
+    assert!(
+        matches!(bin.find_session("orcr"), Ok(None)),
+        "shared `orcr` herdr session leaked (a child bootstrapped the default session)"
+    );
 }
 
 fn wait_until(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
@@ -296,12 +315,9 @@ fn e2e_external_input_synthetic_turn() {
         return;
     }
     let ts = TestServer::start();
-    // No prompt → the agent is held at `working` with no open turn.
+    // No prompt → the agent primes and settles to `idle` with no open turn (§5.6).
     let uuid = ts.run("ext/worker", None, None);
-    assert!(ts.wait_status(&uuid, "working", Duration::from_secs(20)));
-    // With no delivered turn, a wait cannot settle — it times out.
-    let held = ts.wait(&["ext/worker"], "800ms");
-    assert_eq!(held["timed_out"], json!(true));
+    assert!(ts.wait_status(&uuid, "idle", Duration::from_secs(20)));
 
     // Type directly into the pane via herdr (bypassing orcr) — a working transition orcr
     // didn't deliver → synthetic external turn.
