@@ -1935,24 +1935,28 @@ impl Store {
 
     /// Record the next scheduled fire time (UTC ms) for a loop.
     pub fn set_next_fire(&mut self, uuid: &str, next_fire_at: Option<i64>) -> Result<()> {
-        self.conn
-            .execute(
+        let uuid = uuid.to_string();
+        self.with_immediate_tx(|tx| {
+            tx.execute(
                 "UPDATE loops SET next_fire_at=?2, updated_at=?3 WHERE uuid=?1",
                 rusqlite::params![uuid, next_fire_at, now_millis()],
             )
             .map_err(map_sqlite)?;
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Record the last fire time.
     pub fn set_last_fire(&mut self, uuid: &str, ts: i64) -> Result<()> {
-        self.conn
-            .execute(
+        let uuid = uuid.to_string();
+        self.with_immediate_tx(|tx| {
+            tx.execute(
                 "UPDATE loops SET last_fire_at=?2, updated_at=?3 WHERE uuid=?1",
                 rusqlite::params![uuid, ts, now_millis()],
             )
             .map_err(map_sqlite)?;
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Active loops whose `next_fire_at` has come due (`<= now`).

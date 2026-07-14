@@ -124,6 +124,18 @@ the scheduler, and `server enable/disable`.
     ref the loop uuid, `loop_run.*` the run uuid). Retention-trimmed old orcr-source lines are still
     unavailable (documented on the method) — command output survives in `run.log`.
 
+## Comprehensive-review updates (round 1)
+- **`server.status.loops_firing` is now derived, not hardcoded `true`.** It reports the
+  enable-state: whether `server enable` has registered a launchd/systemd unit
+  (`service::is_enabled` lstats the platform unit path). Faithful to §6.4's durability
+  framing — the scheduler always runs while the server is up, so the useful/distinct signal
+  is whether loop firing survives a reboot before any `orcr` command runs. The `loops` array
+  already shows what is scheduled.
+- **`set_next_fire` / `set_last_fire` now route through `with_immediate_tx`** like every
+  other store write, instead of a bare `conn.execute` — restoring the "all writes go through
+  `BEGIN IMMEDIATE`" invariant (§12). Functionally benign before (single connection behind
+  `Mutex<Store>`), but the inconsistency is removed.
+
 ## Deferred / out of scope
 - top (M6), SDK loop helpers (M7), Windows Task Scheduler (lands with Windows support, §17).
 - Real launchd/systemd `enable` round-trip against the developer's live login session is NOT
