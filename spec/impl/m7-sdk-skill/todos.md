@@ -73,7 +73,14 @@ Ships: TS SDK, orcr scaffold, tested recipes, SKILL.md + references, packaging +
 - [x] Skill drill: fresh agent + SKILL.md → hot path (validated by structure + doc-test; live drill best-effort)
 - [x] reference files contain no stale flags (doc-test vs --help: `tests/skill_docs.rs`)
 - [x] doc-test rejects run/ask sample missing --name/--path
-- [~] Concurrency fixtures: KNOWINGLY DEFERRED (pending owner sign-off) — 2 concurrent (fan-out + tournament) distinct scopes run clean (`e2e_concurrent_fanout_and_tournament`, rock-solid). The literal 4-way (2× each) reliably hits a herdr concurrent-burst `agent.start` limitation → kept as `#[ignore]`d `e2e_concurrent_burst_high`. Verify-round-1 option (a) engine fix (gate fast-complete on a reported session) was ATTEMPTED and empirically breaks the mock completion contract (mock reports no herdr session by design); no clean engine-level launch signal exists; real providers don't hit it. Full rationale in notes.md → "Verify round 1".
+- [x] Concurrency fixtures: **two copies each** of fan-out-and-merge + tournament, started
+  concurrently under distinct top scopes, run clean — `e2e_concurrent_burst_high` (the full
+  4-way, now un-`#[ignore]`d, 3/3 green) + `e2e_concurrent_fanout_and_tournament` (2-way). Root
+  cause was **not** a herdr concurrent-burst limit: two copies of the same scope-parameterized
+  recipe (`review_a/fanout/file_0` vs `review_b/fanout/file_0`) collided on the herdr agent
+  `name`, because `tab_label` dropped the level-1 scope and herdr 0.7.2 enforces session-global
+  name uniqueness (`agent_name_taken`). Fixed by using the **full effective path** as the herdr
+  agent name/label (`path::herdr_name`). See notes.md → "Verify round 2".
 - [x] Scaffold: clean checkout → scaffold + npx tsx workflow.ts green vs mock; re-run → state_conflict; missing-node → environment_error nothing created; pinned SDK version == CLI version
 - [x] Package installs clean (via file: spec / tarball in CI); quickstart works
 

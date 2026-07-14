@@ -16,6 +16,16 @@ worth knowing, and discovered facts.
   the dependency value with an installable spec (a `file:`/tarball path) so `npm install` +
   `npx tsx workflow.ts` run green locally/CI. Recorded here as under-specified-by-spec.
 
+- **herdr agent `name` = the full effective path (deviation from §5.2's tab-label sketch).**
+  §5.2 sketches the herdr tab label as "the path after the first segment"
+  (`review/worker` → tab `worker` in workspace `review`). herdr 0.7.2 requires the agent `name`
+  (which is also the pane/tab label) to be **session-globally unique**, so the path-after-first
+  form collides across distinct top-level scopes. orcr therefore names/labels each agent with
+  its **full path** (`path::herdr_name`), which is session-unique by construction. The only
+  visible effect is that the tab shows the full path rather than the path-after-first-segment;
+  identity/routing (by `terminal_id`) and the workspace-per-level-1 model are unchanged. Forced
+  by herdr reality; recorded per master-prompt §4.
+
 ## Decisions on under-specified points
 
 - **SDK resolves §5.1 paths client-side, sends absolute selectors.** `path.ts` is a 1:1 port of
@@ -51,22 +61,23 @@ worth knowing, and discovered facts.
   convention), and `ORCR_MOCK_NO_TRANSCRIPT` (opt out — used by the M3 `transcript_unavailable`
   test).
 
-- **OPEN ISSUE — concurrent-burst `agent.start` reliability (engine/herdr, not M7 SDK).** When
-  many *instantaneous* agents spawn in a simultaneous burst against one owned herdr session
-  (e.g. 4 fan-outs each issuing a `Promise.all` of `agent.run` at the same instant), herdr's
-  `agent.start` intermittently returns a pane whose **command never actually launches** (data
-  dir has only `launch.json` — no `mock_env.json`/`transcript.jsonl`), and orcr's fast-turn
-  completion path then falsely marks that never-started agent `ended (completed)`. Reproduces at
-  ~4+ concurrent instant-agent workflows; 2 concurrent (e.g. one fan-out + one tournament) is
-  rock-solid across many runs. Real providers take seconds to initialize and reliably report
-  `working`, so this mock-exposed race is unlikely to bite real usage — but two engine
-  follow-ups are worth considering: (1) serialize/throttle `agent.start` on the owned session;
-  (2) make the fast-turn path require *some* evidence the command ran (e.g. a reported session)
-  before concluding completion. Serializing the spawn side-effects under `spawn_lock` was tried
-  and did **not** help (the failure is herdr not launching the command), so it was reverted.
-  The automated gate proves scope isolation at 2-concurrent (`e2e_concurrent_fanout_and_tournament`);
-  the literal 4-way fixture is kept as `#[ignore]`d `e2e_concurrent_burst_high` for the engine
-  follow-up.
+- **RESOLVED (verify round 2) — the "concurrent-burst" failure was a herdr agent-`name`
+  collision, not a launch race.** Diagnosing the ignored 4-way fixture with server-log
+  instrumentation showed the real error: `agent.start` returned `agent_name_taken`
+  ("agent name `fanout/file_0` is already used") for the *second* copy of a scope-parameterized
+  recipe. herdr 0.7.2 enforces that an agent's `name` is **unique across the whole session**,
+  but `tab_label` (the §5.2 path-after-first-segment) dropped the level-1 scope, so
+  `review_a/fanout/file_0` and `review_b/fanout/file_0` both mapped to herdr name
+  `fanout/file_0` → the second start was rejected, its row failed, and the follow-on
+  `agent.wait` returned while the promised `response.md` was missing (ENOENT). The earlier
+  "command never launches / fast-turn false-completes" reading was a **misdiagnosis** (a
+  downstream effect of the rejected start; a rejected pane also cascades an
+  `agent_placement_not_found` for its sibling as the empty workspace is reclaimed). **Fix:**
+  `path::herdr_name(path)` returns the **full effective path** as the herdr agent name/label
+  (orcr already guarantees active paths are unique), used at `agent.start`
+  (`server/engine.rs`), in reconcile orphan-matching (`server/engine.rs`), and in the GC
+  park/un-park pane-move labels (`server/gc.rs`). No throttle/serialization was needed — the
+  4-way `e2e_concurrent_burst_high` now passes 3/3 and is **un-`#[ignore]`d**.
 
 - **FIXED — `server_protocol` (M1) leaked the real `orcr` herdr session.** Its throwaway home
   had no config, so `server start` bootstrapped the **default** owned session `orcr` on every
@@ -132,3 +143,42 @@ worth knowing, and discovered facts.
   (`e2e_concurrent_burst_high`) stays `#[ignore]`d as a documented engine follow-up. This
   acceptance item is **knowingly deferred**, pending milestone-owner sign-off, rather than
   claimed as fully met.
+
+  **SUPERSEDED in verify round 2** — the deferral was based on a misdiagnosis; the real cause
+  (herdr session-global agent-`name` uniqueness vs a scope-dropping `tab_label`) is fixed and
+  the fixture now passes. See below.
+
+### Verify round 2 → FAIL; revised
+
+- **HIGH + MEDIUM (fixed) — concurrency fixture now genuinely passes; the completion "false
+  done" was a symptom of a herdr `agent_name_taken` collision, fixed at the source.** The
+  ignored 4-way fixture was reproduced and instrumented: the failing step was `agent.start`
+  returning `agent_name_taken` for the second copy of a scope-parameterized recipe, because the
+  herdr agent `name` was `tab_label` (path-after-first-segment), which is not unique across
+  top-level scopes, while herdr 0.7.2 enforces session-global name uniqueness. Fixed by
+  `path::herdr_name` = the full session-unique path, applied at `agent.start`, reconcile
+  orphan-matching, and GC park/un-park labels. No throttle/serialization needed (both were
+  tried in this round and reverted — pure serialization did *not* help because the failure was
+  never a launch race). `e2e_concurrent_burst_high` (two copies each of fan-out + tournament)
+  un-`#[ignore]`d, passes 3/3; `agent_e2e`/`gc_e2e`/`loop_e2e`/`recipe_e2e` all re-verified
+  green against live herdr with no `orcr`/`orcr_test_*` session leak. Test label assertions
+  that hard-coded the old `tab_label` (`agent_e2e`, `completion_e2e::pane_of`) were updated to
+  the full path; the crash-recovery orphan test now creates its orphan pane with the full-path
+  name so the reconciler matches it.
+- **LOW (fixed) — `orcr.ask()` now throws `TranscriptUnavailable`** when the `agent.ask`
+  response carries no text, sharing one contract with `AgentHandle.lastResponse()` (was a
+  silent `""`). `sdk/ts/src/client.ts`; SDK `npm test` 20/20 green.
+- **(adjacent) — `recipe_e2e` teardown hardened** to retry `session_stop`/`session_delete`
+  until `find_session` reports the disposable session gone (herdr can transiently reject a
+  stop/delete right after the owning server is `kill -9`'d), after one observed transient
+  `orcr_test_*` leak. No leak across subsequent full-suite runs.
+
+- **PRE-EXISTING, out of scope — `completion_e2e::e2e_logs_transcript_unavailable_for_mock`
+  fails in this environment** (verified: fails identically on the pre-change baseline via
+  `git stash`). The test sets `ORCR_MOCK_NO_TRANSCRIPT` on the *orcr server* process, but the
+  disposable herdr session is bootstrapped by the test harness's own `ensure_session` **before**
+  the orcr server starts, so the herdr server (and the mock panes it spawns) never inherit that
+  var; the mock writes a transcript and `logs --last-response` returns text instead of
+  `transcript_unavailable`. This is an M3 test-harness/env-inheritance issue that predates this
+  round and is unrelated to the M7 findings — noted here, not fixed (would be scope creep into
+  M3).

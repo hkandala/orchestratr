@@ -71,7 +71,8 @@ Current state: **through M7 (SDK & skill).**
 - `path.rs` — **the §5.1 grammar in one place**: segment/path validation, depth+reserved
   checks, `{rand}` expansion, `--name`/`--path` scope resolution (`resolve_create`), selector
   resolution, and the glob `Pattern` (`*` one segment, `**` any depth ≥1, anchored). Plus
-  derived helpers (`name_of`, `scope_of_agent`, `home_workspace`, `tab_label`). Pure logic,
+  derived helpers (`name_of`, `scope_of_agent`, `home_workspace`, `herdr_name` — the full
+  session-unique path used as the herdr agent name/label, per herdr 0.7.2). Pure logic,
   heavily unit-tested; every surface derives from it (no ad-hoc string/LIKE matching).
 - `wire.rs` — **orcr's own** socket wire protocol (§11.6): request/response/event envelopes,
   newline-delimited JSON framing (`read_frame`/`write_frame`, `MAX_FRAME` enforced),
@@ -393,8 +394,10 @@ Current state: **through M7 (SDK & skill).**
   scope isolation); the durable-handoff loop self-terminates; `orcr scaffold` (with an
   `ORCR_SDK_SPEC` tarball) + `npx tsx workflow.ts` runs green, re-run → `state_conflict`, pinned
   version == CLI version; SDK-composed paths equal the CLI's for the same nested scope
-  (`e2e_sdk_scope_matches_cli`). `e2e_concurrent_burst_high` (4-way) is `#[ignore]`d — it
-  surfaces a herdr concurrent-burst `agent.start` limitation (see `m7-sdk-skill/notes.md`).
+  (`e2e_sdk_scope_matches_cli`); and the full concurrency fixture — **two copies each** of
+  fan-out + tournament under distinct scopes (`e2e_concurrent_burst_high`) — runs clean (this
+  drove the `path::herdr_name` fix: herdr 0.7.2 needs session-global agent-name uniqueness, so
+  the herdr name/label is the full path, not the §5.2 path-after-first-segment).
 - `tests/skill_docs.rs` (M7, **default suite**) doc-tests the skill: no stale CLI flags vs
   live `--help`; every `agent run`/`ask` sample carries `--name`/`--path`.
 - `sdk/ts/test/*.test.ts` (M7, run via `npm test`): path-grammar parity with `path.rs`, the
