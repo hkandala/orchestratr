@@ -2034,5 +2034,12 @@ Collected from everywhere above; explicitly parked, in rough priority order:
 - **Presets** — saved agent+model+flag bundles (`orcr agent run @review …`).
 - **`orcr scaffold <lang>`** — Python and other language scaffolds (TS-only in the
   first release; §6.6).
+- **herdr plugin packaging** — orcr is a herdr *API client*, not a plugin (a plugin
+  is code herdr installs and invokes via a `herdr-plugin.toml` manifest — the
+  control direction is reversed). A thin plugin on top would add: `orcr top` as a
+  herdr **plugin pane** (one keybinding → dashboard overlay), context **actions**
+  on agent panes ("show this agent in orcr", "last response"), and one-command
+  install for herdr users via `herdr plugin install`. No orcr changes needed — the
+  manifest just points at the CLI.
 - **Declarative workflows** — a small YAML format compiling onto the SDK, for
   reviewable/replayable pipelines; plus replay of recorded runs.
