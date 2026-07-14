@@ -47,6 +47,7 @@ Ships: loop create/pause/resume/rm/ls/logs + run start/stop/ls, scheduler, serve
 
 ### Verbs / CLI
 - [x] `loop create <name> ("<cron>"|--once-at) [--max-concurrency][--overlap][--timeout] -- <cmd...>` echo argv + cadence words + cancel cmd
+  - [x] (round-1 fix) echo cadence via `cron::describe` + next fire via `cron::describe_next_fire` (human local+UTC), not raw cron/UTC-ms
 - [x] `loop pause|resume <name>...`
 - [x] `loop rm <name>... [--kill-active] [-y]` (TTY confirm; self-rm from run)
 - [x] `loop ls [<name>...] [--status] [--all]`
@@ -56,6 +57,7 @@ Ships: loop create/pause/resume/rm/ls/logs + run start/stop/ls, scheduler, serve
 - [x] `loop run ls <name> [--status][--all]`
 - [x] register loop.* methods as implemented; add live handlers in server dispatch
 - [x] server status: loops_firing + loops list + next fires
+  - [x] (round-1 fix) `api.snapshot` now populates `loops` (shared `loop_row_json`), not `[]` (spec §13)
 
 ### server enable/disable (§6.4)
 - [x] macOS launchd plist (`dev.orchestratr.orcr`, RunAtLoad, KeepAlive, absolute binary path, ORCR_HOME/ORCR_HERDR_BIN + log paths)
@@ -71,6 +73,7 @@ Ships: loop create/pause/resume/rm/ls/logs + run start/stop/ls, scheduler, serve
 - [x] `loop run start` on a paused loop fires once; scheduled fires stay held
 - [x] `loop run stop <name> <run_id>` kills one of two concurrent runs; the other survives; stopped run's agents glob-killed
 - [x] Reboot simulation: kill server with running run + pending fire → restart → dead run closed, agents killed, pending fire decided once, missed cron fires skipped-and-logged
+  - [x] (round-1 fix) dedicated `e2e_missed_cron_fire_skipped`: `* * * * *` loop, server down across the slot → restart emits `loop.skipped`(missed_while_down), no replayed run, next_fire advanced
 - [x] `loop logs --run` isolates one run's lines when two runs interleave
 - [x] enable/disable round-trip: unit-file golden tests + launchctl/systemctl verification where available
 

@@ -73,7 +73,21 @@ the scheduler, and `server enable/disable`.
 
 ## Verifier & reviewer history
 
-_(pending)_
+- **Round 1 (verifier FAIL → reviser fixes):**
+  - _Missed cron fire had no test coverage_ (medium): the only restart-recovery e2e used an annual
+    cron that never came due, so the `nf <= now` skip-and-log branch in `recover_loops_on_start`
+    was unproven. Added `e2e_missed_cron_fire_skipped` (tests/loop_e2e.rs): creates a `* * * * *`
+    loop, kills the server before its slot, waits past the slot in real wall-clock, restarts, then
+    asserts (a) a `loop.skipped`(reason=`missed_while_down`) event via `loop logs --source orcr`,
+    (b) no run row was created for the missed slot (never replayed), (c) `next_fire_at` advanced
+    forward. Passes against live herdr; full 8-test loop_e2e suite green, no session leak.
+  - _Snapshot hardcoded `loops: []`_ (low): `build_snapshot` (server/mod.rs) now populates `loops`
+    from `store.list_loops(&[], None, false)` via the shared `loops::loop_row_json` (made
+    `pub(super)`), so the drift-proof snapshot API carries the loop noun after M5, matching spec §13.
+  - _Create echo showed raw cron + bare UTC-ms_ (low): `cmd_loop_create` (cli.rs) now renders the
+    cadence via `cron::describe` (previously dead code) and the next fire via a new
+    `cron::describe_next_fire`, which formats `next_fire_at` as a human local+UTC timestamp
+    (spec §6.2 "cadence in words, local + UTC"). Added a `describe_next_fire` unit test.
 
 ## Deferred / out of scope
 - top (M6), SDK loop helpers (M7), Windows Task Scheduler (lands with Windows support, §17).
