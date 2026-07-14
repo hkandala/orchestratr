@@ -5,10 +5,85 @@
 //! socket method exists in protocol 16 — see the driver reference). orcr's built-in set
 //! (claude + codex in the first release) is known statically.
 
+use crate::config::IntegrationTuning;
 use crate::error::{OrcrError, Result};
 use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeMap;
+
+/// Per-provider completion tuning (spec §5.6). Defaults ship inside the integration; a
+/// user/test may override any knob via `integrations.<provider>.*` in config (§14). Values
+/// are milliseconds. See [`tuning_for`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TuningParams {
+    /// Fast-turn grace: delivery-then-idle within this window counts as a completed turn even
+    /// if `working` was never observed (§15).
+    pub fast_turn_grace_ms: u64,
+    /// A turn's idle must be continuously held at least this long before completing (§5.6).
+    pub idle_stable_ms: u64,
+    /// The provider transcript must show no new writes for this long before a turn settles.
+    pub transcript_settle_ms: u64,
+    /// A final response is reported only once the transcript advances past the observed
+    /// completion within this bound, else `transcript_unavailable` (§11.4).
+    pub transcript_freshness_timeout_ms: u64,
+    /// Grace after the graceful-shutdown recipe before the pane is force-closed.
+    pub shutdown_grace_ms: u64,
+}
+
+impl TuningParams {
+    /// The built-in defaults for a provider. claude/codex use conservative real-provider
+    /// windows; the test-only `mock` uses short windows so the e2e gate stays fast (and it
+    /// has no native transcript, so the settle window is 0).
+    fn defaults_for(provider: &str) -> TuningParams {
+        match provider {
+            MOCK_PROVIDER => TuningParams {
+                fast_turn_grace_ms: 1500,
+                idle_stable_ms: 1200,
+                transcript_settle_ms: 0,
+                transcript_freshness_timeout_ms: 3000,
+                shutdown_grace_ms: 400,
+            },
+            _ => TuningParams {
+                fast_turn_grace_ms: 2500,
+                idle_stable_ms: 2500,
+                transcript_settle_ms: 1500,
+                transcript_freshness_timeout_ms: 15000,
+                shutdown_grace_ms: 5000,
+            },
+        }
+    }
+
+    fn apply(&mut self, o: &IntegrationTuning) {
+        if let Some(v) = o.fast_turn_grace_ms {
+            self.fast_turn_grace_ms = v;
+        }
+        if let Some(v) = o.idle_stable_ms {
+            self.idle_stable_ms = v;
+        }
+        if let Some(v) = o.transcript_settle_ms {
+            self.transcript_settle_ms = v;
+        }
+        if let Some(v) = o.transcript_freshness_timeout_ms {
+            self.transcript_freshness_timeout_ms = v;
+        }
+        if let Some(v) = o.shutdown_grace_ms {
+            self.shutdown_grace_ms = v;
+        }
+    }
+}
+
+/// Resolve the completion tuning for a provider: built-in defaults merged with any
+/// `integrations.<provider>.*` config overrides (spec §5.6, §14).
+pub fn tuning_for(
+    provider: &str,
+    overrides: &BTreeMap<String, IntegrationTuning>,
+) -> TuningParams {
+    let mut t = TuningParams::defaults_for(provider);
+    if let Some(o) = overrides.get(provider) {
+        t.apply(o);
+    }
+    t
+}
 
 /// Providers with an orcr built-in integration (spec §11.4: claude + codex ship first).
 pub const ORCR_BUILTIN_PROVIDERS: &[&str] = &["claude", "codex"];

@@ -21,6 +21,21 @@ pub struct Config {
     pub concurrency: ConcurrencyConfig,
     pub timings: Timings,
     pub logs: LogsConfig,
+    /// Optional per-provider completion-tuning overrides (`integrations.<provider>.*`,
+    /// spec §14 / M3). Defaults ship inside each integration; this lets a user (or tests)
+    /// override the named ms knobs. Empty = all integration defaults.
+    pub integrations: BTreeMap<String, IntegrationTuning>,
+}
+
+/// Per-provider completion-tuning overrides (all optional; `None` = use the integration
+/// default). Values are milliseconds (spec §5.6 named parameters).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IntegrationTuning {
+    pub fast_turn_grace_ms: Option<u64>,
+    pub idle_stable_ms: Option<u64>,
+    pub transcript_settle_ms: Option<u64>,
+    pub transcript_freshness_timeout_ms: Option<u64>,
+    pub shutdown_grace_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +112,7 @@ impl Default for Config {
                 max_bytes: 10_485_760,
                 max_files: 5,
             },
+            integrations: BTreeMap::new(),
         }
     }
 }
@@ -142,7 +158,8 @@ impl Config {
         let mut cfg = Config::default();
         let mut warnings = Vec::new();
 
-        const TOP_KEYS: &[&str] = &["defaults", "herdr", "concurrency", "timings", "logs"];
+        const TOP_KEYS: &[&str] =
+            &["defaults", "herdr", "concurrency", "timings", "logs", "integrations"];
         for key in obj.keys() {
             if !TOP_KEYS.contains(&key.as_str()) {
                 warnings.push(unknown_key_warning(key, "", TOP_KEYS));
@@ -163,6 +180,9 @@ impl Config {
         }
         if let Some(v) = obj.get("logs") {
             parse_logs(v, &mut cfg.logs, &mut warnings)?;
+        }
+        if let Some(v) = obj.get("integrations") {
+            parse_integrations(v, &mut cfg.integrations, &mut warnings)?;
         }
 
         Ok(LoadedConfig {
@@ -303,6 +323,42 @@ fn parse_logs(
         if out.max_files < 1 {
             return Err(config_invalid("logs.max_files must be >= 1"));
         }
+    }
+    Ok(())
+}
+
+fn parse_integrations(
+    v: &Value,
+    out: &mut BTreeMap<String, IntegrationTuning>,
+    warnings: &mut Vec<String>,
+) -> Result<(), OrcrError> {
+    let obj = section_obj(v, "integrations")?;
+    const KEYS: &[&str] = &[
+        "fast_turn_grace_ms",
+        "idle_stable_ms",
+        "transcript_settle_ms",
+        "transcript_freshness_timeout_ms",
+        "shutdown_grace_ms",
+    ];
+    for (provider, pv) in obj {
+        let pobj = section_obj(pv, &format!("integrations.{provider}"))?;
+        warn_unknown(pobj, &format!("integrations.{provider}"), KEYS, warnings);
+        let ms = |key: &str| -> Result<Option<u64>, OrcrError> {
+            match pobj.get(key) {
+                Some(x) => Ok(Some(as_u64(x, &format!("integrations.{provider}.{key}"))?)),
+                None => Ok(None),
+            }
+        };
+        out.insert(
+            provider.clone(),
+            IntegrationTuning {
+                fast_turn_grace_ms: ms("fast_turn_grace_ms")?,
+                idle_stable_ms: ms("idle_stable_ms")?,
+                transcript_settle_ms: ms("transcript_settle_ms")?,
+                transcript_freshness_timeout_ms: ms("transcript_freshness_timeout_ms")?,
+                shutdown_grace_ms: ms("shutdown_grace_ms")?,
+            },
+        );
     }
     Ok(())
 }

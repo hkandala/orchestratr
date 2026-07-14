@@ -11,12 +11,14 @@ pub mod contract;
 mod integration;
 pub mod protocol;
 mod session;
+pub mod transcript;
 
 pub use integration::{
-    ensure_supported, launch_plan, mock_provider_enabled, IntegrationState, LaunchPlan,
-    ProviderIntegration, MOCK_PROVIDER, ORCR_BUILTIN_PROVIDERS,
+    ensure_supported, launch_plan, mock_provider_enabled, tuning_for, IntegrationState,
+    LaunchPlan, ProviderIntegration, TuningParams, MOCK_PROVIDER, ORCR_BUILTIN_PROVIDERS,
 };
 pub use protocol::*;
+pub use transcript::{locate_transcript, TranscriptEntry, TranscriptLocator};
 pub use session::{HerdrBinary, HerdrSession};
 
 use crate::error::{ErrorCode, OrcrError, Result};
