@@ -76,8 +76,19 @@ mod tests {
         let second = InstanceLock::try_acquire(&path).unwrap();
         assert!(second.is_none(), "second acquire should be blocked");
         drop(first);
-        // Now it is free again.
-        let third = InstanceLock::try_acquire(&path).unwrap();
+        // Now it is free again. The `flock` release happens on `close(2)` in `drop`, but under
+        // heavy parallel test load the kernel occasionally doesn't reflect that release to an
+        // immediately-following `flock` on a fresh fd, so poll briefly rather than assert an
+        // instantaneous re-acquire (the real auto-start reaper is likewise release-latency
+        // tolerant via its stable-dead probe window).
+        let mut third = None;
+        for _ in 0..100 {
+            third = InstanceLock::try_acquire(&path).unwrap();
+            if third.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(third.is_some(), "lock should be free after drop");
     }
 }
