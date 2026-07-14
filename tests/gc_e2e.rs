@@ -42,6 +42,11 @@ const PARK_GC: &str = r#""concurrency":{"max":30},"timings":{"idle_after":"5s","
 /// with a test-widened reap delay so a `send` can deterministically win the move lock mid-reap.
 const REAP_RACE_GC: &str = r#""concurrency":{"max":30},"timings":{"idle_after":"1s","kill_after":"3s","gc_tick":"400ms","attach_lease_ttl":"60s","max_starting":"60s"},"integrations":{"mock":{"fast_turn_grace_ms":1500,"idle_stable_ms":500,"transcript_settle_ms":0,"shutdown_grace_ms":150}}"#;
 
+/// Kill-during-promotion drill (E07): global cap 1 so exactly one agent runs and the rest queue;
+/// park/reap pushed far off so nothing else moves the rows mid-test; `max_starting` wide so the
+/// stuck-start guard never fires during the widened kill window.
+const KILL_RACE_GC: &str = r#""concurrency":{"max":1},"timings":{"idle_after":"600s","kill_after":"600s","gc_tick":"400ms","attach_lease_ttl":"600s","max_starting":"600s"},"integrations":{"mock":{"fast_turn_grace_ms":1500,"idle_stable_ms":500,"transcript_settle_ms":0,"shutdown_grace_ms":150}}"#;
+
 struct TestServer {
     home: tempfile::TempDir,
     bin: HerdrBinary,
@@ -951,6 +956,94 @@ fn e2e_soak_churn_leaves_no_leaks() {
         let ws = ts.driver.workspace_list().unwrap_or_default();
         !ws.iter().any(|w| w.label == "soak" || w.label == "idle")
     }));
+}
+
+/// E07 regression — pane leak on the kill-during-promotion race.
+///
+/// A bulk `agent kill` classifies each matched agent from the snapshot taken when the kill begins.
+/// The queue worker's `promote_and_dispatch` runs on a separate thread and can transition a matched
+/// agent queued → starting → running (spawning its herdr pane) in the window between the kill's
+/// snapshot and its per-agent action. Before the fix, the kill ended the just-promoted row via the
+/// pane-less "queued → canceled" path and never closed the freshly-spawned pane → a live zombie
+/// pane (orcr row ended/canceled, herdr pane still alive, row carrying a stale `pane_id`).
+///
+/// The race is forced deterministically with `ORCR_TEST_KILL_ITER_DELAY_MS`: the kill sleeps at the
+/// top of each per-agent iteration, so after it kills the running agent (freeing the only slot) the
+/// queue worker promotes the queued agent and spawns its pane *before* the kill reaches that agent.
+/// After the fix the kill re-reads each row under the write lock and closes the promoted pane, so
+/// no pane leaks.
+#[test]
+fn e2e_kill_during_promotion_no_pane_leak() {
+    skip_unless_e2e!();
+    let ts = TestServer::start_cfg_env(
+        KILL_RACE_GC,
+        vec![(
+            "ORCR_TEST_KILL_ITER_DELAY_MS".to_string(),
+            "3000".to_string(),
+        )],
+    );
+
+    // `race/a_runner` sorts before `race/z_queued` (kill iterates matches in path order), so the
+    // runner is killed first — freeing the only slot — and the queued agent is processed second,
+    // after the widened delay lets the queue worker promote it and spawn its pane.
+    let runner = ts.run("race/a_runner", None, Some("never"));
+    assert!(
+        ts.wait_status(&runner, "idle", Duration::from_secs(20)),
+        "runner should occupy the only slot (idle)"
+    );
+    let queued = ts.run("race/z_queued", None, Some("never"));
+    assert!(
+        ts.wait_status(&queued, "queued", Duration::from_secs(10)),
+        "second agent should be queued behind the cap"
+    );
+
+    // Bulk kill both. The per-iteration delay makes the queued agent get promoted + paned mid-kill.
+    let res = ts
+        .request("agent.kill", json!({ "targets": ["race/**"] }))
+        .expect("bulk kill");
+    assert_eq!(
+        res["killed"].as_array().map(|k| k.len()),
+        Some(2),
+        "both agents killed"
+    );
+
+    // Both rows end.
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            ts.status(&runner).as_deref() == Some("ended")
+                && ts.status(&queued).as_deref() == Some("ended")
+        }),
+        "both rows should end"
+    );
+
+    // The queued agent must actually have been promoted mid-kill for this to test the race: it
+    // carries a herdr pane_id recorded by the spawn pipeline.
+    let queued_row = ts.row(&queued).expect("queued row");
+    let leaked_pane = queued_row["pane_id"].as_str().map(String::from);
+    assert!(
+        leaked_pane.is_some(),
+        "queued agent should have been promoted (pane recorded) mid-kill — race not exercised; \
+         row: {queued_row}"
+    );
+
+    // The core assertion: the pane the just-promoted agent got must NOT be alive. Before the fix
+    // it leaks (row ended/canceled but the herdr pane stays live); after the fix the kill closes it.
+    let pane = leaked_pane.unwrap();
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            !ts.driver
+                .pane_list(None)
+                .unwrap_or_default()
+                .iter()
+                .any(|p| p.pane_id == pane)
+        }),
+        "leaked pane {pane} for canceled agent {queued} is still alive after the bulk kill (E07)"
+    );
+    // And no agent panes remain at all (the runner's pane is closed too).
+    assert!(
+        wait_until(Duration::from_secs(10), || ts.agent_panes().is_empty()),
+        "no agent panes should survive the bulk kill"
+    );
 }
 
 fn wait_until_some<T>(timeout: Duration, mut f: impl FnMut() -> Option<T>) -> Option<T> {

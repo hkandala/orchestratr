@@ -939,6 +939,9 @@ impl Server {
                 skipped.push(json!({ "uuid": a.uuid, "path": a.path, "reason": "force_required" }));
                 continue;
             }
+            // Test-only: widen the kill-during-promotion window (E07) so the race is
+            // deterministic in the regression test. A no-op in production.
+            kill_iter_delay_hook();
             // Route to the session the pane lives in: an unmanaged agent's pane is in a foreign
             // herdr session (§5.7), so closing it via the owned driver would miss it (or close a
             // colliding owned pane). Managed agents resolve to the owned session's driver.
@@ -1595,6 +1598,19 @@ impl Server {
         })?;
         serde_json::from_str(&text)
             .map_err(|e| OrcrError::server_error("launch_decode", format!("bad launch.json: {e}")))
+    }
+}
+
+/// A test-only fault-injection hook (E07 regression): if `ORCR_TEST_KILL_ITER_DELAY_MS` is set,
+/// sleep that many milliseconds at the top of each `agent.kill` per-agent iteration. This widens
+/// the window between the kill's target snapshot and its per-agent action so the queue worker can
+/// deterministically promote a queued agent and spawn its herdr pane mid-kill (the E07 race).
+/// Never fires in a normal build (the env var is only set by the e2e harness).
+fn kill_iter_delay_hook() {
+    if let Ok(ms) = std::env::var("ORCR_TEST_KILL_ITER_DELAY_MS") {
+        if let Ok(ms) = ms.parse::<u64>() {
+            std::thread::sleep(Duration::from_millis(ms));
+        }
     }
 }
 
