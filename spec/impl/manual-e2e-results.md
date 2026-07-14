@@ -317,3 +317,48 @@ paths. Real-codex works (E04 full lifecycle PASS; E02 ask passes, with one inter
   native transcript) — E01/E03/E05; intermittent codex submit-confirm flake (E02/OBS-1).
 - **Open (data gap):** E07 detail + E08–E22 results were not delivered to the consolidator (payload
   truncated). Re-dispatch consolidation with the full payload to record them.
+
+### Final green check (2026-07-14, post-run)
+
+Ran on `main` @ `1479a56` with a clean working tree, after all executors finished (no concurrent
+cargo/herdr activity; only the `default` herdr session present):
+
+| check | result |
+| --- | --- |
+| `cargo build` | clean (no recompile needed) |
+| `cargo fmt --check` | clean (exit 0) |
+| `cargo clippy --all-targets` | clean — no warnings |
+| `cargo test --lib --bins` | **164 passed, 0 failed** |
+| non-e2e integration (`handshake`, `home_config`, `scaffold_preflight`, `server_protocol`, `skill_docs`) | **13 passed, 0 failed** |
+
+The `*_e2e.rs` / `conformance_live.rs` suites (herdr/real-provider bound) were intentionally
+excluded from this non-e2e green check — they are exercised by the manual scenarios above. The E01
+regression tests referenced in the fix write-up
+(`completion_e2e::e2e_ask_waits_for_late_transcript_before_immediate_teardown`,
+`completion_e2e::e2e_submit_confirm_resends_until_working`) live in the e2e suite.
+
+## Prioritized NEXT STEPS
+
+1. **(P0 — data gap) Re-run consolidation with the full payload for E07–E22.** These 16 scenarios
+   were executed but their structured results were truncated before reaching the consolidator, so
+   this run has **zero recorded coverage** for queue/concurrency detail (E07), GC (E08/E09), loops
+   (E10/E11), server enable/disable (E12), top (E13), api (E14), server lifecycle (E15), TS SDK
+   (E16), scaffold (E17), real-provider recipes (E18), skill drill (E19), config/env (E20), error
+   sweep (E21), and attach leases (E22). Re-dispatch the executors (or just the consolidator if the
+   per-executor results are still retrievable) and fill in the `_not received_` rows before this run
+   can be called complete.
+2. **(P1 — env) Establish a claude environment that persists native transcripts** so the real-claude
+   paths (E01/E03/E05, all currently BLOCKED) can actually be validated. On this enterprise box the
+   claude TUI (Vertex AI + launcher/`fast_mux` + session-start hooks) writes no locatable
+   `~/.claude/projects/**/<session_id>.jsonl` for herdr-launched panes, so completion can never be
+   detected. Options: test on a stock claude install, or add an orcr-side transcript-discovery
+   fallback for enterprise launchers. Not an orcr defect, but it blocks a third of the real-provider
+   plan.
+3. **(P2 — robustness) Harden the codex (and claude) pane submit-confirm** to eliminate the
+   intermittent `submit-confirm … still idle after 8000ms` flake seen in E02 (one `--json` ask
+   timed out, passed clean on retry). The submit-Enter re-send recovers most instances but not all;
+   consider more re-send attempts, a longer/adaptive `submit_confirm_ms`, or verifying prompt
+   acceptance by reading the pane before declaring `working`.
+4. **(P3 — polish) Minor E06 nit:** `{rand}` used in a *selector* is rejected as
+   `reason:"invalid_segment"` rather than a rand-specific reason. Correctly `invalid_request`/exit 1,
+   but a rand-specific reason would be a clearer error. Low priority.
