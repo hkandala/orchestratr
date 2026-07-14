@@ -214,7 +214,10 @@ impl HerdrDriver {
         expect_ack(&r)
     }
 
-    /// `notification.show` — surface a notification (blocked alerts, future).
+    /// `notification.show` — surface a notification (blocked alerts). Intentionally not yet
+    /// called by orcr logic: the blocked-alert feature is future work (§2/§11.7), but this
+    /// wrapper is kept so the driver covers the complete pinned herdr-method contract
+    /// (`driver/contract.rs` pins `notification.show`), not as an accidental orphan.
     pub fn notification_show(&self, title: &str, body: Option<&str>) -> Result<()> {
         let r = self.call("notification.show", json!({ "title": title, "body": body }))?;
         // returns `notification_show {reason, shown}` — accept it.
