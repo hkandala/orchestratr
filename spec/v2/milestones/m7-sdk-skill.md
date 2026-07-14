@@ -33,6 +33,20 @@ vocabulary. Ends with publishable packages and docs.
   (path-mirrored, uuid leaf); `loop.run.start()` returns the run's `dataDir`;
   `context.fromEnv()` exposes both.
 
+### `orcr scaffold` (spec §6.6)
+- `orcr scaffold [<dir>] [--json]` — generates exactly three files
+  (`package.json` with `@orchestratr/sdk` pinned to the CLI's own version + `tsx` +
+  `typescript`, `tsconfig.json`, `workflow.ts` with the ~15-line runnable example +
+  one skill-reference comment) into `<dir>` (default `.`, created if missing), then
+  runs `npm install`.
+- Preflight: Node ≥ 20 + npm present, else `environment_error` with install
+  pointer and **nothing created**; any of the three files already present →
+  `state_conflict`, nothing touched.
+- Purely local: no server auto-start, no store row.
+- Placement is convention only (taught by the skill, §8/§10): one-time →
+  `$ORCR_AGENT_DATA_DIR/workflows/`; reusable + every loop script →
+  `~/.orcr/workflows/<name>/`.
+
 ### Recipes (spec §9)
 - The §9 examples (9.1–9.7) as **self-contained tested fixtures** in the repo
   (illustrative helpers like `stillCheap()` replaced by real stubs; run in CI
@@ -46,8 +60,9 @@ vocabulary. Ends with publishable packages and docs.
   workflow roots + {rand}, the open-top-beside-yourself rule, file/data
   conventions, provider routing table, numeric discipline, guard rails, output
   checklist, reference pointers).
-- `skill/references/`: `cli.md`, `sdk.md`, `patterns.md` (the §9 recipes), `loops.md`,
-  `files.md` — loaded by agents on demand.
+- `skill/references/`: `cli.md`, `sdk.md` (SDK surface + scaffold workflow-project
+  guidance: when to scaffold, where projects live, adding npm deps), `patterns.md`
+  (the §9 recipes), `loops.md`, `files.md` — loaded by agents on demand.
 - Validation: a real agent given only SKILL.md completes the hot path (spawn → wait →
   read → kill) unassisted; references stay in sync with `--help` output via doc
   tests.
@@ -69,6 +84,11 @@ vocabulary. Ends with publishable packages and docs.
   sample missing --name/--path.
 - Concurrency fixtures: two copies of fan-out-and-merge and tournament started
   concurrently (distinct top scopes) run clean.
+- Scaffold: on a clean checkout, `orcr scaffold tmpdir && cd tmpdir && npx tsx
+  workflow.ts` runs the boilerplate green against the mock provider; re-running
+  scaffold on the same dir fails `state_conflict`; missing-node preflight fails
+  `environment_error` with nothing created; pinned SDK version equals the CLI
+  version.
 - Package installs clean on a fresh machine; quickstart works as written.
 
 ## Out of scope
