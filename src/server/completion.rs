@@ -87,6 +87,13 @@ impl Server {
 
         match status {
             AgentStatus::Working => {
+                // §5.4 background-subagent caveat: a parked agent herdr reports `working`
+                // again must be un-parked back to its home workspace so status and pane
+                // location agree (work is not lost). Move it home before marking working,
+                // under the per-agent move lock; the branches below then flip it to working.
+                if a.status == "parked" {
+                    self.unpark_on_resume(driver, a);
+                }
                 if let Some(t) = open_turn {
                     let mut store = self.inner.store.lock().unwrap();
                     let _ = store.set_working_seen(&a.uuid, t.input_seq, now);

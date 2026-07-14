@@ -279,6 +279,31 @@ impl Server {
             .ok_or_else(|| OrcrError::not_found(format!("agent {} vanished", cur.uuid)))
     }
 
+    /// Un-park an agent the completion monitor just observed go `working` again — the §5.4
+    /// background-subagent caveat, which guarantees a resumed parked agent is moved back to
+    /// its home workspace so work is not lost. Independent of transcript-based subagent
+    /// *detection* (§17 future work): this fires only on an already-observed `working`
+    /// transition. Takes the per-agent move lock (the monitor otherwise holds none), then
+    /// reuses [`Server::unpark_for_send`] (which lands the agent `idle` in its home
+    /// workspace); the monitor's own logic then flips it back to `working`.
+    pub(super) fn unpark_on_resume(&self, driver: &HerdrDriver, a: &AgentFull) {
+        let move_lock = self.lock_move(&a.uuid);
+        let _held = move_lock.lock().unwrap();
+        let cur = {
+            let store = self.inner.store.lock().unwrap();
+            store.agent_full(&a.uuid).ok().flatten()
+        };
+        let Some(cur) = cur else { return };
+        // Nothing to do unless it is still parked (or a move is mid-flight to settle).
+        if cur.status != "parked" && cur.move_state == "none" {
+            return;
+        }
+        if let Err(e) = self.unpark_for_send(driver, &cur) {
+            self.log()
+                .warn(format!("un-park on resume for {} failed: {e}", cur.path));
+        }
+    }
+
     // --- reconciliation (spec §11.5) ---
 
     /// The periodic reconciliation pass (spec §11.5): recover half-done moves, resolve

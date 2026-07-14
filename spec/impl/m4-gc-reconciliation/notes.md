@@ -79,11 +79,23 @@ choices worth knowing, and discovered facts. Capture *decisions and deviations*.
   M4 discovery e2e selects its own hand-started mock by `agent == "mock"` to avoid matching
   it.
 - **Completion monitor + parked agents.** A parked agent is still monitorable; if herdr
-  spontaneously reports it `working` (e.g. a background subagent resuming, §5.4 caveat) the
-  monitor opens an external turn and flips it to `working` **without** moving the pane home
-  (auto-unpark-on-resume needs background-subagent detection, which is out of scope for
-  M4). Un-park on `send` is fully implemented. Not harmful: the pane stays in the idle
-  workspace but the agent is tracked correctly and will re-park.
+  reports it `working` again (e.g. a background subagent resuming, §5.4 caveat) the monitor
+  now **un-parks it back to its home workspace** before flipping it to `working`, so status
+  and pane location always agree (§5.4: "un-parked back to its home workspace, so work is not
+  lost"). Implemented as `Server::unpark_on_resume` in `gc.rs` (takes the per-agent move
+  lock, then reuses `unpark_for_send` → lands `idle` in the home workspace; the monitor's
+  own branch then marks `working`). **Comprehensive-review update (round 1):** this
+  supersedes the earlier M4 note that deferred auto-unpark-on-resume. The §17 future-work
+  item is *detecting in-flight background subagents from the transcript* (to avoid premature
+  reap); un-parking on an already-**observed** `working` transition is independent of that
+  and is a spec guarantee, so it is implemented here. Un-park on `send` remains fully
+  implemented.
+- **Loop-namespace check is atomic with the insert (round-1 review).** `handle_agent_run`
+  now runs `check_loop_namespace` + `enqueue_agent` under **one** contiguous `Mutex<Store>`
+  hold (the check reads the loop/run tables from the already-locked store). Since the store
+  is the single writer — `loop.create` goes through the same mutex — no loop can be created
+  between the ownership check and the path-reserving insert, closing the §5.1 TOCTOU without
+  pushing loop SQL into the generic agent insert.
 
 ## Verifier findings (round 1 — FAIL)
 
