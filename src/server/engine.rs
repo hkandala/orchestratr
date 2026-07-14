@@ -720,10 +720,15 @@ impl Server {
         std::thread::sleep(ENTER_DELAY);
         driver.pane_send_keys(&pane_id, &["Enter"])?;
         // Open a new turn and re-arm to `working` (a `send` cancels any pending block/idle so
-        // a `wait` issued after it cannot be satisfied by a stale idle, §5.6).
+        // a `wait` issued after it cannot be satisfied by a stale idle, §5.6). An unmanaged
+        // agent's turn is tracked as `external` (§5.7): orcr doesn't own its input epochs.
         let (input_seq, ev) = {
             let mut store = self.inner.store.lock().unwrap();
-            store.deliver_input(&row.uuid, "orcr", now_millis())?
+            if row.managed {
+                store.deliver_input(&row.uuid, "orcr", now_millis())?
+            } else {
+                store.open_external_turn(&row.uuid, now_millis())?
+            }
         };
         self.publish(ev);
         Ok(json!({
@@ -803,8 +808,9 @@ impl Server {
                     killed.push(json!({ "uuid": a.uuid, "path": a.path }));
                 }
                 _ => {
-                    // working / idle / blocked / parked: graceful shutdown → pane close. Hold the
-                    // per-agent move lock (managed) so GC can't relocate the pane mid-kill.
+                    // working / idle / blocked / parked / lost: graceful shutdown → pane close.
+                    // Hold the per-agent move lock (managed) so GC can't relocate the pane
+                    // mid-kill.
                     let move_lock = if a.managed {
                         Some(self.lock_move(&a.uuid))
                     } else {
@@ -814,7 +820,10 @@ impl Server {
                     if let (Some(d), Some(pane)) = (&driver, self.live_pane(driver.as_ref(), &a)) {
                         self.graceful_shutdown(d, &a, &pane);
                     }
-                    self.end_agent(&a.uuid, "killed");
+                    // An explicit kill resolving a `lost` agent ends it as `lost`, not `killed`
+                    // (§5.6: reconciliation OR explicit kill → ended (exit_reason: lost)).
+                    let reason = if a.status == "lost" { "lost" } else { "killed" };
+                    self.end_agent(&a.uuid, reason);
                     killed.push(json!({ "uuid": a.uuid, "path": a.path }));
                 }
             }
@@ -1353,7 +1362,7 @@ impl Server {
     }
 
     /// The agent's data dir, mirroring its path (§8): `<home>/data/<segs>/<uuid>`.
-    fn agent_data_dir(&self, path: &str, uuid: &str) -> PathBuf {
+    pub(super) fn agent_data_dir(&self, path: &str, uuid: &str) -> PathBuf {
         let mut dir = self.inner.home.data_dir();
         for seg in path.split('/') {
             dir.push(seg);
