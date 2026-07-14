@@ -105,10 +105,12 @@ impl TestHome {
 }
 
 impl Drop for TestHome {
+    /// Never leave a server bound to a tempdir that is about to be deleted (master-prompt §6:
+    /// tests must leave no cruft). First reaps the server — plus any auto-start revival — then
+    /// tears down the disposable herdr session so a test run never leaks an `orcr_test_*` (and
+    /// never the real `orcr`) session, all before the tempdir is unlinked.
     fn drop(&mut self) {
-        // Stop any server bound to this home, then tear down the disposable herdr session so a
-        // test run never leaks an `orcr_test_*` (and never the real `orcr`) session.
-        let _ = self.run(&["server", "stop"], &[]);
+        self.reap_server();
         let _ = Command::new("herdr")
             .args(["session", "stop", &self.session])
             .stdin(Stdio::null())
@@ -121,15 +123,6 @@ impl Drop for TestHome {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
-    }
-}
-
-impl Drop for TestHome {
-    /// Never leave a server bound to a tempdir that is about to be deleted (master-prompt §6:
-    /// tests must leave no cruft). Reaps the server — plus any auto-start revival — before the
-    /// tempdir is unlinked.
-    fn drop(&mut self) {
-        self.reap_server();
     }
 }
 
