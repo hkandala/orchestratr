@@ -876,7 +876,7 @@ impl Server {
                 .ok_or_else(|| OrcrError::not_found(format!("agent {uuid} vanished")))?;
             drop(store);
             let loc = self.agent_transcript(&a)?;
-            loc.last_response(&a.uuid, &a.status)?
+            self.last_response_fresh(&a, &loc)?
         };
         Ok(json!({
             "uuid": uuid,
@@ -908,7 +908,7 @@ impl Server {
 
         let loc = self.agent_transcript(&row)?;
         if last_response {
-            let text = loc.last_response(&row.uuid, &row.status)?;
+            let text = self.last_response_fresh(&row, &loc)?;
             return Ok(json!({
                 "uuid": row.uuid, "path": row.path, "resolved": resolved,
                 "response": { "text": text, "final": true },

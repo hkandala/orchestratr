@@ -9,8 +9,8 @@
 
 use super::Server;
 use crate::driver::{
-    locate_transcript, normalize_done, tuning_for, AgentInfo, AgentStatus, HerdrDriver,
-    TranscriptLocator, TuningParams,
+    locate_transcript, normalize_done, transcript_fresh, transcript_unavailable, tuning_for,
+    AgentInfo, AgentStatus, HerdrDriver, TranscriptLocator, TuningParams,
 };
 use crate::error::Result;
 use crate::store::{now_millis, AgentFull};
@@ -141,10 +141,19 @@ impl Server {
                         }
                     };
                     let working_ok = t.working_seen_at.is_some();
+                    // Fast-turn grace: the turn completed so fast the monitor never observed a
+                    // `working` transition. We may only conclude this once the **full** grace
+                    // window has elapsed since delivery with continuous idle — otherwise a turn
+                    // whose provider simply hasn't started working yet (still-stale idle from a
+                    // prior turn) is falsely completed before `working` is ever seen (§5.6: an
+                    // old idle can never satisfy a newer send). Requiring `now - delivered >=
+                    // grace` guarantees any provider that starts working within the grace window
+                    // sets `working_seen_at` first, so the fast path never applies to it.
                     let fast_ok = !working_ok
                         && t.delivered_at
                             .map(|d| {
                                 idle_since.saturating_sub(d) <= tuning.fast_turn_grace_ms as i64
+                                    && now.saturating_sub(d) >= tuning.fast_turn_grace_ms as i64
                             })
                             .unwrap_or(false);
                     let stable = now.saturating_sub(idle_since) >= tuning.idle_stable_ms as i64;
@@ -229,6 +238,51 @@ impl Server {
             }
             Err(_) => (None, None),
         }
+    }
+
+    /// Read an agent's final response through the **freshness gate** (spec §11.4): a final
+    /// response is only reported once the located transcript has advanced past the cursor
+    /// recorded at the observed completion. The recorded cursor is the file mtime captured
+    /// when the turn completed (`turns.transcript_cursor`); the current file must be at least
+    /// that fresh. We poll up to `transcript_freshness_timeout_ms` for it to reach that point;
+    /// a file that never does (rotated/truncated to an older state, or vanished) →
+    /// `transcript_unavailable{cause:"stale"}` rather than a not-yet-advanced/stale read.
+    ///
+    /// Agents with no recorded completion cursor (e.g. the mock, which has no native
+    /// transcript) never reach here — `locate_transcript`/`agent_transcript` fails first.
+    pub(super) fn last_response_fresh(
+        &self,
+        a: &AgentFull,
+        loc: &TranscriptLocator,
+    ) -> Result<String> {
+        let provider = a.agent.as_deref().unwrap_or_default();
+        let tuning = tuning_for(provider, &self.inner.config.integrations);
+        let threshold = {
+            let store = self.inner.store.lock().unwrap();
+            store
+                .latest_turn(&a.uuid)
+                .ok()
+                .flatten()
+                .filter(|t| t.completed_at.is_some())
+                .and_then(|t| t.transcript_cursor)
+                .and_then(|c| c.parse::<i64>().ok())
+        };
+        if let Some(threshold) = threshold {
+            let deadline = now_millis() + tuning.transcript_freshness_timeout_ms as i64;
+            while !transcript_fresh(loc.mtime_ms(), threshold) {
+                if now_millis() >= deadline {
+                    return Err(transcript_unavailable(
+                        &a.uuid,
+                        &a.status,
+                        "stale",
+                        "transcript has not advanced past the recorded completion \
+                         (rotated, truncated, or not yet written)",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        loc.last_response(&a.uuid, &a.status)
     }
 
     /// Locate an agent's native transcript via the provider adapter (spec §11.4). Applies the
