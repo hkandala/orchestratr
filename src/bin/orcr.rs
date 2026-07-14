@@ -19,15 +19,10 @@ use std::process::{Command, Stdio};
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(|s| s.as_str()) {
+        // Hidden foundations self-check used by the harness (pre-dates the CLI surface).
         Some("__m0-selfcheck") => std::process::exit(selfcheck()),
-        _ => {
-            eprintln!(
-                "orcr — orchestratr (M0: foundations only)\n\
-                 User-facing commands (server, agent, loop, top) land in later milestones.\n\
-                 Internal: orcr __m0-selfcheck"
-            );
-            std::process::exit(0);
-        }
+        // Everything else is the real CLI (server + api nouns in M1; more later).
+        _ => std::process::exit(orchestratr::cli::run()),
     }
 }
 

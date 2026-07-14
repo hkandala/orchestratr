@@ -223,10 +223,112 @@ impl Store {
             .map_err(map_sqlite)
     }
 
+    // --- Events (the subscription cursor, §11.6, §12) ---
+
+    /// Append an event row and return its monotonic `seq`. This opens its own
+    /// `BEGIN IMMEDIATE` transaction; producers that must write an event in the *same*
+    /// transaction as the change they describe use [`append_event_tx`] instead.
+    pub fn append_event(
+        &mut self,
+        kind: &str,
+        ref_uuid: Option<&str>,
+        payload: &serde_json::Value,
+    ) -> Result<i64> {
+        let kind = kind.to_string();
+        let ref_uuid = ref_uuid.map(|s| s.to_string());
+        let payload = payload.clone();
+        self.with_immediate_tx(|tx| append_event_tx(tx, &kind, ref_uuid.as_deref(), &payload))
+    }
+
+    /// Read event rows with `seq > since_seq`, oldest first, up to `limit` rows.
+    pub fn events_since(&self, since_seq: i64, limit: i64) -> Result<Vec<EventRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT seq, ts, kind, ref_uuid, payload_json FROM events
+                  WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2",
+            )
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map(rusqlite::params![since_seq, limit], |r| {
+                let payload: String = r.get(4)?;
+                Ok(EventRow {
+                    seq: r.get(0)?,
+                    ts: r.get(1)?,
+                    kind: r.get(2)?,
+                    ref_uuid: r.get(3)?,
+                    payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+                })
+            })
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows)
+    }
+
+    /// The highest event `seq` written so far (0 when the table is empty).
+    pub fn latest_event_seq(&self) -> Result<i64> {
+        self.conn
+            .query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))
+            .map_err(map_sqlite)
+    }
+
+    /// The lowest event `seq` still present (None when the table is empty).
+    pub fn oldest_event_seq(&self) -> Result<Option<i64>> {
+        self.conn
+            .query_row("SELECT MIN(seq) FROM events", [], |r| r.get(0))
+            .map_err(map_sqlite)
+    }
+
+    /// Trim the events table to at most `keep_last` most-recent rows (bounded replay
+    /// retention, §11.6). Returns the lowest `seq` still retained afterward (0 if empty).
+    pub fn trim_events(&mut self, keep_last: i64) -> Result<i64> {
+        let keep_last = keep_last.max(0);
+        self.with_immediate_tx(|tx| {
+            tx.execute(
+                "DELETE FROM events WHERE seq <= (
+                     SELECT COALESCE(MAX(seq), 0) - ?1 FROM events
+                 )",
+                [keep_last],
+            )
+            .map_err(map_sqlite)?;
+            let oldest: Option<i64> = tx
+                .query_row("SELECT MIN(seq) FROM events", [], |r| r.get(0))
+                .map_err(map_sqlite)?;
+            Ok(oldest.unwrap_or(0))
+        })
+    }
+
     /// Direct read access for later milestones / tests.
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
+}
+
+/// Append an event within an existing transaction and return its `seq`. Producers use this
+/// so the event lands in the **same** transaction as the change it describes (§11.6).
+pub fn append_event_tx(
+    tx: &rusqlite::Transaction,
+    kind: &str,
+    ref_uuid: Option<&str>,
+    payload: &serde_json::Value,
+) -> Result<i64> {
+    tx.execute(
+        "INSERT INTO events (ts, kind, ref_uuid, payload_json) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![now_millis(), kind, ref_uuid, payload.to_string()],
+    )
+    .map_err(map_sqlite)?;
+    Ok(tx.last_insert_rowid())
+}
+
+/// One row from the events table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventRow {
+    pub seq: i64,
+    pub ts: i64,
+    pub kind: String,
+    pub ref_uuid: Option<String>,
+    pub payload: serde_json::Value,
 }
 
 /// A minimal agent read view.
@@ -401,6 +503,42 @@ mod tests {
         assert!(r.is_err());
         // rolled back — no row
         assert_eq!(s.count_agents().unwrap(), 0);
+    }
+
+    #[test]
+    fn events_are_monotonic_and_readable() {
+        let mut s = Store::open_in_memory().unwrap();
+        let a = s
+            .append_event("agent.created", Some("u1"), &json!({"x":1}))
+            .unwrap();
+        let b = s
+            .append_event("agent.ended", Some("u1"), &json!({"x":2}))
+            .unwrap();
+        assert!(b > a);
+        assert_eq!(s.latest_event_seq().unwrap(), b);
+        let rows = s.events_since(0, 100).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].seq, a);
+        assert_eq!(rows[0].kind, "agent.created");
+        assert_eq!(rows[0].payload["x"], 1);
+        // since_seq filters strictly greater.
+        let after = s.events_since(a, 100).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].seq, b);
+    }
+
+    #[test]
+    fn trim_events_bounds_retention() {
+        let mut s = Store::open_in_memory().unwrap();
+        for i in 0..10 {
+            s.append_event("k", None, &json!({ "i": i })).unwrap();
+        }
+        assert_eq!(s.latest_event_seq().unwrap(), 10);
+        // Keep only the last 3.
+        let oldest = s.trim_events(3).unwrap();
+        assert_eq!(oldest, 8);
+        assert_eq!(s.oldest_event_seq().unwrap(), Some(8));
+        assert_eq!(s.events_since(0, 100).unwrap().len(), 3);
     }
 
     #[test]

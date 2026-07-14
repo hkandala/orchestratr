@@ -6,11 +6,17 @@
 //! home layout, config, the store, and the herdr socket driver. No user-facing agent
 //! features live here yet.
 
+pub mod api;
+pub mod cli;
 pub mod config;
 pub mod driver;
 pub mod duration;
 pub mod error;
+pub mod events;
 pub mod home;
+pub mod lock;
+pub mod server;
 pub mod store;
+pub mod wire;
 
 pub use error::{ErrorCode, OrcrError, Result};

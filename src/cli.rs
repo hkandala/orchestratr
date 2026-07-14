@@ -1,0 +1,342 @@
+//! The `orcr` CLI (spec §6): a thin client of the socket API. Every server-touching verb
+//! maps 1:1 to a socket method; the CLI's job is arg parsing, the `--json` envelope, the
+//! §13 error→exit-code mapping, TTY detection, and human-readable rendering.
+//!
+//! M1 wires the `server` and `api` nouns plus all shared plumbing; agent/loop nouns land
+//! in later milestones (their methods are already registered in [`crate::api`]).
+
+use crate::api;
+use crate::config::{Config, LoadedConfig};
+use crate::error::{OrcrError, Result};
+use crate::home::Home;
+use crate::server::{self, Client};
+use clap::{Parser, Subcommand};
+use serde_json::{json, Value};
+use std::io::{BufRead, Write};
+use std::path::PathBuf;
+use std::time::Duration;
+
+/// `orcr` — a cross-provider orchestrator for AI coding agents, built on herdr.
+#[derive(Parser, Debug)]
+#[command(name = "orcr", version, about, disable_help_subcommand = true)]
+pub struct Cli {
+    /// Emit exactly one JSON envelope on stdout (`{"ok":true,...}` / `{"ok":false,...}`).
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// The orcr server: single writer, socket API (§6.4).
+    Server {
+        #[command(subcommand)]
+        cmd: ServerCmd,
+    },
+    /// The self-describing socket API (§6.5).
+    Api {
+        #[command(subcommand)]
+        cmd: ApiCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ServerCmd {
+    /// Start the server (idempotent); blocks until ready.
+    Start {
+        /// Run in the foreground (what a service unit uses).
+        #[arg(long)]
+        foreground: bool,
+    },
+    /// Graceful control-plane stop (never touches agent panes).
+    Stop,
+    /// Health: version, protocol, paths, herdr reachability, counts, integrations.
+    Status,
+    /// Read the server log.
+    Logs {
+        /// Show only the last N lines.
+        #[arg(long)]
+        tail: Option<usize>,
+        /// Keep streaming new lines.
+        #[arg(long)]
+        follow: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ApiCmd {
+    /// Print the versioned JSON Schema of the whole socket protocol.
+    Schema {
+        /// Write the schema to a file instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Dump live runtime state stamped with snapshot_seq.
+    Snapshot,
+}
+
+/// Parse args and run; returns the process exit code.
+pub fn run() -> i32 {
+    let cli = Cli::parse();
+    let json = cli.json;
+    match dispatch(&cli) {
+        Ok(()) => 0,
+        Err(e) => {
+            emit_error(json, &e);
+            e.exit_code()
+        }
+    }
+}
+
+fn dispatch(cli: &Cli) -> Result<()> {
+    match &cli.command {
+        Command::Server { cmd } => match cmd {
+            ServerCmd::Start { foreground } => cmd_server_start(cli.json, *foreground),
+            ServerCmd::Stop => cmd_server_stop(cli.json),
+            ServerCmd::Status => cmd_server_status(cli.json),
+            ServerCmd::Logs { tail, follow } => cmd_server_logs(cli.json, *tail, *follow),
+        },
+        Command::Api { cmd } => match cmd {
+            ApiCmd::Schema { output } => cmd_api_schema(cli.json, output.as_deref()),
+            ApiCmd::Snapshot => cmd_api_snapshot(cli.json),
+        },
+    }
+}
+
+// --- server ---
+
+fn cmd_server_start(json: bool, foreground: bool) -> Result<()> {
+    let home = Home::ensure()?;
+    let config = load_config(&home)?;
+    if foreground {
+        // This process becomes (or defers to) the server; blocks until graceful stop.
+        let outcome = server::run_foreground(&home, config)?;
+        emit_success(json, json!({ "status": outcome.as_str() }), || {
+            println!("server {}", outcome.as_str());
+        });
+        Ok(())
+    } else {
+        let client = Client::new(home.socket_path());
+        let outcome = client.ensure_running(&home, &config)?;
+        emit_success(json, json!({ "status": outcome.as_str() }), || {
+            println!("server {}", outcome.as_str());
+        });
+        Ok(())
+    }
+}
+
+fn cmd_server_stop(json: bool) -> Result<()> {
+    let home = Home::resolve()?;
+    let client = Client::new(home.socket_path());
+    // Do not auto-start just to stop; if nothing is running, that's an idempotent no-op.
+    if client.handshake().is_err() {
+        emit_success(json, json!({ "status": "not_running" }), || {
+            println!("server not_running");
+        });
+        return Ok(());
+    }
+    client.request("server.stop", json!({}))?;
+    emit_success(json, json!({ "status": "stopped" }), || {
+        println!("server stopped");
+    });
+    Ok(())
+}
+
+fn cmd_server_status(json: bool) -> Result<()> {
+    let home = Home::ensure()?;
+    let config = load_config(&home)?;
+    let client = Client::new(home.socket_path());
+    client.ensure_running(&home, &config)?;
+    let result = client.request("server.status", json!({}))?;
+    emit_success(json, result.clone(), || print_status_human(&result));
+    Ok(())
+}
+
+fn cmd_server_logs(json: bool, tail: Option<usize>, follow: bool) -> Result<()> {
+    let home = Home::resolve()?;
+    let path = home.logs_dir().join("server.log");
+
+    if follow {
+        // Stream: print the tail, then keep printing new lines. Ignore --json for the live
+        // stream (each line is already a JSON object).
+        stream_follow(&path, tail)?;
+        return Ok(());
+    }
+
+    let lines = read_tail(&path, tail)?;
+    if json {
+        let parsed: Vec<Value> = lines
+            .iter()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap_or_else(|_| json!({ "raw": l })))
+            .collect();
+        emit_success(true, json!({ "lines": parsed }), || {});
+    } else {
+        for l in &lines {
+            println!("{l}");
+        }
+    }
+    Ok(())
+}
+
+// --- api ---
+
+fn cmd_api_schema(json: bool, output: Option<&std::path::Path>) -> Result<()> {
+    // The schema is derived from the compiled method registry — no server needed (mirrors
+    // `herdr api schema` working offline).
+    let doc = api::schema_document();
+    let text = serde_json::to_string_pretty(&doc).unwrap();
+    if let Some(path) = output {
+        std::fs::write(path, format!("{text}\n")).map_err(|e| {
+            OrcrError::environment(
+                "config_invalid",
+                format!("cannot write schema to {}: {e}", path.display()),
+            )
+        })?;
+        emit_success(
+            json,
+            json!({ "written": path.display().to_string() }),
+            || {
+                eprintln!("wrote schema to {}", path.display());
+            },
+        );
+    } else if json {
+        emit_success(true, doc, || {});
+    } else {
+        println!("{text}");
+    }
+    Ok(())
+}
+
+fn cmd_api_snapshot(json: bool) -> Result<()> {
+    let home = Home::ensure()?;
+    let config = load_config(&home)?;
+    let client = Client::new(home.socket_path());
+    client.ensure_running(&home, &config)?;
+    let result = client.request("api.snapshot", json!({}))?;
+    emit_success(json, result.clone(), || {
+        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+    });
+    Ok(())
+}
+
+// --- helpers ---
+
+/// Load config, printing any warnings to stderr (never stdout — stdout is the envelope).
+fn load_config(home: &Home) -> Result<Config> {
+    let LoadedConfig { config, warnings } = Config::load(home)?;
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
+    Ok(config)
+}
+
+/// Print a `{"ok":true,"result":…}` envelope in JSON mode, else run the human renderer.
+fn emit_success(json: bool, result: Value, human: impl FnOnce()) {
+    if json {
+        println!("{}", json!({ "ok": true, "result": result }));
+    } else {
+        human();
+    }
+}
+
+/// Emit an error: the JSON envelope to stdout in `--json` mode, else a message to stderr.
+fn emit_error(json: bool, e: &OrcrError) {
+    if json {
+        println!("{}", e.to_envelope());
+    } else {
+        eprintln!("error: {e}");
+    }
+}
+
+fn print_status_human(s: &Value) {
+    let g = |k: &str| s.get(k).cloned().unwrap_or(Value::Null);
+    println!("orcr server");
+    println!("  version   {}", g("version"));
+    println!("  protocol  {}", g("protocol"));
+    println!("  socket    {}", g("socket"));
+    println!("  store     {}", g("store"));
+    if let Some(h) = s.get("herdr") {
+        println!(
+            "  herdr     reachable={} session={} running={}",
+            h.get("reachable").unwrap_or(&Value::Null),
+            h.get("session").unwrap_or(&Value::Null),
+            h.get("session_running").unwrap_or(&Value::Null),
+        );
+    }
+    if let Some(c) = s.get("counts") {
+        println!(
+            "  counts    live={} queued={} blocked={} unmanaged={}",
+            c.get("live").unwrap_or(&Value::Null),
+            c.get("queued").unwrap_or(&Value::Null),
+            c.get("blocked").unwrap_or(&Value::Null),
+            c.get("unmanaged").unwrap_or(&Value::Null),
+        );
+    }
+}
+
+/// Whether stdout is a TTY (spec §6: TTY vs non-TTY behavior — hints, confirmations).
+pub fn stdout_is_tty() -> bool {
+    // SAFETY: isatty on a valid fd is always safe.
+    unsafe { libc::isatty(libc::STDOUT_FILENO) == 1 }
+}
+
+/// Read the last `tail` lines of a file (all lines if `tail` is None). Missing file = empty.
+fn read_tail(path: &std::path::Path, tail: Option<usize>) -> Result<Vec<String>> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(OrcrError::environment(
+                "config_invalid",
+                format!("cannot read {}: {e}", path.display()),
+            ))
+        }
+    };
+    let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+    match tail {
+        Some(n) if n < lines.len() => Ok(lines[lines.len() - n..].to_vec()),
+        _ => Ok(lines),
+    }
+}
+
+/// Print the tail of a log file, then keep printing newly-appended lines (`--follow`).
+fn stream_follow(path: &std::path::Path, tail: Option<usize>) -> Result<()> {
+    use std::io::{Seek, SeekFrom};
+
+    // Print the initial tail.
+    for l in read_tail(path, tail)? {
+        println!("{l}");
+    }
+    let mut pos: u64 = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let stdout = std::io::stdout();
+    loop {
+        let mut file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(_) => {
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+        };
+        let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        if len < pos {
+            // The file was rotated/truncated — restart from the top.
+            pos = 0;
+        }
+        if len > pos {
+            file.seek(SeekFrom::Start(pos)).ok();
+            let reader = std::io::BufReader::new(&mut file);
+            let mut handle = stdout.lock();
+            for line in reader.lines() {
+                let line = line.map_err(|e| {
+                    OrcrError::server_error("socket_io", format!("log read error: {e}"))
+                })?;
+                writeln!(handle, "{line}").ok();
+            }
+            handle.flush().ok();
+            pos = len;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
