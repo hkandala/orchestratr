@@ -209,6 +209,23 @@ pub fn describe(cadence_kind: &str, cadence_value: &str, tz: &str) -> String {
     }
 }
 
+/// Render a UTC-ms fire time as a human local+UTC timestamp for the `loop create` echo
+/// (spec §6.2: cadence in words, local + UTC). Falls back to a bare UTC render if the tz or
+/// timestamp cannot be resolved.
+pub fn describe_next_fire(next_fire_at: i64, tz: &str) -> String {
+    let Some(utc) = Utc.timestamp_millis_opt(next_fire_at).single() else {
+        return format!("{next_fire_at} (UTC ms)");
+    };
+    let tzn = tz_from_name(tz);
+    let local = utc.with_timezone(&tzn);
+    format!(
+        "{} {} ({} UTC)",
+        local.format("%a %Y-%m-%d %H:%M"),
+        tz,
+        utc.format("%a %Y-%m-%d %H:%M"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +250,21 @@ mod tests {
         assert_eq!(next, utc(2026, 1, 1, 10, 30));
         let next2 = c.next_after(next, tz).unwrap();
         assert_eq!(next2, utc(2026, 1, 1, 11, 0));
+    }
+
+    #[test]
+    fn describe_next_fire_renders_local_and_utc() {
+        // 2026-03-09 13:00 UTC == 09:00 EDT (America/New_York, post spring-forward).
+        let ms = utc(2026, 3, 9, 13, 0).timestamp_millis();
+        let s = describe_next_fire(ms, "America/New_York");
+        assert!(s.contains("2026-03-09 09:00"), "local render: {s}");
+        assert!(s.contains("America/New_York"), "tz label: {s}");
+        assert!(s.contains("2026-03-09 13:00 UTC"), "utc render: {s}");
+        // An unresolvable timestamp still yields a stable fallback (never panics).
+        assert_eq!(
+            describe_next_fire(i64::MAX, "UTC"),
+            "9223372036854775807 (UTC ms)"
+        );
     }
 
     #[test]

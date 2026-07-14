@@ -1025,15 +1025,19 @@ fn cmd_loop_create(
                     .collect()
             })
             .unwrap_or_default();
+        let tz = l["tz"].as_str().unwrap_or_default();
         println!("loop {} created", l["name"].as_str().unwrap_or_default());
         println!("  command:  {}", argv.join(" "));
         println!(
-            "  cadence:  {} ({})",
-            l["cadence"].as_str().unwrap_or_default(),
-            l["tz"].as_str().unwrap_or_default(),
+            "  cadence:  {}",
+            crate::cron::describe(
+                l["cadence_kind"].as_str().unwrap_or_default(),
+                l["cadence"].as_str().unwrap_or_default(),
+                tz,
+            ),
         );
         if let Some(nf) = l["next_fire_at"].as_i64() {
-            println!("  next:     {nf} (UTC ms)");
+            println!("  next:     {}", crate::cron::describe_next_fire(nf, tz));
         }
         println!("  cancel:   {}", l["cancel"].as_str().unwrap_or_default());
     });
