@@ -653,3 +653,70 @@ fn e2e_missed_cron_fire_skipped() {
         "next_fire_at should advance past the missed slot (was {orig_next}, now {new_next})"
     );
 }
+
+/// Concurrent promotion never double-spawns a run nor exceeds max_concurrency (spec §11.3,
+/// reviewer finding #1). cap 2 with a queue of fast runs whose commands exit near-simultaneously
+/// makes several exit-monitor threads call promote_pending at once. Each run's command appends
+/// its run path to a shared file; if any slot were handed out twice, a run would execute twice
+/// (a duplicate line) or more runs than allocated would appear.
+#[test]
+fn e2e_concurrent_promotion_no_double_spawn() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    let ts = TestServer::start();
+    // Each run: settle briefly so the two active runs exit close together (concurrent
+    // promotion), then atomically append its own run path to a shared tally file.
+    ts.create_loop(
+        "conc",
+        json!({ "cron": "0 0 1 1 *", "max_concurrency": 2 }),
+        &[
+            "sh",
+            "-c",
+            "sleep 0.3; echo \"$ORCR_PATH\" >> \"$ORCR_LOOP_DATA_DIR/ran.txt\"",
+        ],
+    );
+
+    // Queue 8 manual runs: 2 start, 6 sit pending and promote as slots free.
+    let total = 8;
+    let mut run_ids = Vec::new();
+    for _ in 0..total {
+        let r = ts
+            .request("loop.run.start", json!({ "name": "conc" }))
+            .unwrap();
+        run_ids.push(r["run"]["run_id"].as_str().unwrap().to_string());
+    }
+
+    // Every run reaches a terminal `ok`.
+    assert!(
+        wait_until(Duration::from_secs(30), || {
+            let rows = ts.run_ls("conc", true);
+            rows.len() == total && rows.iter().all(|r| r["status"] == json!("ok"))
+        }),
+        "all {total} runs should finish ok: {:?}",
+        ts.run_ls("conc", true)
+    );
+
+    // Exactly `total` distinct run rows exist — no slot handed out twice as an extra run.
+    let rows = ts.run_ls("conc", true);
+    assert_eq!(rows.len(), total, "no extra run rows allocated");
+
+    // The tally file holds exactly one line per run, each run path exactly once — proof no
+    // run's command executed twice via a double promotion.
+    let tally = ts.home.path().join("data").join("conc").join("ran.txt");
+    let text = std::fs::read_to_string(&tally).expect("tally file written");
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    assert_eq!(
+        lines.len(),
+        total,
+        "each run must execute exactly once (got {lines:?})"
+    );
+    lines.sort();
+    let distinct = {
+        let mut d = lines.clone();
+        d.dedup();
+        d.len()
+    };
+    assert_eq!(distinct, total, "no run path may appear twice: {lines:?}");
+}
