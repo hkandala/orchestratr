@@ -165,16 +165,47 @@ impl Server {
             store.reap_candidates(cutoff).unwrap_or_default()
         };
         for a in cands {
-            if self.lease_fresh(&a.uuid) {
+            // Fault-injection hook (tests): widen the window between candidate selection and lock
+            // acquisition so a `send` racing the reap can deterministically win the move lock.
+            reap_delay_hook();
+            // Hold the per-agent move lock for the whole reap so a concurrent `send` un-park can
+            // cancel the reap atomically before we act — a send acquires the same lock, un-parks
+            // (parked → idle, pane back home, new pane_id) and delivers input; without this the
+            // reap could shut down the just-un-parked live agent and orphan its home pane (§5.4).
+            let move_lock = self.lock_move(&a.uuid);
+            let _held = move_lock.lock().unwrap();
+            // Re-read under the lock: only reap if it is still parked with no move in flight — a
+            // send that won the race has already flipped it to idle (or begun a move).
+            let cur = {
+                let store = self.inner.store.lock().unwrap();
+                store.agent_full(&a.uuid).ok().flatten()
+            };
+            let Some(cur) = cur else { continue };
+            if cur.status != "parked" || cur.move_state != "none" {
+                continue; // un-parked (or moving) — send cancelled the reap
+            }
+            if self.lease_fresh(&cur.uuid) {
                 self.log()
-                    .info(format!("reap deferred for {} (attached)", a.path));
+                    .info(format!("reap deferred for {} (attached)", cur.path));
                 continue;
             }
-            if let Some(pane) = a.pane_id.as_deref() {
-                self.graceful_shutdown(driver, &a, pane);
+            if let Some(pane) = cur.pane_id.as_deref() {
+                self.graceful_shutdown(driver, &cur, pane);
             }
-            self.end_agent(&a.uuid, "reaped");
-            self.log().info(format!("reaped {}", a.path));
+            // Status-guarded end (CAS on status='parked'): a concurrent un-park still wins even
+            // if it commits between our re-read and here.
+            let ended = {
+                let mut store = self.inner.store.lock().unwrap();
+                store.end_if_status(&cur.uuid, "parked", "reaped")
+            };
+            match ended {
+                Ok(Some(seq)) => {
+                    self.publish(seq);
+                    self.log().info(format!("reaped {}", cur.path));
+                }
+                Ok(None) => {} // un-parked between the re-read and the CAS — leave it
+                Err(e) => self.log().warn(format!("reap of {} failed: {e}", cur.path)),
+            }
         }
     }
 
@@ -356,39 +387,50 @@ impl Server {
         let ws_label = workspace_label(driver, &pane.workspace_id);
         let session = self.inner.config.herdr.session.clone();
         let home = path::home_workspace(&a.path);
-        let ev = {
+        // `changed` is true only if the store call actually completed or rolled back this move
+        // (its token still matched). A no-op — e.g. a `send` un-park already settled the move and
+        // cleared the token before we ran — must not inflate the `repaired` drift metric.
+        let (changed, ev) = {
             let mut store = self.inner.store.lock().unwrap();
             match a.move_state.as_str() {
                 "parking" => {
                     if ws_label.as_deref() == Some("idle") {
-                        store.finish_park(
-                            &a.uuid,
-                            &token,
-                            &session,
-                            &pane.terminal_id,
-                            &pane.pane_id,
-                        )
+                        let seq = store
+                            .finish_park(
+                                &a.uuid,
+                                &token,
+                                &session,
+                                &pane.terminal_id,
+                                &pane.pane_id,
+                            )
+                            .unwrap_or(0);
+                        (seq > 0, seq)
                     } else {
-                        store.rollback_move(&a.uuid, &token).map(|_| 0)
+                        (store.rollback_move(&a.uuid, &token).unwrap_or(false), 0)
                     }
                 }
                 "unparking" => {
                     if ws_label.as_deref() == Some(home.as_str()) {
-                        store.finish_unpark(
-                            &a.uuid,
-                            &token,
-                            &session,
-                            &pane.terminal_id,
-                            &pane.pane_id,
-                        )
+                        let seq = store
+                            .finish_unpark(
+                                &a.uuid,
+                                &token,
+                                &session,
+                                &pane.terminal_id,
+                                &pane.pane_id,
+                            )
+                            .unwrap_or(0);
+                        (seq > 0, seq)
                     } else {
-                        store.rollback_move(&a.uuid, &token).map(|_| 0)
+                        (store.rollback_move(&a.uuid, &token).unwrap_or(false), 0)
                     }
                 }
-                _ => Ok(0),
+                _ => (false, 0),
             }
-            .unwrap_or(0)
         };
+        if !changed {
+            return; // token no longer ours (someone else settled the move) — not a repair
+        }
         self.inner.repaired.fetch_add(1, Ordering::SeqCst);
         if ev > 0 {
             self.publish(ev);
@@ -481,5 +523,17 @@ fn workspace_label(driver: &HerdrDriver, workspace_id: &str) -> Option<String> {
 fn crash_hook(phase: &str) {
     if std::env::var("ORCR_TEST_PARK_CRASH").as_deref() == Ok(phase) {
         std::process::exit(137);
+    }
+}
+
+/// A test-only fault-injection hook: if `ORCR_TEST_REAP_DELAY_MS` is set, sleep that many
+/// milliseconds before a reap candidate acquires its move lock, so an e2e test can drive a
+/// `send` into the reap window and assert the send-cancels-reap interlock (spec §5.4). Never
+/// fires in a normal build (the env var is only set by the e2e harness).
+fn reap_delay_hook() {
+    if let Ok(ms) = std::env::var("ORCR_TEST_REAP_DELAY_MS") {
+        if let Ok(ms) = ms.parse::<u64>() {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
     }
 }

@@ -151,6 +151,33 @@ choices worth knowing, and discovered facts. Capture *decisions and deviations*.
   not `integration_missing`), and `kill --force` closes the foreign pane + ends the row with no
   duplicate re-discovered. All 14 gc_e2e + 9 agent_e2e green against live herdr 0.7.2.
 
+## Reviewer findings (round 2 — FAIL) → fixes
+
+- **MEDIUM — send-cancels-reap interlock was only half-enforced (reap took no move lock).**
+  `park_one`/`handle_agent_send` held the per-agent move lock, but `reap_sweep` selected
+  `status='parked'` candidates and called `graceful_shutdown` + `end_agent` (an *unconditional*
+  `transition_status`) without the lock and without re-checking status. A `send` arriving during
+  a reap's `shutdown_grace_ms` window could un-park the agent (parked→idle, pane moved home, new
+  `pane_id`) and return success, after which reap ended the now-idle agent and closed the *stale*
+  parked pane_id — losing the send, wrongly ending a live agent, and orphaning the live home pane
+  (later mis-reported as `unknown_marked`). **Fix:** `reap_sweep` now takes `self.lock_move(uuid)`
+  per candidate, re-reads the row under the lock, and only proceeds if it is still `parked` with
+  `move_state='none'` and no fresh lease. The end is a **status-guarded CAS**: new
+  `Store::end_if_status(uuid, "parked", "reaped")` (UPDATE … WHERE status='parked') returns
+  `None` if a concurrent un-park already moved the status off `parked`, so the send always wins.
+  Timeout is intentionally left unguarded — a `--timeout` deadline is absolute and a send does
+  *not* cancel it. New e2e `gc_e2e::e2e_send_cancels_reap` drives a `send` into the reap window
+  (via a test-only `ORCR_TEST_REAP_DELAY_MS` hook that widens the pre-lock window) and asserts the
+  agent survives (un-parks to `blocked`, pane back in the home workspace) with the send landing
+  and no `reaped` end.
+
+- **LOW — `repaired` drift metric over-counted no-op recoveries.** `recover_one_move_locked`
+  incremented `repaired` unconditionally, before the outcome was known, so a no-op recovery (e.g.
+  a `send` un-park already settled the move and cleared the token, making `finish_*`/`rollback`
+  return "no change") still bumped the count. **Fix:** the store call's result now drives a
+  `changed` flag (`finish_*` seq > 0, or `rollback_move` returned `true`); `repaired` is
+  incremented (and the log/publish run) only when a move was actually completed or rolled back.
+
 ## Verifier & reviewer history
 
 - **Implementation** (this pass): store DAL (park/reap/timeout candidates, two-phase move

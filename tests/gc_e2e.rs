@@ -38,6 +38,10 @@ const CRASH_GC: &str = r#""concurrency":{"max":30},"timings":{"idle_after":"2s",
 /// seconds — so a load-starved test thread can't miss it before the pane idle-re-parks.
 const PARK_GC: &str = r#""concurrency":{"max":30},"timings":{"idle_after":"5s","kill_after":"60s","gc_tick":"400ms","attach_lease_ttl":"60s","max_starting":"60s"},"integrations":{"mock":{"fast_turn_grace_ms":1500,"idle_stable_ms":500,"transcript_settle_ms":0,"shutdown_grace_ms":150}}"#;
 
+/// Reap-race drill: park fast (idle_after 1s), reap eligible soon after (kill_after 3s), paired
+/// with a test-widened reap delay so a `send` can deterministically win the move lock mid-reap.
+const REAP_RACE_GC: &str = r#""concurrency":{"max":30},"timings":{"idle_after":"1s","kill_after":"3s","gc_tick":"400ms","attach_lease_ttl":"60s","max_starting":"60s"},"integrations":{"mock":{"fast_turn_grace_ms":1500,"idle_stable_ms":500,"transcript_settle_ms":0,"shutdown_grace_ms":150}}"#;
+
 struct TestServer {
     home: tempfile::TempDir,
     bin: HerdrBinary,
@@ -45,6 +49,8 @@ struct TestServer {
     driver: HerdrDriver,
     /// Extra env applied to every spawned server (e.g. the park-crash fault hook).
     crash_phase: Option<String>,
+    /// Additional (key, value) env pairs applied to every spawned server (test fault hooks).
+    extra_env: Vec<(String, String)>,
 }
 
 impl TestServer {
@@ -53,6 +59,10 @@ impl TestServer {
     }
 
     fn start_cfg(cfg_extra: &str) -> TestServer {
+        Self::start_cfg_env(cfg_extra, Vec::new())
+    }
+
+    fn start_cfg_env(cfg_extra: &str, extra_env: Vec<(String, String)>) -> TestServer {
         let home = tempfile::tempdir().expect("home");
         let bin = HerdrBinary::discover(None).expect("herdr on PATH");
         let rand = uuid::Uuid::new_v4().simple().to_string();
@@ -79,6 +89,7 @@ impl TestServer {
             session,
             driver,
             crash_phase: None,
+            extra_env,
         };
         ts.spawn_server();
         ts
@@ -94,6 +105,9 @@ impl TestServer {
             .stdin(Stdio::null());
         if let Some(phase) = &self.crash_phase {
             cmd.env("ORCR_TEST_PARK_CRASH", phase);
+        }
+        for (k, v) in &self.extra_env {
+            cmd.env(k, v);
         }
         let out = cmd.output().expect("orcr server start");
         assert!(
@@ -344,6 +358,68 @@ fn e2e_park_then_reap() {
     assert!(wait_until(Duration::from_secs(10), || ts
         .agent_panes()
         .is_empty()));
+}
+
+/// Send-cancels-reap interlock (spec §5.4): a `send` that arrives while the reap sweep is
+/// executing on the same parked agent must atomically un-park + deliver, and the agent must
+/// survive (never wrongly ended `reaped`, its home pane never orphaned). The test widens the
+/// reap window (`ORCR_TEST_REAP_DELAY_MS`) so the send deterministically wins the move lock,
+/// then sends `@block` so the un-parked agent stays blocked (never re-parks/re-reaps) and the
+/// delayed reap, on waking, re-reads a non-parked row and skips.
+#[test]
+fn e2e_send_cancels_reap() {
+    skip_unless_e2e!();
+    let ts = TestServer::start_cfg_env(
+        REAP_RACE_GC,
+        vec![("ORCR_TEST_REAP_DELAY_MS".to_string(), "6000".to_string())],
+    );
+    let uuid = ts.run("reaprace/worker", Some("@turn_ms=0 hi"), Some("auto"));
+    assert!(
+        ts.wait_status(&uuid, "parked", Duration::from_secs(20)),
+        "should park after idle_after"
+    );
+    // Let the reap sweep select this candidate and enter its (test-widened) pre-lock delay so the
+    // send below races an in-flight reap and must win the move lock.
+    std::thread::sleep(Duration::from_millis(3800));
+    let sent = ts
+        .request(
+            "agent.send",
+            json!({ "target": "reaprace/worker", "prompt": "@block waiting on you" }),
+        )
+        .expect("send must succeed even mid-reap");
+    assert_eq!(sent["delivered_while"], json!("parked"));
+    assert!(
+        sent["input_seq"].as_i64().is_some(),
+        "the send lands an input turn (not silently dropped)"
+    );
+    // The agent survives the reap: un-parked (status advances off `parked`) and its pane is back
+    // in the home workspace — not the stale `idle` pen and not orphaned.
+    assert!(
+        ts.wait_status(&uuid, "blocked", Duration::from_secs(20)),
+        "send un-parks and delivers → mock blocks (agent alive)"
+    );
+    assert!(
+        wait_until(Duration::from_secs(10), || ts
+            .workspace_label_of(&uuid)
+            .as_deref()
+            == Some("reaprace")),
+        "un-parked pane returns to its home workspace (no orphan)"
+    );
+    // Wait past the original reap's delay window so its (now-woken) sweep has re-read the row and
+    // skipped it. `@block` keeps the agent blocked, so it never re-parks/re-reaps in the interim.
+    std::thread::sleep(Duration::from_secs(6));
+    assert_eq!(
+        ts.status(&uuid).as_deref(),
+        Some("blocked"),
+        "the reap must be cancelled by the send — agent stays alive, not ended(reaped)"
+    );
+    assert_ne!(
+        ts.row(&uuid).unwrap()["exit_reason"],
+        json!("reaped"),
+        "a cancelled reap must not have ended the agent"
+    );
+    // And no orphaned agent pane in the idle pen: exactly the one live home pane.
+    let _ = ts.request("agent.kill", json!({ "targets": [uuid] }));
 }
 
 /// `--gc never` is exempt from parking (spec §5.4).

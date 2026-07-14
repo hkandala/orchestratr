@@ -565,6 +565,51 @@ impl Store {
         })
     }
 
+    /// Status-guarded transition to `ended` (the reap interlock, spec §5.4): only ends the row
+    /// if it is still at `from_status`, so a concurrent un-park (which moves the status away
+    /// from `parked`) wins the race. Writes `agent.status_changed` + `agent.ended` in the same
+    /// transaction. Returns the event seq if this call ended the row, or `None` if the guard
+    /// failed (the row was no longer at `from_status`).
+    pub fn end_if_status(
+        &mut self,
+        uuid: &str,
+        from_status: &str,
+        exit_reason: &str,
+    ) -> Result<Option<i64>> {
+        let (uuid, from_status, exit_reason) = (
+            uuid.to_string(),
+            from_status.to_string(),
+            exit_reason.to_string(),
+        );
+        let now = now_millis();
+        self.with_immediate_tx(|tx| {
+            let n = tx
+                .execute(
+                    "UPDATE agents SET status='ended', exit_reason=?3, ended_at=?4, \
+                     move_state='none', move_token=NULL, \
+                     last_status_change_at=?4, updated_at=?4 WHERE uuid=?1 AND status=?2",
+                    rusqlite::params![uuid, from_status, exit_reason, now],
+                )
+                .map_err(map_sqlite)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            append_event_tx(
+                tx,
+                "agent.status_changed",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "status": "ended", "exit_reason": exit_reason }),
+            )?;
+            let ev = append_event_tx(
+                tx,
+                "agent.ended",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "exit_reason": exit_reason }),
+            )?;
+            Ok(Some(ev))
+        })
+    }
+
     /// Set `cancel_requested` on an agent (the §5.5 interlock, checked between pipeline
     /// steps). Returns true if the row existed.
     pub fn request_cancel(&mut self, uuid: &str) -> Result<bool> {
