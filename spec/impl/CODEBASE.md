@@ -10,7 +10,7 @@ to reflect what that milestone added/changed.
 > *why* behind decisions, read the per-milestone `notes.md` files (especially the herdr
 > facts in `m0-foundations/notes.md`, which are load-bearing for the driver).
 
-Current state: **through M1 (server & protocol).**
+Current state: **through M2 (agent core).**
 
 ## Crate & binaries
 
@@ -43,6 +43,11 @@ Current state: **through M1 (server & protocol).**
   with a nearest-name suggestion (Levenshtein), durations require units & must be
   positive, `concurrency.max ≥ 1`, per-provider caps clamped. Defaults built in.
 - `duration.rs` — human duration parsing/formatting (`45s`, `20m`, `3h`); units required.
+- `path.rs` — **the §5.1 grammar in one place**: segment/path validation, depth+reserved
+  checks, `{rand}` expansion, `--name`/`--path` scope resolution (`resolve_create`), selector
+  resolution, and the glob `Pattern` (`*` one segment, `**` any depth ≥1, anchored). Plus
+  derived helpers (`name_of`, `scope_of_agent`, `home_workspace`, `tab_label`). Pure logic,
+  heavily unit-tested; every surface derives from it (no ad-hoc string/LIKE matching).
 - `wire.rs` — **orcr's own** socket wire protocol (§11.6): request/response/event envelopes,
   newline-delimited JSON framing (`read_frame`/`write_frame`, `MAX_FRAME` enforced),
   `ORCR_PROTOCOL`, `unsupported_version`. Transport-agnostic (server, client, tests share it).
@@ -56,16 +61,27 @@ Current state: **through M1 (server & protocol).**
   is the `events` table; the bus is just the in-memory coordination layer.
 - `lock.rs` — `InstanceLock`: exclusive `flock` guard on `orcr.lock` (single-instance;
   released on process exit, incl. `kill -9`).
-- `cli.rs` — the clap CLI: `server {start[--foreground]|stop|status|logs}`,
-  `api {schema|snapshot}`, the `--json` envelope, §13 error→exit-code mapping, TTY
-  detection (`stdout_is_tty`), log tail/follow.
+- `cli.rs` — the clap CLI: `agent {run|send|kill|ls}` (M2), `server {…}`, `api {…}`, the
+  `--json` envelope, §13 error→exit-code mapping, TTY detection, log tail/follow. Agent verbs
+  forward the caller's `ORCR_ID`/`ORCR_PATH` (lineage+scope), resolve `-p -`/positional `-`
+  from stdin, default `--cwd` to the caller's cwd, print `<path> <uuid>` + TTY hints, and do
+  the kill TTY confirmation via a `preview` round-trip (`-y` skips).
 - `server/` — the single-writer server process (§4, §11.6).
-  - `mod.rs` — `run_foreground` (lock race → bind socket umask-077/lstat-validated → open
-    store → serve), the threaded accept/dispatch loop, per-connection handling,
-    subscription pumps (`events.subscribe`/`watch.open`), `server.status`/`api.snapshot`
-    builders, graceful stop (SIGTERM/SIGINT + `server.stop` → `server_stopping` frames),
-    `emit_event` (append + publish + trim). **Live handlers live here; add new method
-    handlers in `handle_request`.**
+  - `mod.rs` — `run_foreground` (lock race → bind socket → open store → **reconcile** →
+    **start queue worker** → serve), the threaded accept/dispatch loop, subscription pumps,
+    `server.status`/`api.snapshot` builders (snapshot now carries real agents + queue),
+    graceful stop, `emit_event`/`publish` (append + wake bus + trim), and `agent_row_json`
+    (the flat §6.1 row). **Add new method handlers in `handle_request`** (M2 routes
+    `agent.run/send/kill/ls` to `engine.rs`). `ServerInner` now also holds `home`, a cached
+    owned-session `driver`, and a `spawn_lock`.
+  - `engine.rs` — **the M2 agent engine**: the owned-session driver (`owned_driver`,
+    lazy-connect+cache), the **queue worker** thread (FIFO promotion + stuck-start sweep,
+    `QUEUE_TICK`), the **spawn pipeline** (`run_pipeline`: ensure workspace → `agent.start`
+    → record location → capture `agent_session` → two-call first prompt → `working`, with
+    `cancel_requested` checks between steps), start-up **reconciliation** (`reconcile_on_start`
+    — confirm/repair/lost/orphan-close), and the `agent.run/send/kill/ls` handlers +
+    resolution helpers (path-first then uuid-prefix). `LaunchPayload` = the `launch.json`
+    shape (§12).
   - `client.rs` — `Client`: connect+handshake (version-checked), one-shot `request`,
     `open_stream`+`Subscription` for event streams, and `ensure_running` (auto-start: spawn
     a detached `server start --foreground`, wait for readiness). `StartOutcome`.
@@ -75,10 +91,16 @@ Current state: **through M1 (server & protocol).**
     `loop_runs`, `events` + all indexes incl. the partial unique path index) and a `meta`
     table stamping `schema_version` (mismatch → `store_version_mismatch` refusal).
   - `mod.rs` — the typed data-access layer; **all writes go through `BEGIN IMMEDIATE`
-    transaction helpers**. M1 added the events layer: `append_event`/`append_event_tx`
-    (same-txn writes for producers), `events_since`, `latest_event_seq`,
-    `oldest_event_seq`, `trim_events`, `EventRow`. Extend with typed row structs +
-    query/insert/update fns as milestones add behavior (agents in M2, turns in M3, loops in M5).
+    transaction helpers**. M1 events layer: `append_event`/`append_event_tx`, `events_since`,
+    `latest/oldest_event_seq`, `trim_events`. **M2 agent DAL**: `enqueue_agent` (durable row +
+    `queue_seq` + `agent.created`, path-in-use → `state_conflict`), `promote_queued` (FIFO
+    global+per-provider promotion in one txn), `agent_full`/`AgentFull`, resolution
+    (`find_by_path` → `Resolution` active-first-else-latest-ended; `find_by_uuid_or_prefix` →
+    `UuidLookup`), `record_location`/`record_agent_session`, `transition_status`,
+    `request_cancel`/`is_cancel_requested`, `bump_input_seq` (+turn row), `list_agents`
+    (`AgentFilter`; glob applied in Rust, never SQL LIKE), `queue_position`, `stuck_starting`,
+    `active_managed_agents`. Store methods that write events append them in-txn and return the
+    seq; the server calls `publish(seq)`.
 - `driver/` — the herdr socket driver (see `m0-foundations/notes.md` for the verified
   wire facts; **the driver is the riskiest surface — trust the notes**).
   - `protocol.rs` — wire envelopes: request `{protocol,id,method,params}`; success
@@ -99,8 +121,11 @@ Current state: **through M1 (server & protocol).**
     its `socket_path` via `herdr session list --json`, connect the driver to *that*
     socket. **Sessions are per-socket** (major herdr fact — cross-session work fans out
     over each session's socket).
-  - `integration.rs` — per-provider integration scaffolding (launch argv, both-layers-
-    required checks). claude + codex land as real integrations in M2.
+  - `integration.rs` — `IntegrationState` (herdr-layer parse) **plus** the orcr-side
+    integration (M2): `launch_plan(provider, model, effort)` → argv (bypass flags +
+    model/effort mapping) for claude/codex (and the test-only `mock` provider under
+    `ORCR_ALLOW_MOCK_PROVIDER=1`), and `ensure_supported` (both-layers-required →
+    `integration_missing` naming the missing layer + install command, §11.4).
   - `contract.rs` — the driver conformance table (§11.7) pinned to named herdr methods
     with fixed shapes; checked against a fixture generated from live `herdr api schema`
     (`tests/conformance_live.rs`), so herdr version drift fails CI.
@@ -113,7 +138,11 @@ Current state: **through M1 (server & protocol).**
   and reports its own state to herdr via `pane.report_agent` (state = idle|working|
   blocked|unknown, + optional transcript pointer). This is the workhorse for all e2e
   suites — use it instead of real providers in automated tests. Env knobs include
-  `ORCR_MOCK_NO_REPORT` (suppress self-reporting when the test drives state elsewhere).
+  `ORCR_MOCK_NO_REPORT` (suppress self-reporting when the test drives state elsewhere). M2:
+  it also **dumps its `ORCR_*` env to `$ORCR_AGENT_DATA_DIR/mock_env.json`** (how e2e asserts
+  the §5.3 env contract reached the pane) and defaults its reported `agent_session` id so the
+  spawn pipeline's session-capture returns promptly. Spawned as provider `mock` via
+  `$ORCR_MOCK_AGENT_BIN` when the server runs with `ORCR_ALLOW_MOCK_PROVIDER=1`.
 
 ## Tests & the e2e harness
 
@@ -124,8 +153,15 @@ Current state: **through M1 (server & protocol).**
   `api schema` is valid JSON Schema with 100% method coverage; subscription replay/live has
   no gaps/dups and `cursor_expired` → re-snapshot; `server logs --follow` streams live.
 - **e2e tests are gated behind `ORCR_E2E=1`** (so `cargo test` stays fast). Run them
-  with `ORCR_E2E=1 cargo test --test e2e`. They exercise real behavior against **live
-  herdr** using the mock provider (incl. M1's `server.status` herdr-reachability check).
+  with `ORCR_E2E=1 cargo test --test e2e` (driver/harness) and
+  `ORCR_E2E=1 cargo test --test agent_e2e -- --test-threads=1` (M2 agent core). They
+  exercise real behavior against **live herdr** using the mock provider.
+- `tests/agent_e2e.rs` (M2) runs a real `orcr` server over a throwaway `ORCR_HOME` +
+  disposable session (`TestServer` harness, drop-guard teardown) and proves the M2
+  acceptance: run/send/kill lifecycle + env contract, 50-at-cap-5 FIFO/never-over-cap/drain,
+  concurrent same-path one-winner, kill-during-starting, idle-held-at-working,
+  integration-missing, crash-recovery (repair running + close orphan), and the path-model
+  conformance table over socket **and** CLI.
 - `tests/conformance_live.rs` diffs the pinned driver contract against live
   `herdr api schema` (guards herdr version drift).
 - **e2e safety pattern (MANDATORY, reuse it):** each e2e test creates a throwaway
