@@ -208,7 +208,11 @@ impl Server {
             }
         };
         let pid = child.id() as i64;
-        let start_time = os_process_start_time(pid).unwrap_or_else(now_millis);
+        // The OS start time is the pid-reuse identity guard. If it's unreadable at spawn, store
+        // NULL (not a bogus wall-clock value in the wrong unit) so a *later* readable start time
+        // can't false-mismatch and mark a live leader dead — `run_leader_alive` then degrades to
+        // best-effort (alive is enough) consistently (spec §11.3).
+        let start_time = os_process_start_time(pid);
         let timeout_at = l.timeout_s.map(|s| now_millis() + s * 1000);
 
         let ev = {
@@ -866,16 +870,23 @@ impl Server {
                 .unwrap_or(false);
             let reason = if by_run { "removed_by_run" } else { "removed" };
 
-            if kill_active {
-                // Stop every active + pending run, killing their agents (spec §6.2).
-                let runs = {
-                    let store = self.inner.store.lock().unwrap();
-                    store
-                        .runs_for_loop(&l.uuid, None, false)
-                        .unwrap_or_default()
-                };
-                for run in runs {
-                    self.stop_or_cancel_run(&l, &run, "stopped");
+            // Cancel every still-pending run regardless of --kill-active: once the definition is
+            // ended it never becomes `active` again, so `promote_pending` skips it and the run
+            // would sit `pending` forever (spec §6.2: rm → no future fires). --kill-active
+            // additionally stops running runs + kills their agents.
+            let runs = {
+                let store = self.inner.store.lock().unwrap();
+                store
+                    .runs_for_loop(&l.uuid, None, false)
+                    .unwrap_or_default()
+            };
+            for run in runs {
+                match run.status.as_str() {
+                    "pending" => self.stop_or_cancel_run(&l, &run, "stopped"),
+                    "running" | "stopping" if kill_active => {
+                        self.stop_or_cancel_run(&l, &run, "stopped")
+                    }
+                    _ => {}
                 }
             }
 

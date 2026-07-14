@@ -672,13 +672,16 @@ impl Store {
             let updated = tx
                 .execute(
                     "UPDATE agents SET status='idle', last_status_change_at=?2, updated_at=?2 \
-                     WHERE uuid=?1 AND status='working'",
-                    rusqlite::params![uuid, at],
+                     WHERE uuid=?1 AND status='working' AND input_seq=?3",
+                    rusqlite::params![uuid, at, input_seq],
                 )
                 .map_err(map_sqlite)?;
             if updated == 0 {
-                // Turn marked complete but the public status was not `working` (e.g. already
-                // idle/parked) — record the turn but emit nothing new.
+                // Turn marked complete but the public status is no longer this turn's `working`
+                // (already idle/parked, OR a racing `send` bumped input_seq and opened a newer
+                // turn — §5.6: an old idle can never satisfy a newer send). Record the turn but
+                // emit no working→idle flip; the completion monitor re-arms the newer turn next
+                // tick.
                 return Ok(0);
             }
             append_event_tx(
@@ -1982,7 +1985,7 @@ impl Store {
         run_uuid: &str,
         pid: i64,
         pgid: i64,
-        pgid_start_time: i64,
+        pgid_start_time: Option<i64>,
         started_at: i64,
         timeout_at: Option<i64>,
     ) -> Result<i64> {
@@ -3237,7 +3240,7 @@ mod tests {
         };
         assert!(run1.run_id.starts_with('r') && run1.run_id.len() == 6);
         // Mark it running (occupies the only slot).
-        s.record_run_start(&run1.uuid, 111, 111, 5, now_millis(), None)
+        s.record_run_start(&run1.uuid, 111, 111, Some(5), now_millis(), None)
             .unwrap();
         // Second scheduled fire at capacity → allocated pending (not start_now).
         let (a2, _) = s.allocate_run("l1", "scheduled", 2000, 1, "queue").unwrap();
@@ -3350,7 +3353,7 @@ mod tests {
         s.set_run_stopping(&run.uuid).unwrap();
         // record_run_start fills the pid so the killer can find the pgid, but must NOT flip the
         // run back to `running` and clobber the stopping barrier.
-        s.record_run_start(&run.uuid, 42, 42, 9, now_millis(), None)
+        s.record_run_start(&run.uuid, 42, 42, Some(9), now_millis(), None)
             .unwrap();
         let cur = s.run_by_uuid(&run.uuid).unwrap().unwrap();
         assert_eq!(cur.status, "stopping");
@@ -3367,7 +3370,7 @@ mod tests {
             RunAllocation::Allocated { run, .. } => run,
             _ => panic!(),
         };
-        s.record_run_start(&run1.uuid, 1, 1, 1, now_millis(), None)
+        s.record_run_start(&run1.uuid, 1, 1, Some(1), now_millis(), None)
             .unwrap();
         let (a2, _) = s.allocate_run("l1", "scheduled", 2000, 1, "skip").unwrap();
         assert!(matches!(a2, RunAllocation::Skipped));
@@ -3403,7 +3406,7 @@ mod tests {
                 .run_id,
             run.run_id
         );
-        s.record_run_start(&run.uuid, 42, 42, 9, now_millis(), None)
+        s.record_run_start(&run.uuid, 42, 42, Some(9), now_millis(), None)
             .unwrap();
         assert_eq!(s.active_runs("l1").unwrap().len(), 1);
         s.finish_run(&run.uuid, "ok", Some(0), None).unwrap();
