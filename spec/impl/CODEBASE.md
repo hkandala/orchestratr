@@ -10,7 +10,7 @@ to reflect what that milestone added/changed.
 > *why* behind decisions, read the per-milestone `notes.md` files (especially the herdr
 > facts in `m0-foundations/notes.md`, which are load-bearing for the driver).
 
-Current state: **through M6 (top).**
+Current state: **through M7 (SDK & skill).**
 
 ## Crate & binaries
 
@@ -62,6 +62,12 @@ Current state: **through M6 (top).**
   platform (`unsupported_platform` elsewhere). `enable`/`disable` write/remove the unit and
   best-effort `launchctl`/`systemctl` load (so headless CI still gets the durable file). Golden
   unit-file tests assert content.
+- `scaffold.rs` — **the M7 `orcr scaffold`** (§6.6): generates exactly three files
+  (`package.json` pinning `@orchestratr/sdk` to the CLI version + `tsx`/`typescript`,
+  `tsconfig.json`, a ~15-line `workflow.ts`) into `<dir>` then runs `npm install`. Preflight
+  Node ≥ 20 + npm (else `environment_error`, **nothing created**); never overwrites (any of the
+  three present → `state_conflict`); purely local (no server). `ORCR_SDK_SPEC` overrides the dep
+  spec for offline/local installs (else the pinned CLI version). Unit-tested; e2e in `recipe_e2e`.
 - `path.rs` — **the §5.1 grammar in one place**: segment/path validation, depth+reserved
   checks, `{rand}` expansion, `--name`/`--path` scope resolution (`resolve_create`), selector
   resolution, and the glob `Pattern` (`*` one segment, `**` any depth ≥1, anchored). Plus
@@ -258,7 +264,10 @@ Current state: **through M6 (top).**
     `integration_missing` naming the missing layer + install command, §11.4). **M3**:
     `TuningParams` + `tuning_for(provider, &config.integrations)` (completion tuning defaults
     per provider + config overrides).
-  - `transcript.rs` — **M3 transcript adapters** (§11.4): `locate_transcript` (claude:
+  - `transcript.rs` — **M3 transcript adapters** (§11.4). **M7**: `locate_transcript` gained a
+    `data_dir` param + a `mock`-provider branch that reads `<data_dir>/transcript.jsonl` directly
+    (the mock writes a claude-format transcript into its own data dir — self-contained, never the
+    user's `~/.claude`), so recipe/SDK e2e exercise `logs`/`ask`. Otherwise as M3: `locate_transcript` (claude:
     `~/.claude/projects/<cwd-slug>/<session_id>.jsonl`; codex:
     `~/.codex/sessions/**/rollout-*-<session_id>.jsonl`) with the **identity gate**
     (ambiguous candidates → `transcript_unavailable`), `TranscriptLocator::{read_entries,
@@ -283,6 +292,43 @@ Current state: **through M6 (top).**
   `$ORCR_MOCK_AGENT_BIN` when the server runs with `ORCR_ALLOW_MOCK_PROVIDER=1`. **M3**: it
   parses per-turn `@`-directives from the prompt (`@turn_ms`, `@tool_gaps`, `@gap_ms`,
   `@block`) so e2e can drive turn shape per agent (fast / tool-heavy idle gaps / blocked).
+  **M7**: writes a claude-format `transcript.jsonl` into `$ORCR_AGENT_DATA_DIR` (read by the
+  `mock` transcript adapter) so `logs`/`ask` resolve; new directives `@say=<word>` (exact
+  response) + `@write=<relpath>` (file convention); `ORCR_MOCK_NO_TRANSCRIPT` opts out.
+
+## SDK, recipes & skill (`sdk/ts/`, `skill/`) — M7
+
+- `sdk/ts/` — **`@orchestratr/sdk`**, the TypeScript client of the socket API (§8). Built with
+  `tsc` → `dist/`; unit tests via `node:test`/tsx.
+  - `src/wire.ts` — the Unix-socket transport: newline-JSON framing, handshake/version check,
+    one-request-per-connection `request`, `openStream`+`Subscription`, and **auto-start**
+    (spawns `orcr server start --foreground` via `$ORCR_BIN`). `orcrHome`/`socketPath` mirror
+    `home.rs`.
+  - `src/path.ts` — a 1:1 TS port of `src/path.rs` (segment grammar, `resolveCreate`/
+    `resolveSelector`, `Pattern`, `expandRand`, `loopNameFrom`). The SDK resolves scopes
+    client-side and sends **absolute** selectors so the server never double-applies scope.
+  - `src/scope.ts` — `orcr.scope()` over `AsyncLocalStorage` (not process-global); nests,
+    `killOnThrow` barrier-kills `<scope>/**`. Base scope = `context.fromEnv().scope`.
+  - `src/context.ts` — `fromEnv()` → `{kind:agent|loopRun|root, scope, dataDir, loop, …}`
+    (agent vs loop-run distinguished by `ORCR_AGENT_DATA_DIR` presence, §5.3).
+  - `src/errors.ts` — one class per §13 code + `errorFromWire`; `StateConflict.forceRequired`.
+  - `src/generated.ts` — **generated** protocol client (every method 1:1) + `PROTOCOL_METHODS`/
+    `EVENT_KINDS`/`ERROR_CODES`; produced by `scripts/codegen.ts` from `orcr api schema`.
+    `npm run codegen:check` fails on drift (CI parity gate).
+  - `src/client.ts` — the convenience layer (`orcr.*`): `agent.run`→`AgentHandle`
+    (`wait/send/logs/followLogs/lastResponse/kill`, `dataDir`), collections
+    (`agent.wait/ls/kill`), `ask`, `scope`, `watch`→`Watch`, `loop.*`+`loop.run.*`,
+    `server.*`/`api.*`, `agent.prepareAttach`→`AttachHandle`. Ensures the server is running once,
+    forwards `caller_id`/`caller_path` from env for lineage.
+  - `recipes/` — the §9.1–9.7 fixtures (`_common.ts` stubs + provider selection via
+    `ORCR_RECIPE_AGENT`/`_VERIFIER`/`_SCOPE`; `loop-until-done/` = kickoff+resume+file queue).
+    Run against the mock in `recipe_e2e`; provider-literal copies live in `patterns.md`.
+- `skill/SKILL.md` (≤ ~150 lines: decision ladder, hot path, specific roots, open-top rule,
+  file convention, provider table, numeric discipline, guard rails, checklist) +
+  `references/{cli,sdk,patterns,loops,files}.md` (loaded on demand). Doc-tested by
+  `tests/skill_docs.rs` (no stale CLI flags vs `--help`; every `agent run`/`ask` sample carries
+  `--name`/`--path`).
+- `README.md` — the shipped quickstart (CLI + SDK + loops).
 
 ## Tests & the e2e harness
 
@@ -298,7 +344,8 @@ Current state: **through M6 (top).**
   `ORCR_E2E=1 cargo test --test completion_e2e -- --test-threads=1` (M3) and
   `ORCR_E2E=1 cargo test --test gc_e2e -- --test-threads=1` (M4) and
   `ORCR_E2E=1 cargo test --test loop_e2e -- --test-threads=1` (M5) and
-  `ORCR_E2E=1 cargo test --test top_e2e -- --test-threads=1` (M6). They
+  `ORCR_E2E=1 cargo test --test top_e2e -- --test-threads=1` (M6) and
+  `ORCR_E2E=1 cargo test --test recipe_e2e -- --test-threads=1` (M7). They
   exercise real behavior against **live herdr** using the mock provider. Non-M4 e2e
   harnesses set `ORCR_DISABLE_DISCOVERY=1` so unmanaged discovery doesn't pull the
   developer's real sessions into their stores.
@@ -340,6 +387,18 @@ Current state: **through M6 (top).**
   still matches the store; a 24-agent scale snapshot renders one consistent tree under the
   frame budget. Tree/filter/lineage + a synthetic 100-agent build-under-budget are unit-tested
   in `src/top/model/tests.rs`.
+- `tests/recipe_e2e.rs` (M7) proves the SDK/recipe/scaffold acceptance against live herdr + the
+  mock: every §9 recipe runs end-to-end (`e2e_recipes_run_against_mock`); a fan-out + a
+  tournament run concurrently under distinct scopes (`e2e_concurrent_fanout_and_tournament` —
+  scope isolation); the durable-handoff loop self-terminates; `orcr scaffold` (with an
+  `ORCR_SDK_SPEC` tarball) + `npx tsx workflow.ts` runs green, re-run → `state_conflict`, pinned
+  version == CLI version; SDK-composed paths equal the CLI's for the same nested scope
+  (`e2e_sdk_scope_matches_cli`). `e2e_concurrent_burst_high` (4-way) is `#[ignore]`d — it
+  surfaces a herdr concurrent-burst `agent.start` limitation (see `m7-sdk-skill/notes.md`).
+- `tests/skill_docs.rs` (M7, **default suite**) doc-tests the skill: no stale CLI flags vs
+  live `--help`; every `agent run`/`ask` sample carries `--name`/`--path`.
+- `sdk/ts/test/*.test.ts` (M7, run via `npm test`): path-grammar parity with `path.rs`, the
+  scope-composition property test, `context.fromEnv`, and codegen 100%-coverage/drift.
 - `tests/conformance_live.rs` diffs the pinned driver contract against live
   `herdr api schema` (guards herdr version drift).
 - **e2e safety pattern (MANDATORY, reuse it):** each e2e test creates a throwaway

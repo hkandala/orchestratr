@@ -20,13 +20,23 @@ fn orcr_bin() -> &'static str {
 /// check, so we can point `ORCR_HOME` straight at it.
 struct TestHome {
     dir: tempfile::TempDir,
+    /// A **disposable** owned-session name so the server never bootstraps the real `orcr`
+    /// session (spec safety rule). Torn down in `Drop`.
+    session: String,
 }
 
 impl TestHome {
     fn new() -> TestHome {
-        TestHome {
-            dir: tempfile::tempdir().expect("tempdir"),
-        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rand = uuid::Uuid::new_v4().simple().to_string();
+        let session = format!("orcr_test_{}", &rand[..12]);
+        // Point the owned herdr session at a disposable name (never the default `orcr`).
+        std::fs::write(
+            dir.path().join("config.json"),
+            format!(r#"{{"herdr":{{"session":"{session}"}}}}"#),
+        )
+        .expect("write config");
+        TestHome { dir, session }
     }
     fn home(&self) -> Home {
         Home::at(self.dir.path())
@@ -91,6 +101,26 @@ impl TestHome {
             std::thread::sleep(Duration::from_millis(150));
         }
         true
+    }
+}
+
+impl Drop for TestHome {
+    fn drop(&mut self) {
+        // Stop any server bound to this home, then tear down the disposable herdr session so a
+        // test run never leaks an `orcr_test_*` (and never the real `orcr`) session.
+        let _ = self.run(&["server", "stop"], &[]);
+        let _ = Command::new("herdr")
+            .args(["session", "stop", &self.session])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = Command::new("herdr")
+            .args(["session", "delete", &self.session])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 

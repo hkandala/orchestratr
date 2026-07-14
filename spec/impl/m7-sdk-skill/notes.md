@@ -68,6 +68,12 @@ worth knowing, and discovered facts.
   the literal 4-way fixture is kept as `#[ignore]`d `e2e_concurrent_burst_high` for the engine
   follow-up.
 
+- **FIXED — `server_protocol` (M1) leaked the real `orcr` herdr session.** Its throwaway home
+  had no config, so `server start` bootstrapped the **default** owned session `orcr` on every
+  `cargo test` (a safety-rule violation, present since M1). `TestHome` now writes a config with a
+  disposable `orcr_test_<rand>` session and a `Drop` guard stops+deletes it. Verified: a full
+  `cargo test` now leaves only the user's `default` session.
+
 ## What shipped
 
 - `src/scaffold.rs` + `orcr scaffold` CLI verb (§6.6); unit + e2e tested.
