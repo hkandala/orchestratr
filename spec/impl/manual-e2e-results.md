@@ -285,3 +285,37 @@ work of the manual-e2e phase.
 4. **Keep the E01 fixes under CI** — the two `completion_e2e` regressions require live herdr +
    mock; ensure they run in whatever e2e CI lane exists so the boot-race fixes don't regress.
 ```
+
+---
+
+## E03 — Full managed lifecycle on REAL claude: run → wait → logs → send → wait
+
+- **provider:** claude (REAL, enterprise box)
+- **verdict:** BLOCKED (environment limitation — same as known-issue #2 "Environment limitation"; NOT an orcr bug)
+- **severity:** low for orcr (env-specific); the managed-lifecycle plumbing that does not depend on a native transcript all works
+- **date:** 2026-07-14
+- **ORCR_HOME:** /tmp/orcr_e2e.2mefNt (disposable) · **session:** orcr_e2e_c9bdfeb0 (disposable) · leak check: `no leak`
+
+### Observed vs expected (step by step)
+
+| step | command | expected | observed | verdict |
+|---|---|---|---|---|
+| 2 | `agent run --name worker -a claude --gc never -p "…Say READY now." --timeout 15m` | prints `<path> <uuid>`, exit 0 | `worker 019f6294-dbc3-7ef0-bcdb-3a32393eb456`, exit 0 (~1s) | PASS |
+| 3 | `agent wait worker` | `worker turn_complete`, exit 0 | **timed out** — never settled (killed at 5m; agent stuck `status:"working"` even though pane went idle: `idle_since` ~51s after create) | FAIL (env-caused) |
+| 4 | `agent logs worker --last-response` | first response text (contains READY) | `{"ok":false,"error":{"code":"transcript_unavailable","details":{"cause":"not_found","status":"working","uuid":"…"},"message":"no transcript file found for session `36470e91-…` (rotated or deleted)"}}`, exit 1 | FAIL (env-caused) |
+| 5 | `agent send worker "What is 2+2?…"` | `delivered_while: idle` (or working), fresh `input_seq` | `{"ok":true,"result":{"delivered_while":"working","input_seq":2,"path":"worker","uuid":"…"}}`, exit 0 | PASS (spec allows `working`; fresh seq=2) |
+| 6 | `agent wait` + `logs --last-response` → `4` | new-turn response `4` | not reachable — wait/logs blocked by same transcript-unavailable condition as steps 3/4 | BLOCKED |
+| 7 | `agent ls --json` + launch.json | row: provider claude, status, absolute path; `data/worker/<uuid>/launch.json` exists | ls row: `agent:"claude"`, `status:"working"`, `path:"worker"`, `cwd:"/Users/hkandala/code/orchestratr"` (abs); `launch.json` present (828 bytes) | PASS |
+| 8 | `agent kill worker -y` | ended `exit_reason:killed`, pane closed, workspace empty | `{"ok":true,"all_killed":true,"killed":[{"path":"worker",…}]}`; `agent ls --all` → `status:"ended"`, `exit_reason:"killed"`; `herdr pane get w2:p2` → `pane_not_found`; only default `w1:p1` remains (workspace w2 removed) | PASS |
+| 9 | `[TEARDOWN]` | no leak | server stopped, session stopped+deleted, `herdr session list` → `no leak` | PASS |
+
+### Root cause / evidence
+
+- claude DID work correctly and the prompt WAS delivered + submitted: `herdr pane read w2:p2` showed the prompt echoed and `⏺ READY` in the pane. The M-e2e #2 submit-confirm fix is visibly working (server log: `submit-confirm: pane w2:p2 still idle after 8000ms …` then `agent worker working`).
+- BUT on this enterprise-claude box no native transcript is written for herdr-launched panes: `find ~/.claude/projects -name '*.jsonl' -newermt '-10 minutes'` returned **nothing** during the run. This is exactly the documented "Environment limitation (not orcr)" from known-issues #2.
+- Consequence for the managed lifecycle (not just `ask`): with no locatable transcript, `transcript_settled` correctly returns `false` for a real provider, so `agent wait` never settles (hangs to `--timeout`) and `agent logs --last-response` returns `transcript_unavailable`/`not_found`. The steps that don't depend on the transcript — run, send (re-arm to working, fresh input_seq), launch.json/env contract, `ls`, and kill (pane close + workspace removal) — all PASS.
+
+### Notes
+
+- orcr behaved correctly given the environment; the failures are downstream of claude persisting no native transcript on this box (same limitation E01/known-issue #2 documented). On a standard claude that writes native transcripts, steps 3/4/6 are expected to pass.
+- No orcr code changed (this executor observes only). No session leaked.
