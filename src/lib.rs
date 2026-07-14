@@ -17,6 +17,7 @@ pub mod events;
 pub mod home;
 pub mod lock;
 pub mod path;
+pub mod scaffold;
 pub mod server;
 pub mod service;
 pub mod store;

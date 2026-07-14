@@ -50,6 +50,11 @@ pub enum Command {
         #[command(subcommand)]
         cmd: ApiCmd,
     },
+    /// Generate a ready-to-run TypeScript workflow project (§6.6). Purely local.
+    Scaffold {
+        /// Target directory (default: the current directory; created if missing).
+        dir: Option<String>,
+    },
     /// The live, view-only monitoring TUI (§6.3, §7).
     Top {
         /// Optional path pattern (or uuid) to pre-scope the tree (§5.1 grammar).
@@ -357,6 +362,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
             ApiCmd::Schema { output } => cmd_api_schema(cli.json, output.as_deref()),
             ApiCmd::Snapshot => cmd_api_snapshot(cli.json),
         },
+        Command::Scaffold { dir } => cmd_scaffold(cli.json, dir.as_deref()),
         Command::Top {
             pattern,
             agent,
@@ -366,6 +372,22 @@ fn dispatch(cli: &Cli) -> Result<()> {
             loops,
         } => cmd_top(pattern, agent, status, *managed, *unmanaged, *loops),
     }
+}
+
+/// `orcr scaffold` (spec §6.6): generate a TypeScript workflow project + `npm install`.
+/// Purely local — no server, no store row.
+fn cmd_scaffold(json: bool, dir: Option<&str>) -> Result<()> {
+    let outcome = crate::scaffold::scaffold(dir, true)?;
+    emit_success(json, outcome.to_json(), || {
+        println!(
+            "scaffolded {} ({} · @orchestratr/sdk {})",
+            outcome.dir.display(),
+            outcome.files.join(", "),
+            outcome.sdk_spec,
+        );
+        println!("next: cd {} && npx tsx workflow.ts", outcome.dir.display());
+    });
+    Ok(())
 }
 
 /// `orcr top` (spec §6.3): build the pre-scoping filter from the flags (resolving any pattern
