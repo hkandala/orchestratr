@@ -186,7 +186,7 @@ Current state: **through M7 (SDK & skill).**
     global+per-provider promotion in one txn), `agent_full`/`AgentFull`, resolution
     (`find_by_path` → `Resolution` active-first-else-latest-ended; `find_by_uuid_or_prefix` →
     `UuidLookup`), `record_location`/`record_agent_session`, `transition_status`,
-    `request_cancel`/`is_cancel_requested`, `bump_input_seq` (+turn row), `list_agents`
+    `request_cancel`/`is_cancel_requested`, `list_agents`
     (`AgentFilter`; glob applied in Rust, never SQL LIKE), `queue_position`, `stuck_starting`,
     `active_managed_agents`. **M3 turn/completion DAL**: `latest_turn`/`TurnRow`, `deliver_input`
     (bump input_seq + open turn + re-arm working), `open_external_turn`, `set_working_seen`,
@@ -210,8 +210,7 @@ Current state: **through M7 (SDK & skill).**
     pending→running in one `BEGIN IMMEDIATE`, concurrency-safe promotion), `record_run_start`
     (fills pid/pgid/start-time `WHERE status IN ('running','stopping')` — never clobbers the stop
     barrier), `finish_run`/`set_run_stopping`/`cancel_pending_run`, `run_by_id_or_uuid`/
-    `run_by_uuid`/`runs_for_loop`/`active_runs`/`oldest_pending_run`/`runs_in_status`/
-    `timed_out_runs` (`LoopRow`/`LoopRunRow`). Also `events_for_refs(&refs)` (index-scoped event
+    `run_by_uuid`/`runs_for_loop`/`active_runs`/`timed_out_runs` (`LoopRow`/`LoopRunRow`). Also `events_for_refs(&refs)` (index-scoped event
     fetch for `loop logs`, not a full `events` scan).
     Store methods that write events append them in-txn and return the seq; the server calls `publish(seq)`.
 - `top/` — **the M6 monitoring TUI** (`orcr top`, §6.3, §7). A view-only dashboard; all

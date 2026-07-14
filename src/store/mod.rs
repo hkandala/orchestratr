@@ -123,46 +123,6 @@ impl Store {
         Ok(out)
     }
 
-    /// Insert an agent row, enforcing path reservation in one immediate transaction.
-    /// A collision with an active agent on the same path yields `state_conflict`
-    /// (`reason: path_in_use`).
-    pub fn insert_agent(&mut self, a: &NewAgent) -> Result<()> {
-        let a = a.clone();
-        self.with_immediate_tx(|tx| {
-            tx.execute(
-                "INSERT INTO agents (
-                     uuid, path, managed, origin, parent_id, agent, model, effort,
-                     gc_mode, cwd, herdr_session, terminal_id, pane_id, launch_token,
-                     status, created_at, last_status_change_at, updated_at
-                 ) VALUES (
-                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                     ?9, ?10, ?11, ?12, ?13, ?14,
-                     ?15, ?16, ?16, ?16
-                 )",
-                rusqlite::params![
-                    a.uuid,
-                    a.path,
-                    a.managed as i64,
-                    a.origin,
-                    a.parent_id,
-                    a.agent,
-                    a.model,
-                    a.effort,
-                    a.gc_mode,
-                    a.cwd,
-                    a.herdr_session,
-                    a.terminal_id,
-                    a.pane_id,
-                    a.launch_token,
-                    a.status,
-                    a.created_at,
-                ],
-            )
-            .map_err(|e| map_insert_conflict(e, &a.path))?;
-            Ok(())
-        })
-    }
-
     /// Enqueue a new managed agent (spec §5.5, §11.1): allocate `queue_seq` and insert the
     /// full launch payload with status `queued`, all in **one** `BEGIN IMMEDIATE`
     /// transaction so concurrent same-path spawns can never both win. Also appends an
@@ -342,66 +302,6 @@ impl Store {
             }
             Ok((out, last_ev))
         })
-    }
-
-    /// Fetch a minimal view of an agent by uuid.
-    pub fn get_agent(&self, uuid: &str) -> Result<Option<AgentRow>> {
-        self.conn
-            .query_row(
-                "SELECT uuid, path, status, managed, agent FROM agents WHERE uuid = ?1",
-                [uuid],
-                |r| {
-                    Ok(AgentRow {
-                        uuid: r.get(0)?,
-                        path: r.get(1)?,
-                        status: r.get(2)?,
-                        managed: r.get::<_, i64>(3)? != 0,
-                        agent: r.get(4)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(map_sqlite)
-    }
-
-    /// Update an agent's status (M0 helper — later milestones own the full state machine).
-    /// When moving to `ended`, `exit_reason` and `ended_at` are set.
-    pub fn set_agent_status(
-        &mut self,
-        uuid: &str,
-        status: &str,
-        exit_reason: Option<&str>,
-    ) -> Result<()> {
-        let uuid = uuid.to_string();
-        let status = status.to_string();
-        let exit_reason = exit_reason.map(|s| s.to_string());
-        let now = now_millis();
-        self.with_immediate_tx(|tx| {
-            let ended_at = if status == "ended" { Some(now) } else { None };
-            let n = tx
-                .execute(
-                    "UPDATE agents
-                        SET status = ?2,
-                            exit_reason = COALESCE(?3, exit_reason),
-                            ended_at = COALESCE(?4, ended_at),
-                            last_status_change_at = ?5,
-                            updated_at = ?5
-                      WHERE uuid = ?1",
-                    rusqlite::params![uuid, status, exit_reason, ended_at, now],
-                )
-                .map_err(map_sqlite)?;
-            if n == 0 {
-                return Err(OrcrError::not_found(format!("no agent with uuid {uuid}")));
-            }
-            Ok(())
-        })
-    }
-
-    /// Count agent rows (tests / diagnostics).
-    pub fn count_agents(&self) -> Result<i64> {
-        self.conn
-            .query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))
-            .map_err(map_sqlite)
     }
 
     /// Read the full row for an agent by uuid.
@@ -638,33 +538,6 @@ impl Store {
             .optional()
             .map_err(map_sqlite)?;
         Ok(v.unwrap_or(0) != 0)
-    }
-
-    /// Bump `input_seq` and record a turn row for a delivered input (spec §5.6, §12). The
-    /// completed turn-tracking semantics land in M3; M2 writes the bookkeeping row so the
-    /// epoch is durable. Returns the new `input_seq`.
-    pub fn bump_input_seq(&mut self, uuid: &str, source: &str) -> Result<i64> {
-        let (uuid, source) = (uuid.to_string(), source.to_string());
-        let now = now_millis();
-        self.with_immediate_tx(|tx| {
-            tx.execute(
-                "UPDATE agents SET input_seq = input_seq + 1, updated_at=?2 WHERE uuid=?1",
-                rusqlite::params![uuid, now],
-            )
-            .map_err(map_sqlite)?;
-            let seq: i64 = tx
-                .query_row("SELECT input_seq FROM agents WHERE uuid=?1", [&uuid], |r| {
-                    r.get(0)
-                })
-                .map_err(map_sqlite)?;
-            tx.execute(
-                "INSERT INTO turns (agent_uuid, input_seq, source, delivered_at) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![uuid, seq, source, now],
-            )
-            .map_err(map_sqlite)?;
-            Ok(seq)
-        })
     }
 
     // --- Turn completion (spec §5.6, §12) ---
@@ -2349,45 +2222,6 @@ impl Store {
         Ok(rows)
     }
 
-    /// The oldest pending run of a loop (the next to start when a slot frees, §11.3).
-    pub fn oldest_pending_run(&self, loop_uuid: &str) -> Result<Option<LoopRunRow>> {
-        self.conn
-            .query_row(
-                &format!(
-                    "SELECT {RUN_COLS} FROM loop_runs \
-                     WHERE loop_uuid=?1 AND status='pending' \
-                     ORDER BY due_at ASC, created_at ASC LIMIT 1"
-                ),
-                [loop_uuid],
-                read_run_row,
-            )
-            .optional()
-            .map_err(map_sqlite)
-    }
-
-    /// Every run across all loops in the given statuses — for scheduler reaping + restart
-    /// recovery (spec §11.3).
-    pub fn runs_in_status(&self, statuses: &[&str]) -> Result<Vec<LoopRunRow>> {
-        let mut out = Vec::new();
-        let mut stmt = self
-            .conn
-            .prepare(&format!(
-                "SELECT {RUN_COLS} FROM loop_runs ORDER BY created_at ASC"
-            ))
-            .map_err(map_sqlite)?;
-        let rows = stmt
-            .query_map([], read_run_row)
-            .map_err(map_sqlite)?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(map_sqlite)?;
-        for r in rows {
-            if statuses.contains(&r.status.as_str()) {
-                out.push(r);
-            }
-        }
-        Ok(out)
-    }
-
     /// Runs whose per-run timeout has expired (`timeout_at <= now`), still running.
     pub fn timed_out_runs(&self, now: i64) -> Result<Vec<LoopRunRow>> {
         let mut stmt = self
@@ -2605,16 +2439,6 @@ pub struct AttachInfo {
     pub terminal_id: String,
     pub pane_id: Option<String>,
     pub herdr_session: Option<String>,
-}
-
-/// A minimal agent read view.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentRow {
-    pub uuid: String,
-    pub path: String,
-    pub status: String,
-    pub managed: bool,
-    pub agent: Option<String>,
 }
 
 /// The columns needed to insert an agent for path-reservation purposes. Later milestones
@@ -2888,38 +2712,49 @@ mod tests {
         assert_eq!(e.details["cause"], "store_version_mismatch");
     }
 
+    fn agent_count(s: &Store) -> usize {
+        s.list_agents(&AgentFilter {
+            include_ended: true,
+            ..Default::default()
+        })
+        .unwrap()
+        .len()
+    }
+
     #[test]
     fn partial_unique_index_reserves_active_paths() {
         let mut s = Store::open_in_memory().unwrap();
-        s.insert_agent(&NewAgent::queued("u1", "review/worker", "claude"))
+        s.enqueue_agent(&NewAgent::queued("u1", "review/worker", "claude"))
             .unwrap();
         // Active duplicate path fails.
         let e = s
-            .insert_agent(&NewAgent::queued("u2", "review/worker", "claude"))
+            .enqueue_agent(&NewAgent::queued("u2", "review/worker", "claude"))
             .unwrap_err();
         assert_eq!(e.code, ErrorCode::StateConflict);
         assert_eq!(e.details["reason"], "path_in_use");
 
         // End the first, then the same path is reusable.
-        s.set_agent_status("u1", "ended", Some("completed"))
+        s.transition_status("u1", "ended", Some("completed"))
             .unwrap();
-        s.insert_agent(&NewAgent::queued("u3", "review/worker", "claude"))
+        s.enqueue_agent(&NewAgent::queued("u3", "review/worker", "claude"))
             .unwrap();
         // u2's insert failed and rolled back, so only u1 (ended) + u3 (active) exist.
-        assert_eq!(s.count_agents().unwrap(), 2);
+        assert_eq!(agent_count(&s), 2);
     }
 
     #[test]
     fn two_ended_rows_same_path_allowed() {
         let mut s = Store::open_in_memory().unwrap();
-        s.insert_agent(&NewAgent::queued("a", "p/x", "claude"))
+        s.enqueue_agent(&NewAgent::queued("a", "p/x", "claude"))
             .unwrap();
-        s.set_agent_status("a", "ended", Some("completed")).unwrap();
-        s.insert_agent(&NewAgent::queued("b", "p/x", "claude"))
+        s.transition_status("a", "ended", Some("completed"))
             .unwrap();
-        s.set_agent_status("b", "ended", Some("completed")).unwrap();
+        s.enqueue_agent(&NewAgent::queued("b", "p/x", "claude"))
+            .unwrap();
+        s.transition_status("b", "ended", Some("completed"))
+            .unwrap();
         // both ended, same path — fine
-        assert_eq!(s.count_agents().unwrap(), 2);
+        assert_eq!(agent_count(&s), 2);
     }
 
     #[test]
@@ -2936,7 +2771,7 @@ mod tests {
         });
         assert!(r.is_err());
         // rolled back — no row
-        assert_eq!(s.count_agents().unwrap(), 0);
+        assert_eq!(agent_count(&s), 0);
     }
 
     #[test]
@@ -3130,9 +2965,9 @@ mod tests {
         assert!(!a.cancel_requested);
         assert!(s.request_cancel("u1").unwrap());
         assert!(s.is_cancel_requested("u1").unwrap());
-        let seq = s.bump_input_seq("u1", "orcr").unwrap();
+        let (seq, _) = s.deliver_input("u1", "orcr", now_millis()).unwrap();
         assert_eq!(seq, 1);
-        assert_eq!(s.bump_input_seq("u1", "orcr").unwrap(), 2);
+        assert_eq!(s.deliver_input("u1", "orcr", now_millis()).unwrap().0, 2);
     }
 
     #[test]
@@ -3338,16 +3173,16 @@ mod tests {
     }
 
     #[test]
-    fn get_agent_round_trip() {
+    fn agent_full_round_trip() {
         let mut s = Store::open_in_memory().unwrap();
-        s.insert_agent(&NewAgent::queued("uuu", "a/b/c", "codex"))
+        s.enqueue_agent(&NewAgent::queued("uuu", "a/b/c", "codex"))
             .unwrap();
-        let row = s.get_agent("uuu").unwrap().unwrap();
+        let row = s.agent_full("uuu").unwrap().unwrap();
         assert_eq!(row.path, "a/b/c");
         assert_eq!(row.status, "queued");
         assert!(row.managed);
         assert_eq!(row.agent.as_deref(), Some("codex"));
-        assert!(s.get_agent("missing").unwrap().is_none());
+        assert!(s.agent_full("missing").unwrap().is_none());
     }
 
     fn new_loop(uuid: &str, name: &str, max: i64, overlap: &str) -> NewLoop {
@@ -3540,7 +3375,10 @@ mod tests {
         let (a2, _) = s.allocate_run("l1", "scheduled", 2000, 1, "skip").unwrap();
         assert!(matches!(a2, RunAllocation::Skipped));
         // No pending run was created.
-        assert!(s.oldest_pending_run("l1").unwrap().is_none());
+        assert!(s
+            .runs_for_loop("l1", Some("pending"), false)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
