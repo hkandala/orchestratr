@@ -490,7 +490,9 @@ fn e2e_sdk_scope_matches_cli() {
     }
     let ts = TestServer::start(&[]);
     // The SDK helper spawns an agent inside nested scopes and prints its resolved path; the CLI
-    // spawns the equivalent and we compare. Both use gc:immediate so they self-clean.
+    // spawns the equivalent (same `--path` fragments + `--name`) and we compare the two
+    // server-resolved paths. Both use gc:immediate + wait so they self-clean, and we run them
+    // sequentially so the shared name is free (herdr enforces session-global name uniqueness).
     let script = r#"
       import { orcr } from "@orchestratr/sdk";
       const a = await orcr.scope("prop_root", async () =>
@@ -516,4 +518,92 @@ fn e2e_sdk_scope_matches_cli() {
         sdk_path, "prop_root/phase_1/worker",
         "SDK composed path mismatch (got `{sdk_path}`)"
     );
+
+    // Wait for the SDK agent to fully drain from herdr so its `worker` name is free again.
+    assert!(
+        wait_until(Duration::from_secs(15), || ts.active_agents().is_empty()),
+        "SDK scope agent did not clean up before CLI parity spawn"
+    );
+
+    // Spawn the CLI equivalent with the same nested scope fragments (the SDK composes
+    // scope-path + name, so the CLI single `--path` is `prop_root/phase_1/worker`, leaf = name)
+    // and compare the two server-resolved paths.
+    let out = Command::new(orcr_bin())
+        .args([
+            "agent",
+            "run",
+            "--json",
+            "--path",
+            "prop_root/phase_1/worker",
+            "--agent",
+            "mock",
+            "--gc",
+            "immediate",
+            "-p",
+            "hi @say=x",
+        ])
+        .env("ORCR_HOME", ts.home_path())
+        .output()
+        .expect("orcr agent run");
+    assert!(
+        out.status.success(),
+        "CLI agent run failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let env: Value = serde_json::from_slice(&out.stdout).expect("CLI agent run JSON");
+    let cli_path = env["result"]["agent"]["path"]
+        .as_str()
+        .or_else(|| env["agent"]["path"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(
+        cli_path, sdk_path,
+        "SDK-composed path (`{sdk_path}`) must equal the CLI's (`{cli_path}`)"
+    );
+    // Let the gc:immediate CLI agent clean up so no agents leak.
+    let _ = wait_until(Duration::from_secs(15), || ts.active_agents().is_empty());
+}
+
+/// `AgentHandle.followLogs()` (spec §8, taught in skill/references/sdk.md) yields transcript
+/// entries and terminates cleanly once the agent ends. Regression guard: `followLogs` must not
+/// pass the agent uuid as an `agent.ls` glob pattern (a uuid is not a valid path segment, so the
+/// server would reject the termination check with invalid_request).
+#[test]
+fn e2e_follow_logs_streams_to_completion() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    let ts = TestServer::start(&[]);
+    // Spawn an agent (gc:never so the ended record + transcript survive the drain), consume
+    // followLogs in the background, and once it has done a turn, kill it so its status flips to
+    // `ended` and the iterator terminates cleanly. Asserts entries are yielded and the async
+    // iterator returns (a regression guard: the old `pattern: this.uuid` arg made the first
+    // termination check throw invalid_request, so the iterator could never complete).
+    let script = r#"
+      import { orcr } from "@orchestratr/sdk";
+      const h = await orcr.agent.run({ agent: "mock", name: "follower", gc: "never", prompt: "hi @say=hello" });
+      const collected = [];
+      const done = (async () => {
+        for await (const e of h.followLogs({ intervalMs: 100 })) collected.push(e);
+      })();
+      // Wait until followLogs has streamed at least one transcript entry (proves live yielding),
+      // then end the agent so its status flips to `ended` and the iterator drains + returns.
+      const deadline = Date.now() + 20000;
+      while (collected.length < 1 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+      if (collected.length < 1) { console.error("followLogs yielded no entries in time"); process.exit(1); }
+      await h.kill();
+      await done; // must terminate cleanly now that the agent has ended
+      console.log("FOLLOW_OK entries=" + collected.length);
+    "#;
+    let scriptfile = sdk_dir().join("recipes").join("_follow_logs.ts");
+    std::fs::write(&scriptfile, script).unwrap();
+    let (ok, log) = ts.run_recipe("recipes/_follow_logs.ts", &[]);
+    let _ = std::fs::remove_file(&scriptfile);
+    assert!(ok, "followLogs script failed:\n{log}");
+    assert!(
+        log.contains("FOLLOW_OK entries="),
+        "followLogs did not complete cleanly:\n{log}"
+    );
+    let _ = wait_until(Duration::from_secs(15), || ts.active_agents().is_empty());
 }

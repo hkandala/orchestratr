@@ -182,3 +182,30 @@ worth knowing, and discovered facts.
   `transcript_unavailable`. This is an M3 test-harness/env-inheritance issue that predates this
   round and is unrelated to the M7 findings — noted here, not fixed (would be scope creep into
   M3).
+
+### Review round 1 → FAIL; fixed
+
+- **MEDIUM (fixed) — `AgentHandle.followLogs()` was always-throwing.** It called
+  `agent.ls({ all: true, pattern: this.uuid })`; `resolveSelector` rejects a UUID as a path
+  segment (contains `-`), so the generator threw `invalid_request` on its first termination
+  check. Fixed by dropping the `pattern` arg (the loop already filters client-side via
+  `ls.find(a => a.uuid === this.uuid)`). While adding coverage I also found a second, adjacent
+  gap: `followLogs` threw when the transcript did not exist yet (agent still `starting`) because
+  `logs()` surfaces `TranscriptUnavailable`. Wrapped the `logs()` calls in a `drain()` helper
+  that treats `TranscriptUnavailable` as "no entries yet" and keeps polling. `sdk/ts/src/client.ts`.
+- **NEW e2e — `e2e_follow_logs_streams_to_completion`** (recipe_e2e): spawns a `gc:never` mock
+  agent, consumes `followLogs` in the background, waits until it has streamed ≥1 transcript entry
+  (proves live yielding), then `kill()`s so the status flips to `ended` and asserts the async
+  iterator drains and returns cleanly. Note: the mock does not inherit `ORCR_MOCK_ONCE` (the
+  engine injects only an explicit env map into the pane), so a mock agent stays idle after its
+  turn and only reaches `ended` on kill — hence the kill-to-terminate design.
+- **LOW (fixed) — `e2e_sdk_scope_matches_cli` now really compares SDK vs CLI.** Previously it
+  only asserted the SDK-resolved path equalled a hardcoded literal. It now additionally spawns
+  the CLI equivalent (`orcr agent run --json --path prop_root/phase_1/worker …`; the SDK composes
+  scope-path + `name`, so the CLI single `--path` carries the leaf name — `--name` + `--path` are
+  mutually exclusive) and asserts the two server-resolved paths are equal.
+- All checks green: `cargo fmt --check`, `cargo clippy --all-targets`, 160 Rust unit tests, SDK
+  20/20, and `ORCR_E2E=1 cargo test --test recipe_e2e` 7/7 against live herdr. Manually cleaned
+  two `orcr_test_*` sessions that the concurrent-burst drop-guard left behind (pre-existing
+  teardown-timing behavior under concurrency, not from these changes); `herdr session list`
+  confirms only `default` remains.
