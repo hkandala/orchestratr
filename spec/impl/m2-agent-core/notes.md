@@ -23,6 +23,11 @@ Capture *decisions and deviations*, not a play-by-play.
   launch token rides as `ORCR_LAUNCH_TOKEN` (internal, not part of the public contract).
 - **Reserved level-1 set is `idle` + `unmanaged` only.** Active-loop-name reservation and
   loop-run caller scope are deferred to M5 (loops don't exist yet).
+- **`agent ls` human output is a flat table sorted by path, not an indented tree.** §6.1
+  calls the render "the path tree"; the indented path-tree view is `orcr top` (§7). `agent ls`
+  stays a flat, greppable table (matching its flat §13 JSON row shape) but is sorted by path
+  so it reads in tree order (ancestors before descendants, grouped by level-1 segment). The
+  `--json` envelope preserves store order; only the TTY table is sorted.
 
 ## Decisions on under-specified points
 

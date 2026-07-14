@@ -405,7 +405,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
 /// Purely local — no server, no store row.
 fn cmd_scaffold(json: bool, dir: Option<&str>) -> Result<()> {
     let outcome = crate::scaffold::scaffold(dir, true)?;
-    emit_success(json, outcome.to_json(), || {
+    emit_success(json, &outcome.to_json(), || {
         println!(
             "scaffolded {} ({} · @orchestratr/sdk {})",
             outcome.dir.display(),
@@ -593,7 +593,7 @@ fn cmd_agent_run(
     let a = &result["agent"];
     let agent_path = a["path"].as_str().unwrap_or_default().to_string();
     let uuid = a["uuid"].as_str().unwrap_or_default().to_string();
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         // `<path> <uuid>` on one stdout line (cut-friendly, §5.1).
         println!("{agent_path} {uuid}");
         if stdout_is_tty() {
@@ -625,7 +625,7 @@ fn cmd_agent_send(
     let mut params = json!({ "target": target, "prompt": prompt });
     add_caller(&mut params, &caller_id, &caller_path);
     let result = connect_and_request("agent.send", params)?;
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         println!(
             "{} delivered (while {}) input_seq={}",
             result["path"].as_str().unwrap_or_default(),
@@ -653,7 +653,7 @@ fn cmd_agent_ask(
     let cwd = default_cwd(cwd);
     let params = build_spawn_params(name, path, agent, &prompt, model, effort, &cwd, timeout);
     let result = connect_and_request("agent.ask", params)?;
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         // The final response on stdout (§6.1).
         println!(
             "{}",
@@ -671,7 +671,7 @@ fn cmd_agent_wait(json: bool, targets: &[String], timeout: Option<&str>) -> Resu
     }
     add_caller(&mut params, &caller_id, &caller_path);
     let result = connect_and_request("agent.wait", params)?;
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         for t in result["targets"].as_array().into_iter().flatten() {
             println!(
                 "{}  {}",
@@ -736,7 +736,7 @@ fn cmd_agent_logs(
     if last_response {
         let result = connect_and_request("agent.logs", params)?;
         note_if_ended(json, &result);
-        emit_success(json, result.clone(), || {
+        emit_success(json, &result, || {
             println!(
                 "{}",
                 result["response"]["text"].as_str().unwrap_or_default()
@@ -790,7 +790,7 @@ fn note_if_ended(json: bool, result: &Value) {
 fn print_entries(json: bool, result: &Value, skip: usize) -> usize {
     let entries = result["entries"].as_array().cloned().unwrap_or_default();
     if json {
-        emit_success(true, result.clone(), || {});
+        emit_success(true, result, || {});
         return entries.len();
     }
     for e in entries.iter().skip(skip) {
@@ -862,7 +862,7 @@ fn cmd_agent_attach(json: bool, target: &str, takeover: bool) -> Result<()> {
         Ok(_) => {
             emit_success(
                 json,
-                json!({ "uuid": uuid, "path": path, "attached": true, "takeover": takeover }),
+                &json!({ "uuid": uuid, "path": path, "attached": true, "takeover": takeover }),
                 || {
                     println!("detached {path}");
                 },
@@ -905,7 +905,7 @@ fn cmd_agent_kill(json: bool, targets: &[String], force: bool, yes: bool) -> Res
     let result = connect_and_request("agent.kill", params)?;
     let killed = result["killed"].as_array().map(|a| a.len()).unwrap_or(0);
     let skipped = result["skipped"].as_array().map(|a| a.len()).unwrap_or(0);
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         for k in result["killed"].as_array().into_iter().flatten() {
             println!("killed {}", k["path"].as_str().unwrap_or_default());
         }
@@ -960,7 +960,7 @@ fn cmd_agent_ls(
     }
     add_caller(&mut params, &caller_id, &caller_path);
     let result = connect_and_request("agent.ls", params)?;
-    emit_success(json, result.clone(), || print_ls_human(&result));
+    emit_success(json, &result, || print_ls_human(&result));
     Ok(())
 }
 
@@ -1052,11 +1052,20 @@ fn connect_and_request(method: &str, params: Value) -> Result<Value> {
 
 /// Render `agent ls` as a path tree (spec §6.1): `PATH UUID STATUS AGENT AGE`.
 fn print_ls_human(result: &Value) {
-    let agents = result["agents"].as_array().cloned().unwrap_or_default();
+    let mut agents = result["agents"].as_array().cloned().unwrap_or_default();
     if agents.is_empty() {
         println!("no agents");
         return;
     }
+    // Sort by path so the flat table reads in path-tree order — ancestors before descendants,
+    // grouped by level-1 segment (the indented tree view itself is `orcr top`, §7). The JSON
+    // envelope keeps store order; only the TTY rendering is path-sorted (§6.1).
+    agents.sort_by(|a, b| {
+        a["path"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(b["path"].as_str().unwrap_or_default())
+    });
     let now = chrono::Utc::now().timestamp_millis();
     println!(
         "{:<40} {:<8} {:<9} {:<8} {:>5}",
@@ -1185,7 +1194,7 @@ fn cmd_loop_create(
     }
     let result = connect_and_request("loop.create", params)?;
     let l = &result["loop"];
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         let argv = json_str_array(&l["argv"]);
         let tz = l["tz"].as_str().unwrap_or_default();
         println!("loop {} created", l["name"].as_str().unwrap_or_default());
@@ -1208,7 +1217,7 @@ fn cmd_loop_create(
 
 fn cmd_loop_set(json: bool, method: &str, names: &[String]) -> Result<()> {
     let result = connect_and_request(method, json!({ "names": names }))?;
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         for u in result["updated"].as_array().into_iter().flatten() {
             println!(
                 "{} {}",
@@ -1267,7 +1276,7 @@ fn cmd_loop_rm(json: bool, names: &[String], kill_active: bool, yes: bool) -> Re
     let mut params = json!({ "names": names, "kill_active": kill_active });
     add_caller(&mut params, &caller_id, &caller_path);
     let result = connect_and_request("loop.rm", params)?;
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         for r in result["removed"].as_array().into_iter().flatten() {
             println!(
                 "removed {} ({})",
@@ -1292,7 +1301,7 @@ fn cmd_loop_ls(json: bool, names: &[String], status: Option<&str>, all: bool) ->
         params["status"] = json!(s);
     }
     let result = connect_and_request("loop.ls", params)?;
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         let loops = result["loops"].as_array().cloned().unwrap_or_default();
         if loops.is_empty() {
             println!("no loops");
@@ -1352,7 +1361,7 @@ fn cmd_loop_logs(
 fn print_loop_lines(json: bool, result: &Value, skip: usize) -> usize {
     let lines = result["lines"].as_array().cloned().unwrap_or_default();
     if json {
-        emit_success(true, result.clone(), || {});
+        emit_success(true, result, || {});
         return lines.len();
     }
     for l in lines.iter().skip(skip) {
@@ -1370,7 +1379,7 @@ fn cmd_loop_run_start(json: bool, name: &str) -> Result<()> {
     let r = &result["run"];
     let path = r["path"].as_str().unwrap_or_default().to_string();
     let uuid = r["uuid"].as_str().unwrap_or_default().to_string();
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         println!("{path} {uuid}");
     });
     Ok(())
@@ -1413,7 +1422,7 @@ fn cmd_loop_run_stop(json: bool, name: &str, run: Option<&str>, yes: bool) -> Re
         params["run"] = json!(r);
     }
     let result = connect_and_request("loop.run.stop", params)?;
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         for s in result["stopped"].as_array().into_iter().flatten() {
             println!(
                 "{} {}",
@@ -1438,7 +1447,7 @@ fn cmd_loop_run_ls(json: bool, name: &str, status: Option<&str>, all: bool) -> R
         params["status"] = json!(s);
     }
     let result = connect_and_request("loop.run.ls", params)?;
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         let runs = result["runs"].as_array().cloned().unwrap_or_default();
         if runs.is_empty() {
             println!("no runs");
@@ -1465,14 +1474,14 @@ fn cmd_server_start(json: bool, foreground: bool) -> Result<()> {
     if foreground {
         // This process becomes (or defers to) the server; blocks until graceful stop.
         let outcome = server::run_foreground(&home, config)?;
-        emit_success(json, json!({ "status": outcome.as_str() }), || {
+        emit_success(json, &json!({ "status": outcome.as_str() }), || {
             println!("server {}", outcome.as_str());
         });
         Ok(())
     } else {
         let client = Client::new(home.socket_path());
         let outcome = client.ensure_running(&home, &config)?;
-        emit_success(json, json!({ "status": outcome.as_str() }), || {
+        emit_success(json, &json!({ "status": outcome.as_str() }), || {
             println!("server {}", outcome.as_str());
         });
         Ok(())
@@ -1484,13 +1493,13 @@ fn cmd_server_stop(json: bool) -> Result<()> {
     let client = Client::new(home.socket_path());
     // Do not auto-start just to stop; if nothing is running, that's an idempotent no-op.
     if client.handshake().is_err() {
-        emit_success(json, json!({ "status": "not_running" }), || {
+        emit_success(json, &json!({ "status": "not_running" }), || {
             println!("server not_running");
         });
         return Ok(());
     }
     client.request("server.stop", json!({}))?;
-    emit_success(json, json!({ "status": "stopped" }), || {
+    emit_success(json, &json!({ "status": "stopped" }), || {
         println!("server stopped");
     });
     Ok(())
@@ -1502,7 +1511,7 @@ fn cmd_server_status(json: bool) -> Result<()> {
     let client = Client::new(home.socket_path());
     client.ensure_running(&home, &config)?;
     let result = client.request("server.status", json!({}))?;
-    emit_success(json, result.clone(), || print_status_human(&result));
+    emit_success(json, &result, || print_status_human(&result));
     Ok(())
 }
 
@@ -1523,7 +1532,7 @@ fn cmd_server_logs(json: bool, tail: Option<usize>, follow: bool) -> Result<()> 
             .iter()
             .map(|l| serde_json::from_str::<Value>(l).unwrap_or_else(|_| json!({ "raw": l })))
             .collect();
-        emit_success(true, json!({ "lines": parsed }), || {});
+        emit_success(true, &json!({ "lines": parsed }), || {});
     } else {
         for l in &lines {
             println!("{l}");
@@ -1535,7 +1544,7 @@ fn cmd_server_logs(json: bool, tail: Option<usize>, follow: bool) -> Result<()> 
 fn cmd_server_enable(json: bool) -> Result<()> {
     let home = Home::ensure()?;
     let result = crate::service::enable(&home)?;
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         println!(
             "enabled: wrote {}\n  verify: {}",
             result["unit"].as_str().unwrap_or_default(),
@@ -1548,7 +1557,7 @@ fn cmd_server_enable(json: bool) -> Result<()> {
 fn cmd_server_disable(json: bool) -> Result<()> {
     let home = Home::ensure()?;
     let result = crate::service::disable(&home)?;
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         println!(
             "disabled: removed {}",
             result["unit"].as_str().unwrap_or_default(),
@@ -1573,13 +1582,13 @@ fn cmd_api_schema(json: bool, output: Option<&std::path::Path>) -> Result<()> {
         })?;
         emit_success(
             json,
-            json!({ "written": path.display().to_string() }),
+            &json!({ "written": path.display().to_string() }),
             || {
                 eprintln!("wrote schema to {}", path.display());
             },
         );
     } else if json {
-        emit_success(true, doc, || {});
+        emit_success(true, &doc, || {});
     } else {
         println!("{text}");
     }
@@ -1592,7 +1601,7 @@ fn cmd_api_snapshot(json: bool) -> Result<()> {
     let client = Client::new(home.socket_path());
     client.ensure_running(&home, &config)?;
     let result = client.request("api.snapshot", json!({}))?;
-    emit_success(json, result.clone(), || {
+    emit_success(json, &result, || {
         println!("{}", serde_json::to_string_pretty(&result).unwrap());
     });
     Ok(())
@@ -1610,7 +1619,9 @@ fn load_config(home: &Home) -> Result<Config> {
 }
 
 /// Print a `{"ok":true,"result":…}` envelope in JSON mode, else run the human renderer.
-fn emit_success(json: bool, result: Value, human: impl FnOnce()) {
+/// Takes `result` by reference: the JSON branch clones once inside `json!`, and the human
+/// path (the default) clones nothing.
+fn emit_success(json: bool, result: &Value, human: impl FnOnce()) {
     if json {
         println!("{}", json!({ "ok": true, "result": result }));
     } else {
@@ -1660,6 +1671,43 @@ fn print_status_human(s: &Value) {
             d.get("lost").unwrap_or(&Value::Null),
             d.get("repaired").unwrap_or(&Value::Null),
         );
+    }
+    // Per-provider integrations, so the install gap is visible without --json (§6.4, §11.4).
+    if let Some(m) = s.get("integrations").and_then(|v| v.as_object()) {
+        if m.is_empty() {
+            println!("  integrations (none)");
+        } else {
+            println!("  integrations");
+            for (provider, st) in m {
+                let flag = |k: &str| {
+                    if st.get(k) == Some(&Value::Bool(true)) {
+                        "ok"
+                    } else {
+                        "missing"
+                    }
+                };
+                println!(
+                    "    {provider:<8} orcr={} herdr={}",
+                    flag("orcr"),
+                    flag("herdr"),
+                );
+            }
+        }
+    }
+    // Whether loop firing survives a reboot (durable enable) + the loop schedule (§6.4).
+    println!("  loops     firing_durable={}", g("loops_firing"));
+    if let Some(loops) = s.get("loops").and_then(|v| v.as_array()) {
+        for l in loops {
+            let next = match l.get("next_fire_at") {
+                Some(Value::Number(n)) => n.to_string(),
+                _ => "-".to_string(),
+            };
+            println!(
+                "    {:<16} status={} next_fire_at={next}",
+                l.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
+                l.get("status").and_then(|v| v.as_str()).unwrap_or("?"),
+            );
+        }
     }
 }
 
