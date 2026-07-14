@@ -236,7 +236,7 @@ impl Server {
     /// Ensure a workspace labeled `label` exists; returns its id and, when freshly created,
     /// the root shell pane to close after the agent pane is in place. Serialized so
     /// concurrent spawns under the same level-1 segment never create duplicate workspaces.
-    fn ensure_workspace(
+    pub(super) fn ensure_workspace(
         &self,
         driver: &HerdrDriver,
         label: &str,
@@ -345,6 +345,9 @@ impl Server {
         for a in agents {
             self.reconcile_agent(&driver, &panes, &a);
         }
+        // Recover any half-done park/un-park moves + refresh drift (spec §11.5). Lost
+        // *resolution* is deferred to a following periodic poll.
+        self.reconcile_moves_on_start();
     }
 
     fn reconcile_agent(
@@ -586,12 +589,20 @@ impl Server {
         })?;
         let prompt = str_param(params, "prompt").unwrap_or_default();
         let scope = caller_scope(params);
-        let row = self.resolve_singleton(&scope, &target)?;
+        let mut row = self.resolve_singleton(&scope, &target)?;
         if row.status == "ended" || row.status == "lost" {
             return Err(OrcrError::not_found(format!(
                 "agent `{target}` is not active (status {})",
                 row.status
             )));
+        }
+        let delivered_while = row.status.clone();
+
+        let driver = self.owned_driver()?;
+        // Sending to a parked (or mid-move) agent un-parks it first — atomically, before
+        // delivery — and delivery then addresses the confirmed post-move location (§5.4).
+        if row.status == "parked" || row.move_state != "none" {
+            row = self.unpark_for_send(&driver, &row)?;
         }
         let pane_id = row.pane_id.clone().ok_or_else(|| {
             OrcrError::state_conflict(format!(
@@ -600,9 +611,6 @@ impl Server {
             ))
             .with_details(json!({ "current_status": row.status }))
         })?;
-        let delivered_while = row.status.clone();
-
-        let driver = self.owned_driver()?;
         driver.pane_send_text(&pane_id, &prompt)?;
         std::thread::sleep(ENTER_DELAY);
         driver.pane_send_keys(&pane_id, &["Enter"])?;
@@ -1019,7 +1027,7 @@ impl Server {
     }
 
     /// The typed integration state (both-layers picture, §11.4).
-    fn integration_state_typed(&self) -> crate::driver::IntegrationState {
+    pub(super) fn integration_state_typed(&self) -> crate::driver::IntegrationState {
         let raw = HerdrBinary::discover(Some(self.inner.config.herdr.bin.as_str()))
             .and_then(|b| b.integration_status_raw())
             .unwrap_or_default();

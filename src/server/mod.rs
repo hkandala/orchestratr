@@ -8,7 +8,9 @@
 
 pub mod client;
 mod completion;
+mod discovery;
 mod engine;
+mod gc;
 mod log;
 
 pub use client::{Client, StartOutcome};
@@ -73,6 +75,10 @@ struct ServerInner {
     /// Serializes owned-session workspace creation so concurrent spawns under one level-1
     /// segment never create duplicate workspaces (§11.1).
     spawn_lock: Mutex<()>,
+    /// The latest reconciler drift snapshot for `server status` (spec §11.5).
+    drift: Mutex<gc::DriftSnapshot>,
+    /// Cumulative count of moves the reconciler completed or rolled back (spec §11.5).
+    repaired: AtomicU64,
 }
 
 impl Server {
@@ -181,6 +187,8 @@ pub fn run_foreground(home: &Home, config: Config) -> Result<StartOutcome> {
             store_path: home.store_path(),
             sub_counter: AtomicU64::new(0),
             spawn_lock: Mutex::new(()),
+            drift: Mutex::new(gc::DriftSnapshot::default()),
+            repaired: AtomicU64::new(0),
         }),
     };
 
@@ -200,6 +208,8 @@ pub fn run_foreground(home: &Home, config: Config) -> Result<StartOutcome> {
     server.reconcile_on_start();
     server.start_queue_worker();
     server.start_completion_monitor();
+    server.start_gc_engine();
+    server.start_unmanaged_discovery();
 
     server.serve(listener);
 
@@ -599,8 +609,10 @@ impl Server {
         let herdr = self.herdr_health();
         let integrations = self.integration_state();
 
-        let counts = self.counts().unwrap_or_else(|_| {
-            json!({ "live": 0, "queued": 0, "blocked": 0, "unmanaged": 0, "unmarked_panes": 0 })
+        let drift = self.inner.drift.lock().unwrap().clone();
+        let counts = self.counts(&drift).unwrap_or_else(|_| {
+            json!({ "live": 0, "queued": 0, "blocked": 0, "unmanaged": 0,
+                    "unmarked_panes": 0, "unknown_marked_panes": 0 })
         });
 
         json!({
@@ -615,7 +627,12 @@ impl Server {
             "counts": counts,
             "loops_firing": true,
             "loops": [],
-            "drift": { "lost": 0, "repaired": 0 },
+            "drift": {
+                "lost": drift.lost,
+                "repaired": self.inner.repaired.load(Ordering::SeqCst),
+                "unknown_marked_panes": drift.unknown_marked_panes,
+                "unmarked_panes": drift.unmarked_panes,
+            },
             "config": {
                 "defaults": { "agent": cfg.defaults.agent, "model": cfg.defaults.model, "effort": cfg.defaults.effort },
                 "concurrency": { "max": cfg.concurrency.max },
@@ -624,7 +641,7 @@ impl Server {
         })
     }
 
-    fn counts(&self) -> Result<Value> {
+    fn counts(&self, drift: &gc::DriftSnapshot) -> Result<Value> {
         let store = self.inner.store.lock().unwrap();
         let count =
             |sql: &str| -> i64 { store.conn().query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
@@ -638,7 +655,8 @@ impl Server {
             "queued": queued,
             "blocked": blocked,
             "unmanaged": unmanaged,
-            "unmarked_panes": 0,
+            "unmarked_panes": drift.unmarked_panes,
+            "unknown_marked_panes": drift.unknown_marked_panes,
         }))
     }
 
