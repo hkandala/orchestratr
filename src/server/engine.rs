@@ -70,6 +70,60 @@ impl Server {
         Ok(driver)
     }
 
+    /// Connect a driver to the herdr session an agent's pane actually lives in (spec §5.7).
+    /// Managed agents live in the owned session (cached driver); an **unmanaged** agent lives
+    /// in a *foreign* session (per-socket, per m0 notes) whose socket we discover here — its
+    /// `pane_id` is workspace-scoped and only meaningful on that session's socket, so routing
+    /// `send`/`kill` through the owned driver would hit the wrong (or no) pane.
+    pub(super) fn driver_for_agent(&self, a: &AgentFull) -> Result<HerdrDriver> {
+        let owned = &self.inner.config.herdr.session;
+        let session = a.herdr_session.as_deref().unwrap_or(owned);
+        if session == owned {
+            return self.owned_driver();
+        }
+        let bin = HerdrBinary::discover(Some(self.inner.config.herdr.bin.as_str()))?;
+        let sess = bin.find_session(session)?.ok_or_else(|| {
+            OrcrError::state_conflict(format!("herdr session `{session}` is not running"))
+        })?;
+        let socket = sess.socket_path.ok_or_else(|| {
+            OrcrError::state_conflict(format!("herdr session `{session}` has no socket"))
+        })?;
+        HerdrDriver::connect(&socket)
+    }
+
+    /// The agent's current pane id **on `driver`'s session**. `terminal_id` is globally unique
+    /// and stable across pane moves, so we resolve the live pane by it (a stale `pane_id` from a
+    /// prior discovery tick or a pane move would otherwise mis-address); falls back to the
+    /// recorded `pane_id` when the terminal can't be located (spec §5.7, §11.5).
+    pub(super) fn live_pane_id(&self, driver: &HerdrDriver, a: &AgentFull) -> Option<String> {
+        if let Some(term) = a.terminal_id.as_deref() {
+            if let Ok(panes) = driver.pane_list(None) {
+                if let Some(p) = panes.iter().find(|p| p.terminal_id == term) {
+                    return Some(p.pane_id.clone());
+                }
+            }
+        }
+        a.pane_id.clone()
+    }
+
+    /// [`live_pane_id`](Self::live_pane_id) tolerating an unavailable driver (herdr unreachable):
+    /// falls back to the recorded `pane_id`.
+    pub(super) fn live_pane(&self, driver: Option<&HerdrDriver>, a: &AgentFull) -> Option<String> {
+        match driver {
+            Some(d) => self.live_pane_id(d, a),
+            None => a.pane_id.clone(),
+        }
+    }
+
+    /// The per-agent move mutex (created on first use). Held across a two-phase park/un-park so
+    /// a GC park and a `send` un-park for the same agent can never interleave (spec §5.4).
+    pub(super) fn lock_move(&self, uuid: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+        let mut map = self.inner.move_locks.lock().unwrap();
+        map.entry(uuid.to_string())
+            .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(())))
+            .clone()
+    }
+
     // --- queue worker ---
 
     /// Start the background queue worker (promotion + spawn dispatch + stuck-start guard).
@@ -602,15 +656,45 @@ impl Server {
                 row.status
             )));
         }
-        let delivered_while = row.status.clone();
 
-        let driver = self.owned_driver()?;
+        // Route to the herdr session the pane actually lives in: an unmanaged agent's pane is
+        // in a *foreign* session, and its `pane_id` is only meaningful on that session's socket
+        // (§5.7). Managed agents use the owned session's cached driver.
+        let driver = self.driver_for_agent(&row)?;
+
+        // Managed agents can be parked/moved by GC concurrently. Hold the per-agent move lock
+        // across un-park + delivery so a park can't relocate the pane mid-send, and re-read the
+        // row under the lock so a park that committed just before we acquired it is observed
+        // (avoids a send racing a live two-phase move, §5.4).
+        let move_lock = if row.managed {
+            Some(self.lock_move(&row.uuid))
+        } else {
+            None
+        };
+        let _held = move_lock.as_ref().map(|m| m.lock().unwrap());
+        if move_lock.is_some() {
+            row = {
+                let store = self.inner.store.lock().unwrap();
+                store
+                    .agent_full(&row.uuid)?
+                    .ok_or_else(|| OrcrError::not_found(format!("agent `{target}` vanished")))?
+            };
+            if row.status == "ended" || row.status == "lost" {
+                return Err(OrcrError::not_found(format!(
+                    "agent `{target}` is not active (status {})",
+                    row.status
+                )));
+            }
+        }
+
+        let delivered_while = row.status.clone();
         // Sending to a parked (or mid-move) agent un-parks it first — atomically, before
-        // delivery — and delivery then addresses the confirmed post-move location (§5.4).
+        // delivery — and delivery then addresses the confirmed post-move location (§5.4). The
+        // per-agent move lock is already held, so this never pre-empts a live GC park.
         if row.status == "parked" || row.move_state != "none" {
             row = self.unpark_for_send(&driver, &row)?;
         }
-        let pane_id = row.pane_id.clone().ok_or_else(|| {
+        let pane_id = self.live_pane_id(&driver, &row).ok_or_else(|| {
             OrcrError::state_conflict(format!(
                 "agent `{}` has no live pane yet (status {})",
                 row.path, row.status
@@ -683,7 +767,6 @@ impl Server {
             return Ok(json!({ "preview": true, "targets": rows }));
         }
 
-        let driver = self.owned_driver().ok();
         let mut killed = Vec::new();
         let mut skipped = Vec::new();
         for a in matched {
@@ -691,6 +774,10 @@ impl Server {
                 skipped.push(json!({ "uuid": a.uuid, "path": a.path, "reason": "force_required" }));
                 continue;
             }
+            // Route to the session the pane lives in: an unmanaged agent's pane is in a foreign
+            // herdr session (§5.7), so closing it via the owned driver would miss it (or close a
+            // colliding owned pane). Managed agents resolve to the owned session's driver.
+            let driver = self.driver_for_agent(&a).ok();
             match a.status.as_str() {
                 "queued" => {
                     self.end_agent(&a.uuid, "canceled");
@@ -702,16 +789,23 @@ impl Server {
                         let mut store = self.inner.store.lock().unwrap();
                         let _ = store.request_cancel(&a.uuid);
                     }
-                    if let (Some(d), Some(pane)) = (&driver, &a.pane_id) {
-                        let _ = d.pane_close(pane);
+                    if let (Some(d), Some(pane)) = (&driver, self.live_pane(driver.as_ref(), &a)) {
+                        let _ = d.pane_close(&pane);
                     }
                     self.end_agent(&a.uuid, "canceled");
                     killed.push(json!({ "uuid": a.uuid, "path": a.path }));
                 }
                 _ => {
-                    // working / idle / blocked / parked: graceful shutdown → pane close.
-                    if let (Some(d), Some(pane)) = (&driver, &a.pane_id) {
-                        self.graceful_shutdown(d, &a, pane);
+                    // working / idle / blocked / parked: graceful shutdown → pane close. Hold the
+                    // per-agent move lock (managed) so GC can't relocate the pane mid-kill.
+                    let move_lock = if a.managed {
+                        Some(self.lock_move(&a.uuid))
+                    } else {
+                        None
+                    };
+                    let _held = move_lock.as_ref().map(|m| m.lock().unwrap());
+                    if let (Some(d), Some(pane)) = (&driver, self.live_pane(driver.as_ref(), &a)) {
+                        self.graceful_shutdown(d, &a, &pane);
                     }
                     self.end_agent(&a.uuid, "killed");
                     killed.push(json!({ "uuid": a.uuid, "path": a.path }));

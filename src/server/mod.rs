@@ -28,6 +28,7 @@ use crate::wire::{
     err_response, event_frame, ok_response, read_frame, write_frame, Request, ORCR_PROTOCOL,
 };
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::BufReader;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -79,6 +80,10 @@ struct ServerInner {
     drift: Mutex<gc::DriftSnapshot>,
     /// Cumulative count of moves the reconciler completed or rolled back (spec §11.5).
     repaired: AtomicU64,
+    /// Per-agent move mutexes: serialize a GC park/un-park against a concurrent `send`
+    /// un-park for the *same* agent so a two-phase move is never pre-empted mid-flight
+    /// (spec §5.4; a park committing `begin_move` must not race a send's recovery/deliver).
+    move_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl Server {
@@ -189,6 +194,7 @@ pub fn run_foreground(home: &Home, config: Config) -> Result<StartOutcome> {
             spawn_lock: Mutex::new(()),
             drift: Mutex::new(gc::DriftSnapshot::default()),
             repaired: AtomicU64::new(0),
+            move_locks: Mutex::new(HashMap::new()),
         }),
     };
 

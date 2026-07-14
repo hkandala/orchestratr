@@ -100,6 +100,11 @@ impl Server {
     /// Two-phase park: claim the move lease, move the pane to the `idle` workspace, then
     /// finish (status → parked) only if we still own the lease (spec §5.4).
     fn park_one(&self, driver: &HerdrDriver, a: &AgentFull) -> Result<()> {
+        // Hold the per-agent move lock for the whole two-phase move so a concurrent `send`
+        // un-park can never observe (and roll back) this move while its pane relocation is still
+        // pending — status and location must always agree (spec §5.4).
+        let move_lock = self.lock_move(&a.uuid);
+        let _held = move_lock.lock().unwrap();
         let token = uuid::Uuid::new_v4().to_string();
         let won = {
             let mut store = self.inner.store.lock().unwrap();
@@ -178,10 +183,13 @@ impl Server {
     /// Un-park a parked agent (or complete/roll back a move in flight) before delivering a
     /// `send` (spec §5.4). Returns the refreshed row (status `idle`, back in its home
     /// workspace). A no-op for a non-parked agent with no move in flight.
+    /// The caller (`handle_agent_send`) already holds this agent's move lock (see
+    /// [`Server::lock_move`]), so a GC park cannot interleave with the recovery/move below.
     pub(super) fn unpark_for_send(&self, driver: &HerdrDriver, a: &AgentFull) -> Result<AgentFull> {
-        // A move in flight from a crash/GC: settle it first (by its exact token).
+        // A move in flight from a crash/GC: settle it first (by its exact token). Locked variant
+        // — the move lock is already held by the send handler.
         if a.move_state != "none" {
-            self.recover_one_move(driver, a);
+            self.recover_one_move_locked(driver, a);
         }
         let cur = {
             let store = self.inner.store.lock().unwrap();
@@ -312,10 +320,20 @@ impl Server {
         self.refresh_drift(&panes);
     }
 
-    /// Complete or roll back one in-flight move by its exact `move_token` (spec §5.4, §11.5).
-    /// The pane's current workspace decides the outcome, so status and location always agree
-    /// afterward.
+    /// Complete or roll back one in-flight move by its exact `move_token` (spec §5.4, §11.5),
+    /// taking the per-agent move lock first so it never pre-empts a *live* park/un-park still
+    /// executing on another thread (that owner is completing the very same move). Used by the
+    /// periodic/startup reconcilers, which do not otherwise hold the lock.
     fn recover_one_move(&self, driver: &HerdrDriver, a: &AgentFull) {
+        let move_lock = self.lock_move(&a.uuid);
+        let _held = move_lock.lock().unwrap();
+        self.recover_one_move_locked(driver, a);
+    }
+
+    /// The body of [`recover_one_move`], assuming the caller already holds this agent's move
+    /// lock. The pane's current workspace decides the outcome, so status and location always
+    /// agree afterward.
+    fn recover_one_move_locked(&self, driver: &HerdrDriver, a: &AgentFull) {
         let Some(token) = a.move_token.clone() else {
             return;
         };
