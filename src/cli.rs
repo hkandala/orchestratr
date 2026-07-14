@@ -393,7 +393,6 @@ fn cmd_scaffold(json: bool, dir: Option<&str>) -> Result<()> {
 /// `orcr top` (spec §6.3): build the pre-scoping filter from the flags (resolving any pattern
 /// against the caller's `ORCR_PATH` scope, §5.1) and launch the view-only TUI. Live-only by
 /// design — there is no `--all` (that is `ls --all`).
-#[allow(clippy::too_many_arguments)]
 fn cmd_top(
     pattern: &Option<String>,
     agent: &Option<String>,
@@ -535,49 +534,13 @@ fn cmd_agent_run(
         ));
     }
     let prompt = resolve_prompt(prompt.as_deref())?;
-    // Default cwd = the caller's current directory (§6.1).
-    let cwd = match cwd {
-        Some(c) => Some(c.clone()),
-        None => std::env::current_dir()
-            .ok()
-            .map(|p| p.display().to_string()),
-    };
-    let (caller_id, caller_path) = caller_identity();
-
-    let mut params = json!({});
-    let obj = params.as_object_mut().unwrap();
-    if let Some(n) = name {
-        obj.insert("name".into(), json!(n));
-    }
-    if let Some(p) = path {
-        obj.insert("path".into(), json!(p));
-    }
-    if let Some(a) = agent {
-        obj.insert("agent".into(), json!(a));
-    }
-    if let Some(p) = &prompt {
-        obj.insert("prompt".into(), json!(p));
-    }
+    let cwd = default_cwd(cwd);
+    let mut params = build_spawn_params(name, path, agent, &prompt, model, effort, &cwd, timeout);
     if let Some(g) = gc {
-        obj.insert("gc".into(), json!(g));
-    }
-    if let Some(m) = model {
-        obj.insert("model".into(), json!(m));
-    }
-    if let Some(e) = effort {
-        obj.insert("effort".into(), json!(e));
-    }
-    if let Some(c) = &cwd {
-        obj.insert("cwd".into(), json!(c));
-    }
-    if let Some(t) = timeout {
-        obj.insert("timeout".into(), json!(t));
-    }
-    if let Some(id) = &caller_id {
-        obj.insert("caller_id".into(), json!(id));
-    }
-    if let Some(cp) = &caller_path {
-        obj.insert("caller_path".into(), json!(cp));
+        params
+            .as_object_mut()
+            .unwrap()
+            .insert("gc".into(), json!(g));
     }
 
     let result = connect_and_request("agent.run", params)?;
@@ -645,40 +608,8 @@ fn cmd_agent_ask(
         ));
     }
     let prompt = resolve_prompt(prompt.as_deref())?;
-    let cwd = match cwd {
-        Some(c) => Some(c.clone()),
-        None => std::env::current_dir()
-            .ok()
-            .map(|p| p.display().to_string()),
-    };
-    let (caller_id, caller_path) = caller_identity();
-    let mut params = json!({});
-    let obj = params.as_object_mut().unwrap();
-    if let Some(n) = name {
-        obj.insert("name".into(), json!(n));
-    }
-    if let Some(p) = path {
-        obj.insert("path".into(), json!(p));
-    }
-    if let Some(a) = agent {
-        obj.insert("agent".into(), json!(a));
-    }
-    if let Some(p) = &prompt {
-        obj.insert("prompt".into(), json!(p));
-    }
-    if let Some(m) = model {
-        obj.insert("model".into(), json!(m));
-    }
-    if let Some(e) = effort {
-        obj.insert("effort".into(), json!(e));
-    }
-    if let Some(c) = &cwd {
-        obj.insert("cwd".into(), json!(c));
-    }
-    if let Some(t) = timeout {
-        obj.insert("timeout".into(), json!(t));
-    }
-    add_caller(&mut params, &caller_id, &caller_path);
+    let cwd = default_cwd(cwd);
+    let params = build_spawn_params(name, path, agent, &prompt, model, effort, &cwd, timeout);
     let result = connect_and_request("agent.ask", params)?;
     emit_success(json, result.clone(), || {
         // The final response on stdout (§6.1).
@@ -828,14 +759,7 @@ fn cmd_agent_attach(json: bool, target: &str, takeover: bool) -> Result<()> {
     let path = prep["path"].as_str().unwrap_or_default().to_string();
     let lease_id = prep["lease_id"].as_str().unwrap_or_default().to_string();
     let ttl_ms = prep["ttl_ms"].as_u64().unwrap_or(30_000);
-    let command: Vec<String> = prep["command"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let command = json_str_array(&prep["command"]);
     if command.is_empty() {
         return Err(OrcrError::server_error(
             "attach_command",
@@ -918,8 +842,9 @@ fn cmd_agent_kill(json: bool, targets: &[String], force: bool, yes: bool) -> Res
     let mut params = json!({ "targets": targets, "force": force });
     add_caller(&mut params, &caller_id, &caller_path);
     let result = connect_and_request("agent.kill", params)?;
+    let killed = result["killed"].as_array().map(|a| a.len()).unwrap_or(0);
+    let skipped = result["skipped"].as_array().map(|a| a.len()).unwrap_or(0);
     emit_success(json, result.clone(), || {
-        let killed = result["killed"].as_array().map(|a| a.len()).unwrap_or(0);
         for k in result["killed"].as_array().into_iter().flatten() {
             println!("killed {}", k["path"].as_str().unwrap_or_default());
         }
@@ -930,15 +855,16 @@ fn cmd_agent_kill(json: bool, targets: &[String], force: bool, yes: bool) -> Res
                 s["reason"].as_str().unwrap_or_default()
             );
         }
-        if killed == 0
-            && result["skipped"]
-                .as_array()
-                .map(|a| a.is_empty())
-                .unwrap_or(true)
-        {
+        if killed == 0 && skipped == 0 {
             println!("no agents killed");
         }
     });
+    // §6.1 kill result classification: matched but every target skipped (already ended /
+    // needs --force) → exit 7; any kills performed → exit 0. (A no-match already surfaces as
+    // not_found → exit 6 from the server before we get here.)
+    if killed == 0 && skipped > 0 {
+        std::process::exit(7);
+    }
     Ok(())
 }
 
@@ -952,6 +878,13 @@ fn cmd_agent_ls(
     unmanaged: bool,
     all: bool,
 ) -> Result<()> {
+    // §6.1 renders `[--managed|--unmanaged]` as mutually exclusive (as `top` enforces).
+    if managed && unmanaged {
+        return Err(OrcrError::invalid_request(
+            "pass at most one of --managed / --unmanaged",
+            "conflicting_flags",
+        ));
+    }
     let (caller_id, caller_path) = caller_identity();
     let mut params = json!({ "managed": managed, "unmanaged": unmanaged, "all": all });
     let obj = params.as_object_mut().unwrap();
@@ -968,6 +901,72 @@ fn cmd_agent_ls(
     let result = connect_and_request("agent.ls", params)?;
     emit_success(json, result.clone(), || print_ls_human(&result));
     Ok(())
+}
+
+/// Collect a JSON array value into `Vec<String>` (dropping non-string elements).
+fn json_str_array(v: &Value) -> Vec<String> {
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The effective `--cwd`: the explicit value, else the caller's current directory (§6.1).
+fn default_cwd(cwd: &Option<String>) -> Option<String> {
+    match cwd {
+        Some(c) => Some(c.clone()),
+        None => std::env::current_dir()
+            .ok()
+            .map(|p| p.display().to_string()),
+    }
+}
+
+/// Assemble the params shared by `agent run` and `agent ask` (§6.1): naming, provider,
+/// prompt, model/effort, cwd, timeout, and the caller identity. Verb-specific fields (e.g.
+/// `gc`) are added by the caller on top.
+#[allow(clippy::too_many_arguments)]
+fn build_spawn_params(
+    name: &Option<String>,
+    path: &Option<String>,
+    agent: &Option<String>,
+    prompt: &Option<String>,
+    model: &Option<String>,
+    effort: &Option<String>,
+    cwd: &Option<String>,
+    timeout: &Option<String>,
+) -> Value {
+    let (caller_id, caller_path) = caller_identity();
+    let mut params = json!({});
+    let obj = params.as_object_mut().unwrap();
+    if let Some(n) = name {
+        obj.insert("name".into(), json!(n));
+    }
+    if let Some(p) = path {
+        obj.insert("path".into(), json!(p));
+    }
+    if let Some(a) = agent {
+        obj.insert("agent".into(), json!(a));
+    }
+    if let Some(p) = prompt {
+        obj.insert("prompt".into(), json!(p));
+    }
+    if let Some(m) = model {
+        obj.insert("model".into(), json!(m));
+    }
+    if let Some(e) = effort {
+        obj.insert("effort".into(), json!(e));
+    }
+    if let Some(c) = cwd {
+        obj.insert("cwd".into(), json!(c));
+    }
+    if let Some(t) = timeout {
+        obj.insert("timeout".into(), json!(t));
+    }
+    add_caller(&mut params, &caller_id, &caller_path);
+    params
 }
 
 /// Attach the caller identity params to a request object.
@@ -1110,14 +1109,7 @@ fn cmd_loop_create(
     let result = connect_and_request("loop.create", params)?;
     let l = &result["loop"];
     emit_success(json, result.clone(), || {
-        let argv: Vec<String> = l["argv"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let argv = json_str_array(&l["argv"]);
         let tz = l["tz"].as_str().unwrap_or_default();
         println!("loop {} created", l["name"].as_str().unwrap_or_default());
         println!("  command:  {}", argv.join(" "));
@@ -1159,8 +1151,14 @@ fn cmd_loop_set(json: bool, method: &str, names: &[String]) -> Result<()> {
 }
 
 fn cmd_loop_rm(json: bool, names: &[String], kill_active: bool, yes: bool) -> Result<()> {
-    if !yes && !json && stdout_is_tty() {
-        eprint!("Remove loop(s) {}? [y/N] ", names.join(", "));
+    // §6 scopes the destructive confirmation to `loop rm --kill-active` (which stops active
+    // runs + kills their agents). A plain `loop rm` only ends the definition (history stays,
+    // runs keep going), so it is non-destructive and needs no prompt.
+    if kill_active && !yes && !json && stdout_is_tty() {
+        eprint!(
+            "Remove loop(s) {} and kill active runs? [y/N] ",
+            names.join(", ")
+        );
         std::io::stderr().flush().ok();
         let mut answer = String::new();
         std::io::stdin().lock().read_line(&mut answer).ok();
