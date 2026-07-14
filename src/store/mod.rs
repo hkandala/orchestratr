@@ -1708,6 +1708,586 @@ impl Store {
             Ok(())
         })
     }
+
+    // --- Loops (spec §6.2, §11.3, §12) ---
+
+    /// Create a durable loop definition (spec §6.2). The name must be unique among **active
+    /// or paused** loops (a removed name is reusable — histories never collide because each
+    /// definition has its own uuid). Writes a `loop.created` event in the same txn; returns
+    /// the event seq.
+    pub fn create_loop(&mut self, l: &NewLoop) -> Result<i64> {
+        let l = l.clone();
+        self.with_immediate_tx(|tx| {
+            if let Some(uuid) = tx
+                .query_row(
+                    "SELECT uuid FROM loops WHERE name=?1 AND status IN ('active','paused') LIMIT 1",
+                    [&l.name],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(map_sqlite)?
+            {
+                return Err(OrcrError::state_conflict(format!(
+                    "loop `{}` already exists",
+                    l.name
+                ))
+                .with_details(json!({
+                    "reason": "loop_name_in_use",
+                    "occupant": { "uuid": uuid, "name": l.name },
+                })));
+            }
+            tx.execute(
+                "INSERT INTO loops (
+                     uuid, name, cadence_kind, cadence_value, tz, cwd, max_concurrency,
+                     overlap, timeout_s, status, next_fire_at, created_at, updated_at
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',?10,?11,?11)",
+                rusqlite::params![
+                    l.uuid,
+                    l.name,
+                    l.cadence_kind,
+                    l.cadence_value,
+                    l.tz,
+                    l.cwd,
+                    l.max_concurrency,
+                    l.overlap,
+                    l.timeout_s,
+                    l.next_fire_at,
+                    l.created_at,
+                ],
+            )
+            .map_err(|e| {
+                // The partial unique index is the hard guarantee behind the pre-check.
+                if let rusqlite::Error::SqliteFailure(f, _) = &e {
+                    if f.code == rusqlite::ErrorCode::ConstraintViolation {
+                        return OrcrError::state_conflict(format!(
+                            "loop `{}` already exists",
+                            l.name
+                        ))
+                        .with_details(json!({ "reason": "loop_name_in_use" }));
+                    }
+                }
+                map_sqlite(e)
+            })?;
+            append_event_tx(
+                tx,
+                "loop.created",
+                Some(&l.uuid),
+                &json!({ "uuid": l.uuid, "name": l.name, "cadence": l.cadence_value }),
+            )
+        })
+    }
+
+    /// Resolve a loop by name: the active/paused definition first, else the most recent ended
+    /// one (spec §6.2 name resolution).
+    pub fn find_loop_by_name(&self, name: &str) -> Result<Option<LoopRow>> {
+        if let Some(l) = self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {LOOP_COLS} FROM loops \
+                     WHERE name=?1 AND status IN ('active','paused') LIMIT 1"
+                ),
+                [name],
+                read_loop_row,
+            )
+            .optional()
+            .map_err(map_sqlite)?
+        {
+            return Ok(Some(l));
+        }
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {LOOP_COLS} FROM loops \
+                     WHERE name=?1 ORDER BY created_at DESC LIMIT 1"
+                ),
+                [name],
+                read_loop_row,
+            )
+            .optional()
+            .map_err(map_sqlite)
+    }
+
+    /// A loop by its uuid (any status).
+    pub fn loop_by_uuid(&self, uuid: &str) -> Result<Option<LoopRow>> {
+        self.conn
+            .query_row(
+                &format!("SELECT {LOOP_COLS} FROM loops WHERE uuid=?1"),
+                [uuid],
+                read_loop_row,
+            )
+            .optional()
+            .map_err(map_sqlite)
+    }
+
+    /// List loops (spec §6.2 `loop ls`). `names` filters by name (any status); `status`
+    /// filters by status; without `include_ended`, only active/paused are returned.
+    pub fn list_loops(
+        &self,
+        names: &[String],
+        status: Option<&str>,
+        include_ended: bool,
+    ) -> Result<Vec<LoopRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {LOOP_COLS} FROM loops ORDER BY created_at ASC"
+            ))
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([], read_loop_row)
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows
+            .into_iter()
+            .filter(|l| names.is_empty() || names.iter().any(|n| n == &l.name))
+            .filter(|l| status.map(|s| l.status == s).unwrap_or(true))
+            .filter(|l| include_ended || status.is_some() || l.status != "ended")
+            .collect())
+    }
+
+    /// The names of loops that are currently active or paused (namespace protection, §5.1).
+    pub fn active_loop_names(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name FROM loops WHERE status IN ('active','paused')")
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows)
+    }
+
+    /// Set a loop's status (pause/resume/end), optionally recording an `ended_reason`, and
+    /// emit an event. Returns the event seq.
+    pub fn set_loop_status(
+        &mut self,
+        uuid: &str,
+        status: &str,
+        ended_reason: Option<&str>,
+        event_kind: &str,
+    ) -> Result<i64> {
+        let (uuid, status, ended_reason, event_kind) = (
+            uuid.to_string(),
+            status.to_string(),
+            ended_reason.map(|s| s.to_string()),
+            event_kind.to_string(),
+        );
+        self.with_immediate_tx(|tx| {
+            let now = now_millis();
+            let ended_at = if status == "ended" { Some(now) } else { None };
+            tx.execute(
+                "UPDATE loops SET status=?2, ended_reason=COALESCE(?3, ended_reason), \
+                 next_fire_at=CASE WHEN ?2='ended' THEN NULL ELSE next_fire_at END, \
+                 updated_at=?4 WHERE uuid=?1",
+                rusqlite::params![uuid, status, ended_reason, now],
+            )
+            .map_err(map_sqlite)?;
+            let _ = ended_at;
+            append_event_tx(
+                tx,
+                &event_kind,
+                Some(&uuid),
+                &json!({ "uuid": uuid, "status": status, "ended_reason": ended_reason }),
+            )
+        })
+    }
+
+    /// Record the next scheduled fire time (UTC ms) for a loop.
+    pub fn set_next_fire(&mut self, uuid: &str, next_fire_at: Option<i64>) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE loops SET next_fire_at=?2, updated_at=?3 WHERE uuid=?1",
+                rusqlite::params![uuid, next_fire_at, now_millis()],
+            )
+            .map_err(map_sqlite)?;
+        Ok(())
+    }
+
+    /// Record the last fire time.
+    pub fn set_last_fire(&mut self, uuid: &str, ts: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE loops SET last_fire_at=?2, updated_at=?3 WHERE uuid=?1",
+                rusqlite::params![uuid, ts, now_millis()],
+            )
+            .map_err(map_sqlite)?;
+        Ok(())
+    }
+
+    /// Active loops whose `next_fire_at` has come due (`<= now`).
+    pub fn loops_due(&self, now: i64) -> Result<Vec<LoopRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {LOOP_COLS} FROM loops \
+                 WHERE status='active' AND next_fire_at IS NOT NULL AND next_fire_at <= ?1"
+            ))
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([now], read_loop_row)
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows)
+    }
+
+    /// All loops (any status) — for restart recovery (spec §11.3).
+    pub fn all_loops(&self) -> Result<Vec<LoopRow>> {
+        self.list_loops(&[], None, true)
+    }
+
+    // --- Loop runs (spec §6.2, §11.3, §12) ---
+
+    /// Allocate a run row transactionally (spec §11.3): every run is durable from the moment
+    /// it is asked for. Scheduled fires at capacity coalesce into at most one pending
+    /// scheduled run under `overlap=queue` (or drop under `skip`); manual runs always
+    /// allocate. Returns the allocation outcome + the event seq written.
+    pub fn allocate_run(
+        &mut self,
+        loop_uuid: &str,
+        kind: &str,
+        due_at: i64,
+        max_concurrency: i64,
+        overlap: &str,
+    ) -> Result<(RunAllocation, i64)> {
+        let (loop_uuid, kind, overlap) =
+            (loop_uuid.to_string(), kind.to_string(), overlap.to_string());
+        self.with_immediate_tx(|tx| {
+            let active: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM loop_runs \
+                     WHERE loop_uuid=?1 AND status IN ('running','stopping')",
+                    [&loop_uuid],
+                    |r| r.get(0),
+                )
+                .map_err(map_sqlite)?;
+            let at_capacity = active >= max_concurrency;
+
+            if kind == "scheduled" && at_capacity {
+                if overlap == "skip" {
+                    let ev = append_event_tx(
+                        tx,
+                        "loop.skipped",
+                        Some(&loop_uuid),
+                        &json!({ "loop_uuid": loop_uuid, "due_at": due_at }),
+                    )?;
+                    return Ok((RunAllocation::Skipped, ev));
+                }
+                // overlap == queue: coalesce into the single pending scheduled run.
+                if let Some(existing_uuid) = tx
+                    .query_row(
+                        "SELECT uuid FROM loop_runs \
+                         WHERE loop_uuid=?1 AND status='pending' AND kind='scheduled' LIMIT 1",
+                        [&loop_uuid],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(map_sqlite)?
+                {
+                    // Keep the earliest missed fire as the coalesced run's due_at.
+                    tx.execute(
+                        "UPDATE loop_runs SET due_at=MIN(due_at, ?2), updated_at=?3 WHERE uuid=?1",
+                        rusqlite::params![existing_uuid, due_at, now_millis()],
+                    )
+                    .map_err(map_sqlite)?;
+                    let run = read_run_row_tx(tx, &existing_uuid)?
+                        .ok_or_else(|| OrcrError::server_error("loop", "coalesced run vanished"))?;
+                    let ev = append_event_tx(
+                        tx,
+                        "loop.coalesced",
+                        Some(&loop_uuid),
+                        &json!({ "loop_uuid": loop_uuid, "run_id": run.run_id, "due_at": due_at }),
+                    )?;
+                    return Ok((RunAllocation::Coalesced { run }, ev));
+                }
+            }
+
+            // Allocate a fresh run row (unique run_id per loop; retry on the rare collision).
+            let uuid = uuid::Uuid::now_v7().to_string();
+            let now = now_millis();
+            let mut run_id = new_run_id();
+            for _ in 0..8 {
+                let taken: bool = tx
+                    .query_row(
+                        "SELECT 1 FROM loop_runs WHERE loop_uuid=?1 AND run_id=?2 LIMIT 1",
+                        rusqlite::params![loop_uuid, run_id],
+                        |_| Ok(true),
+                    )
+                    .optional()
+                    .map_err(map_sqlite)?
+                    .unwrap_or(false);
+                if !taken {
+                    break;
+                }
+                run_id = new_run_id();
+            }
+            tx.execute(
+                "INSERT INTO loop_runs (
+                     uuid, loop_uuid, run_id, kind, due_at, status, created_at, updated_at
+                 ) VALUES (?1,?2,?3,?4,?5,'pending',?6,?6)",
+                rusqlite::params![uuid, loop_uuid, run_id, kind, due_at, now],
+            )
+            .map_err(map_sqlite)?;
+            let run = read_run_row_tx(tx, &uuid)?
+                .ok_or_else(|| OrcrError::server_error("loop", "allocated run vanished"))?;
+            let start_now = !at_capacity;
+            let ev = append_event_tx(
+                tx,
+                if start_now { "loop.fired" } else { "loop.coalesced" },
+                Some(&loop_uuid),
+                &json!({
+                    "loop_uuid": loop_uuid, "run_id": run.run_id, "kind": kind,
+                    "due_at": due_at, "pending": !start_now,
+                }),
+            )?;
+            Ok((RunAllocation::Allocated { run, start_now }, ev))
+        })
+    }
+
+    /// Mark a run `running` with its process identity (pid/pgid + start time — pgid alone is
+    /// not proof of identity, §11.3). Emits `loop_run.started`. Returns the event seq.
+    pub fn record_run_start(
+        &mut self,
+        run_uuid: &str,
+        pid: i64,
+        pgid: i64,
+        pgid_start_time: i64,
+        started_at: i64,
+        timeout_at: Option<i64>,
+    ) -> Result<i64> {
+        let run_uuid = run_uuid.to_string();
+        self.with_immediate_tx(|tx| {
+            tx.execute(
+                "UPDATE loop_runs SET status='running', pid=?2, pgid=?3, pgid_start_time=?4, \
+                 started_at=?5, timeout_at=?6, updated_at=?5 WHERE uuid=?1",
+                rusqlite::params![run_uuid, pid, pgid, pgid_start_time, started_at, timeout_at],
+            )
+            .map_err(map_sqlite)?;
+            let run = read_run_row_tx(tx, &run_uuid)?;
+            append_event_tx(
+                tx,
+                "loop_run.started",
+                Some(&run_uuid),
+                &json!({
+                    "run_uuid": run_uuid,
+                    "run_id": run.as_ref().map(|r| r.run_id.clone()),
+                    "pid": pid, "pgid": pgid,
+                }),
+            )
+        })
+    }
+
+    /// Finish a run: record its terminal status + exit code/signal. Emits `loop_run.ended`.
+    /// Returns the event seq.
+    pub fn finish_run(
+        &mut self,
+        run_uuid: &str,
+        status: &str,
+        exit_code: Option<i64>,
+        signal: Option<i64>,
+    ) -> Result<i64> {
+        let (run_uuid, status) = (run_uuid.to_string(), status.to_string());
+        self.with_immediate_tx(|tx| {
+            let now = now_millis();
+            tx.execute(
+                "UPDATE loop_runs SET status=?2, exit_code=?3, signal=?4, ended_at=?5, \
+                 updated_at=?5 WHERE uuid=?1",
+                rusqlite::params![run_uuid, status, exit_code, signal, now],
+            )
+            .map_err(map_sqlite)?;
+            let run = read_run_row_tx(tx, &run_uuid)?;
+            append_event_tx(
+                tx,
+                "loop_run.ended",
+                Some(&run_uuid),
+                &json!({
+                    "run_uuid": run_uuid,
+                    "run_id": run.as_ref().map(|r| r.run_id.clone()),
+                    "status": status, "exit_code": exit_code, "signal": signal,
+                }),
+            )
+        })
+    }
+
+    /// Move a running run into the `stopping` admission barrier (spec §6.2, §11.3). Emits an
+    /// event; returns the seq (0 if the run was not running).
+    pub fn set_run_stopping(&mut self, run_uuid: &str) -> Result<i64> {
+        let run_uuid = run_uuid.to_string();
+        self.with_immediate_tx(|tx| {
+            let n = tx
+                .execute(
+                    "UPDATE loop_runs SET status='stopping', updated_at=?2 \
+                     WHERE uuid=?1 AND status='running'",
+                    rusqlite::params![run_uuid, now_millis()],
+                )
+                .map_err(map_sqlite)?;
+            if n == 0 {
+                return Ok(0);
+            }
+            append_event_tx(
+                tx,
+                "loop_run.stopping",
+                Some(&run_uuid),
+                &json!({ "run_uuid": run_uuid }),
+            )
+        })
+    }
+
+    /// Cancel a still-pending run (spec §6.2: `loop run stop` before it starts → `canceled`).
+    /// Emits `loop_run.ended`; returns the seq (0 if the run was not pending).
+    pub fn cancel_pending_run(&mut self, run_uuid: &str) -> Result<i64> {
+        let run_uuid = run_uuid.to_string();
+        self.with_immediate_tx(|tx| {
+            let n = tx
+                .execute(
+                    "UPDATE loop_runs SET status='canceled', ended_at=?2, updated_at=?2 \
+                     WHERE uuid=?1 AND status='pending'",
+                    rusqlite::params![run_uuid, now_millis()],
+                )
+                .map_err(map_sqlite)?;
+            if n == 0 {
+                return Ok(0);
+            }
+            append_event_tx(
+                tx,
+                "loop_run.ended",
+                Some(&run_uuid),
+                &json!({ "run_uuid": run_uuid, "status": "canceled" }),
+            )
+        })
+    }
+
+    /// A run by run_id or run uuid within a loop.
+    pub fn run_by_id_or_uuid(&self, loop_uuid: &str, sel: &str) -> Result<Option<LoopRunRow>> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {RUN_COLS} FROM loop_runs WHERE loop_uuid=?1 AND (run_id=?2 OR uuid=?2)"
+                ),
+                rusqlite::params![loop_uuid, sel],
+                read_run_row,
+            )
+            .optional()
+            .map_err(map_sqlite)
+    }
+
+    /// A run by uuid (any loop).
+    pub fn run_by_uuid(&self, uuid: &str) -> Result<Option<LoopRunRow>> {
+        self.conn
+            .query_row(
+                &format!("SELECT {RUN_COLS} FROM loop_runs WHERE uuid=?1"),
+                [uuid],
+                read_run_row,
+            )
+            .optional()
+            .map_err(map_sqlite)
+    }
+
+    /// Runs of a loop, filtered. Without `include_history`, only active + pending are returned.
+    pub fn runs_for_loop(
+        &self,
+        loop_uuid: &str,
+        status: Option<&str>,
+        include_history: bool,
+    ) -> Result<Vec<LoopRunRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {RUN_COLS} FROM loop_runs WHERE loop_uuid=?1 ORDER BY created_at ASC"
+            ))
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([loop_uuid], read_run_row)
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows
+            .into_iter()
+            .filter(|r| status.map(|s| r.status == s).unwrap_or(true))
+            .filter(|r| {
+                include_history
+                    || status.is_some()
+                    || matches!(r.status.as_str(), "pending" | "running" | "stopping")
+            })
+            .collect())
+    }
+
+    /// The active (running/stopping) runs of a loop.
+    pub fn active_runs(&self, loop_uuid: &str) -> Result<Vec<LoopRunRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {RUN_COLS} FROM loop_runs \
+                 WHERE loop_uuid=?1 AND status IN ('running','stopping') ORDER BY created_at ASC"
+            ))
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([loop_uuid], read_run_row)
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows)
+    }
+
+    /// The oldest pending run of a loop (the next to start when a slot frees, §11.3).
+    pub fn oldest_pending_run(&self, loop_uuid: &str) -> Result<Option<LoopRunRow>> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {RUN_COLS} FROM loop_runs \
+                     WHERE loop_uuid=?1 AND status='pending' \
+                     ORDER BY due_at ASC, created_at ASC LIMIT 1"
+                ),
+                [loop_uuid],
+                read_run_row,
+            )
+            .optional()
+            .map_err(map_sqlite)
+    }
+
+    /// Every run across all loops in the given statuses — for scheduler reaping + restart
+    /// recovery (spec §11.3).
+    pub fn runs_in_status(&self, statuses: &[&str]) -> Result<Vec<LoopRunRow>> {
+        let mut out = Vec::new();
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {RUN_COLS} FROM loop_runs ORDER BY created_at ASC"
+            ))
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([], read_run_row)
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        for r in rows {
+            if statuses.contains(&r.status.as_str()) {
+                out.push(r);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Runs whose per-run timeout has expired (`timeout_at <= now`), still running.
+    pub fn timed_out_runs(&self, now: i64) -> Result<Vec<LoopRunRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {RUN_COLS} FROM loop_runs \
+                 WHERE status='running' AND timeout_at IS NOT NULL AND timeout_at <= ?1"
+            ))
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([now], read_run_row)
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows)
+    }
 }
 
 /// Append an event within an existing transaction and return its `seq`. Producers use this
@@ -1757,6 +2337,139 @@ fn read_turn_row(r: &rusqlite::Row) -> rusqlite::Result<TurnRow> {
         blocked_kind: r.get(6)?,
         transcript_cursor: r.get(7)?,
     })
+}
+
+/// The column list for a `loops` row read (mirrors [`read_loop_row`]).
+const LOOP_COLS: &str = "uuid, name, cadence_kind, cadence_value, tz, cwd, max_concurrency, \
+     overlap, timeout_s, status, next_fire_at, last_fire_at, ended_reason, created_at, updated_at";
+
+/// The column list for a `loop_runs` row read (mirrors [`read_run_row`]).
+const RUN_COLS: &str = "uuid, loop_uuid, run_id, kind, due_at, status, pid, pgid, \
+     pgid_start_time, exit_code, signal, timeout_at, started_at, ended_at, created_at, updated_at";
+
+/// The columns to insert a new loop definition (spec §12).
+#[derive(Debug, Clone)]
+pub struct NewLoop {
+    pub uuid: String,
+    pub name: String,
+    pub cadence_kind: String, // cron|once
+    pub cadence_value: String,
+    pub tz: String,
+    pub cwd: String,
+    pub max_concurrency: i64,
+    pub overlap: String, // queue|skip
+    pub timeout_s: Option<i64>,
+    pub next_fire_at: Option<i64>,
+    pub created_at: i64,
+}
+
+/// A loop definition row (spec §12).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoopRow {
+    pub uuid: String,
+    pub name: String,
+    pub cadence_kind: String,
+    pub cadence_value: String,
+    pub tz: String,
+    pub cwd: String,
+    pub max_concurrency: i64,
+    pub overlap: String,
+    pub timeout_s: Option<i64>,
+    pub status: String, // active|paused|ended
+    pub next_fire_at: Option<i64>,
+    pub last_fire_at: Option<i64>,
+    pub ended_reason: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// A loop run row (spec §12).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoopRunRow {
+    pub uuid: String,
+    pub loop_uuid: String,
+    pub run_id: String,
+    pub kind: String, // scheduled|manual
+    pub due_at: Option<i64>,
+    pub status: String, // pending|running|stopping|ok|failed|timeout|stopped|canceled
+    pub pid: Option<i64>,
+    pub pgid: Option<i64>,
+    pub pgid_start_time: Option<i64>,
+    pub exit_code: Option<i64>,
+    pub signal: Option<i64>,
+    pub timeout_at: Option<i64>,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// The outcome of [`Store::allocate_run`] (spec §11.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunAllocation {
+    /// A fresh run row was created; `start_now` = a slot was free (else it sits pending).
+    Allocated { run: LoopRunRow, start_now: bool },
+    /// A scheduled fire folded into the existing pending scheduled run.
+    Coalesced { run: LoopRunRow },
+    /// An `overlap=skip` fire at capacity — dropped (logged).
+    Skipped,
+}
+
+/// A run id: `r` + 5 lowercase alphanumeric chars (spec §5.1). Uniqueness per loop is
+/// enforced by the caller's retry loop against the unique index.
+fn new_run_id() -> String {
+    format!("r{}", crate::path::random_token())
+}
+
+fn read_loop_row(r: &rusqlite::Row) -> rusqlite::Result<LoopRow> {
+    Ok(LoopRow {
+        uuid: r.get(0)?,
+        name: r.get(1)?,
+        cadence_kind: r.get(2)?,
+        cadence_value: r.get(3)?,
+        tz: r.get(4)?,
+        cwd: r.get(5)?,
+        max_concurrency: r.get(6)?,
+        overlap: r.get(7)?,
+        timeout_s: r.get(8)?,
+        status: r.get(9)?,
+        next_fire_at: r.get(10)?,
+        last_fire_at: r.get(11)?,
+        ended_reason: r.get(12)?,
+        created_at: r.get(13)?,
+        updated_at: r.get(14)?,
+    })
+}
+
+fn read_run_row(r: &rusqlite::Row) -> rusqlite::Result<LoopRunRow> {
+    Ok(LoopRunRow {
+        uuid: r.get(0)?,
+        loop_uuid: r.get(1)?,
+        run_id: r.get(2)?,
+        kind: r.get(3)?,
+        due_at: r.get(4)?,
+        status: r.get(5)?,
+        pid: r.get(6)?,
+        pgid: r.get(7)?,
+        pgid_start_time: r.get(8)?,
+        exit_code: r.get(9)?,
+        signal: r.get(10)?,
+        timeout_at: r.get(11)?,
+        started_at: r.get(12)?,
+        ended_at: r.get(13)?,
+        created_at: r.get(14)?,
+        updated_at: r.get(15)?,
+    })
+}
+
+fn read_run_row_tx(tx: &rusqlite::Transaction, uuid: &str) -> Result<Option<LoopRunRow>> {
+    tx.query_row(
+        &format!("SELECT {RUN_COLS} FROM loop_runs WHERE uuid=?1"),
+        [uuid],
+        read_run_row,
+    )
+    .optional()
+    .map_err(map_sqlite)
 }
 
 /// One row from the events table.
@@ -2519,5 +3232,128 @@ mod tests {
         assert!(row.managed);
         assert_eq!(row.agent.as_deref(), Some("codex"));
         assert!(s.get_agent("missing").unwrap().is_none());
+    }
+
+    fn new_loop(uuid: &str, name: &str, max: i64, overlap: &str) -> NewLoop {
+        NewLoop {
+            uuid: uuid.into(),
+            name: name.into(),
+            cadence_kind: "cron".into(),
+            cadence_value: "*/5 * * * *".into(),
+            tz: "UTC".into(),
+            cwd: "/tmp".into(),
+            max_concurrency: max,
+            overlap: overlap.into(),
+            timeout_s: None,
+            next_fire_at: Some(1000),
+            created_at: now_millis(),
+        }
+    }
+
+    #[test]
+    fn loop_name_unique_among_active_reusable_after_end() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.create_loop(&new_loop("l1", "nightly", 1, "queue")).unwrap();
+        // A second active loop with the same name is rejected.
+        let e = s
+            .create_loop(&new_loop("l2", "nightly", 1, "queue"))
+            .unwrap_err();
+        assert_eq!(e.details["reason"], "loop_name_in_use");
+        // End the first; the name is reusable.
+        s.set_loop_status("l1", "ended", Some("removed"), "loop.removed")
+            .unwrap();
+        assert!(s.create_loop(&new_loop("l3", "nightly", 1, "queue")).is_ok());
+        // find_loop_by_name resolves the active one, not the ended.
+        let found = s.find_loop_by_name("nightly").unwrap().unwrap();
+        assert_eq!(found.uuid, "l3");
+        // Names of active loops for namespace protection.
+        assert_eq!(s.active_loop_names().unwrap(), vec!["nightly".to_string()]);
+    }
+
+    #[test]
+    fn run_allocation_capacity_and_coalesce() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.create_loop(&new_loop("l1", "nightly", 1, "queue")).unwrap();
+        // First scheduled fire: a slot is free → start_now.
+        let (a1, _) = s.allocate_run("l1", "scheduled", 1000, 1, "queue").unwrap();
+        let run1 = match a1 {
+            RunAllocation::Allocated { run, start_now } => {
+                assert!(start_now);
+                run
+            }
+            _ => panic!("expected Allocated"),
+        };
+        assert!(run1.run_id.starts_with('r') && run1.run_id.len() == 6);
+        // Mark it running (occupies the only slot).
+        s.record_run_start(&run1.uuid, 111, 111, 5, now_millis(), None)
+            .unwrap();
+        // Second scheduled fire at capacity → allocated pending (not start_now).
+        let (a2, _) = s.allocate_run("l1", "scheduled", 2000, 1, "queue").unwrap();
+        let run2 = match a2 {
+            RunAllocation::Allocated { run, start_now } => {
+                assert!(!start_now);
+                run
+            }
+            _ => panic!("expected Allocated pending"),
+        };
+        // Third scheduled fire coalesces into the single pending run, keeping earliest due_at.
+        let (a3, _) = s.allocate_run("l1", "scheduled", 1500, 1, "queue").unwrap();
+        match a3 {
+            RunAllocation::Coalesced { run } => {
+                assert_eq!(run.uuid, run2.uuid);
+                assert_eq!(run.due_at, Some(1500)); // earliest of 2000 and 1500
+            }
+            _ => panic!("expected Coalesced"),
+        }
+        // A manual fire at capacity always allocates its own run (pending).
+        let (a4, _) = s.allocate_run("l1", "manual", 3000, 1, "queue").unwrap();
+        assert!(matches!(a4, RunAllocation::Allocated { start_now: false, .. }));
+    }
+
+    #[test]
+    fn run_allocation_skip_drops_at_capacity() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.create_loop(&new_loop("l1", "nightly", 1, "skip")).unwrap();
+        let (a1, _) = s.allocate_run("l1", "scheduled", 1000, 1, "skip").unwrap();
+        let run1 = match a1 {
+            RunAllocation::Allocated { run, .. } => run,
+            _ => panic!(),
+        };
+        s.record_run_start(&run1.uuid, 1, 1, 1, now_millis(), None)
+            .unwrap();
+        let (a2, _) = s.allocate_run("l1", "scheduled", 2000, 1, "skip").unwrap();
+        assert!(matches!(a2, RunAllocation::Skipped));
+        // No pending run was created.
+        assert!(s.oldest_pending_run("l1").unwrap().is_none());
+    }
+
+    #[test]
+    fn run_lifecycle_and_lookup() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.create_loop(&new_loop("l1", "nightly", 2, "queue")).unwrap();
+        let (a, _) = s.allocate_run("l1", "manual", 1000, 2, "queue").unwrap();
+        let run = match a {
+            RunAllocation::Allocated { run, .. } => run,
+            _ => panic!(),
+        };
+        // Lookup by run_id and uuid.
+        assert_eq!(
+            s.run_by_id_or_uuid("l1", &run.run_id).unwrap().unwrap().uuid,
+            run.uuid
+        );
+        assert_eq!(
+            s.run_by_id_or_uuid("l1", &run.uuid).unwrap().unwrap().run_id,
+            run.run_id
+        );
+        s.record_run_start(&run.uuid, 42, 42, 9, now_millis(), None)
+            .unwrap();
+        assert_eq!(s.active_runs("l1").unwrap().len(), 1);
+        s.finish_run(&run.uuid, "ok", Some(0), None).unwrap();
+        let done = s.run_by_uuid(&run.uuid).unwrap().unwrap();
+        assert_eq!(done.status, "ok");
+        assert_eq!(done.exit_code, Some(0));
+        // Default runs_for_loop excludes history; --all includes it.
+        assert!(s.runs_for_loop("l1", None, false).unwrap().is_empty());
+        assert_eq!(s.runs_for_loop("l1", None, true).unwrap().len(), 1);
     }
 }

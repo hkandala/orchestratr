@@ -49,6 +49,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "loop.removed",
     "loop_run.started",
     "loop_run.ended",
+    "loop_run.stopping",
     // Control frame emitted to every open subscription on graceful shutdown (§6.4).
     "server_stopping",
 ];
