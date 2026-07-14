@@ -242,13 +242,21 @@ limitation. Both fixes are present and active in this run (see server logs above
 - **Nit (not a failure):** `{rand}` in a selector is reported as `reason:"invalid_segment"` rather
   than a rand-specific reason, but it is correctly rejected as `invalid_request`/exit 1 per spec.
 
-### E07 — Queue + concurrency caps (FIFO, never over cap) — **PARTIAL** (severity: medium — orcr defect: pane leak)
+### E07 — Queue + concurrency caps (FIFO, never over cap) — **PARTIAL → FIXED** (severity: medium — orcr defect: pane leak)
 
-- **provider:** mock · **verdict:** PARTIAL · **area:** core · §5.5 queue/concurrency
+- **provider:** mock · **verdict:** PARTIAL at manual-e2e; the pane-leak defect (step 6) is now
+  **FIXED** (commits `f856951` test, `c811a0b` fix — see `open-issues.md` E07). · **area:** core ·
+  §5.5 queue/concurrency
 - **isolation:** `ORCR_HOME` disposable, session `orcr_e2e_6ac162fe` (stopped+deleted;
   `no leak: orcr_e2e_6ac162fe gone`). Config `{"concurrency":{"max":3,"mock":2}}`.
+- **resolution:** the kill path now re-reads each matched row under the store lock at action time;
+  a still-`queued` row is dequeued atomically (`end_if_status`, no pane can exist yet), and a row
+  promoted since the snapshot routes through the pane-closing kill path. Deterministic regression
+  `tests/gc_e2e.rs::e2e_kill_during_promotion_no_pane_leak` asserts no leaked pane after a bulk
+  kill that promotes a queued agent mid-kill (fails before the fix, passes after).
 
-Queue + concurrency caps work correctly; **one pane-leak defect on the kill-during-promotion race.**
+Queue + concurrency caps work correctly; **the pane-leak defect on the kill-during-promotion race
+(step 6) is now fixed.**
 
 | # | assertion | observed | verdict |
 |---|---|---|---|
@@ -257,7 +265,7 @@ Queue + concurrency caps work correctly; **one pane-leak defect on the kill-duri
 | 3 | FIFO promotion | killed w1 → w3 (lowest `queue_seq`, qpos 1) promoted to `starting`; remaining queue renumbered strictly FIFO (w4→1 … w10→7) | PASS |
 | 4 | bulk-kill classification | `agent kill "burst/**" -y` → 7 queued dequeued as `exit_reason=canceled`, 3 live (w1 killed earlier + idle w2 + starting w3) → `exit_reason=killed` | PASS |
 | 5 | wait-through-promotion | separate trio (mock cap 2, gc immediate, `@turn_ms=2500`): `agent wait wq/qc` blocked while `qc` queued, waited through qa/qb completing + qc promoting/running, returned `completed` (exit 0) after 15s | PASS |
-| 6 | **DEFECT — pane leak on kill-during-promotion race** | during `agent kill "burst/**"`, killing idle w2 freed a slot that triggered promotion+dispatch of w4; w4's herdr pane got spawned but the row was marked ended/canceled WITHOUT closing the new pane. `herdr pane list` afterward still showed a live pane `w2:p5` (label `burst/w4`, agent=mock, agent_status=idle) — orcr's view (ended/canceled) diverged from herdr (live zombie pane); the canceled row even carried a stale `pane_id=w2:p5`. Only `herdr session stop` reaped it; the normal kill path leaked it | **FAIL** |
+| 6 | **DEFECT — pane leak on kill-during-promotion race** | during `agent kill "burst/**"`, killing idle w2 freed a slot that triggered promotion+dispatch of w4; w4's herdr pane got spawned but the row was marked ended/canceled WITHOUT closing the new pane. `herdr pane list` afterward still showed a live pane `w2:p5` (label `burst/w4`, agent=mock, agent_status=idle) — orcr's view (ended/canceled) diverged from herdr (live zombie pane); the canceled row even carried a stale `pane_id=w2:p5`. Only `herdr session stop` reaped it; the normal kill path leaked it | **FAIL → FIXED** (`c811a0b`) |
 
 - **root cause:** `src/server/engine.rs` `promote_and_dispatch` (line 165) races the kill/cancel path
   — a promotion that spawns a pane concurrently with a bulk kill leaves the pane un-closed when the
@@ -653,14 +661,17 @@ exit code, plus one state_conflict sub-case not exercised.**
   locatable native transcript for herdr panes); orcr now fails loud/`timeout` (exit 3) per spec.
   This run confirms the fixes are active (submit-confirm re-send fires; readable gate holds).
 
-- **ISSUE-2 (MEDIUM, E07) — pane leak on kill-during-promotion race (OPEN, orcr defect).** During a bulk
+- **ISSUE-2 (MEDIUM, E07) — pane leak on kill-during-promotion race (FIXED, orcr defect).** During a bulk
   `agent kill "burst/**"`, killing an idle agent frees a concurrency slot that promotes+dispatches a
   queued agent; if that promotion spawns a herdr pane concurrently with the kill, the row is marked
   ended/canceled but the newly-spawned pane is NOT closed — leaving a live zombie pane (`w2:p5`, label
   `burst/w4`) that orcr believes is gone (canceled row even carries a stale `pane_id`). Only
   `herdr session stop` reaps it. Root cause `src/server/engine.rs` `promote_and_dispatch` (line 165)
   racing the kill/cancel path. Queue caps, FIFO, accounting, bulk-kill classification, and
-  wait-through-promotion are all otherwise correct.
+  wait-through-promotion are all otherwise correct. **FIXED** in commits `f856951` (test) + `c811a0b`
+  (fix): the kill re-reads each row under the store lock at action time and closes the pane of any
+  agent promoted since the snapshot (see `open-issues.md` E07); regression
+  `tests/gc_e2e.rs::e2e_kill_during_promotion_no_pane_leak`.
 
 - **OBS-1 (MEDIUM, E02) — intermittent codex pane-submit flake (OPEN).** With codex auth refreshed, `ask`
   succeeds (plain + `--json`) but one `--json` instance timed out because the prompt was not accepted by
@@ -707,18 +718,19 @@ kill-during-promotion race (E07)** and an **intermittent codex submit-confirm fl
 | --- | --- | --- |
 | planned scenarios | 22 | E01–E22 (`manual-e2e-tests.md`) |
 | PASS | 15 | E04, E06, E08, E09, E10, E11, E12, E13, E14, E15, E16, E17, E19, E20, E22 |
-| PARTIAL | 4 | E02 (codex ask; one submit flake), E07 (queue caps ok; pane-leak defect), E18 (recipes ok via codex; claude leg env-blocked), E21 (error sweep ok; one exit-code discrepancy) |
+| PARTIAL | 4 | E02 (codex ask; one submit flake), E07 (queue caps ok; pane-leak defect — FIXED post-run, `c811a0b`), E18 (recipes ok via codex; claude leg env-blocked), E21 (error sweep ok; one exit-code discrepancy) |
 | BLOCKED (env limitation, orcr correct) | 3 | E01, E03, E05 (real-claude, no native transcript) |
 | FAIL (orcr defect) | 0 | — |
 | **critical orcr bugs open** | **0** | E01 known-issue #2 fixed + active this run; residual is environmental |
-| open orcr defects (non-critical) | 2 | E07 pane leak (medium), E02 codex submit flake (medium) |
+| open orcr defects (non-critical) | 1 | E02 codex submit flake (medium); E07 pane leak now FIXED (post-run) |
 
 ### Fixed vs open
 
 - **Fixed:** E01 / known-issue #2 (two orcr root causes) — regression-tested and confirmed active this run.
-- **Open (orcr defects):** E07 kill-during-promotion pane leak (medium); E02/OBS-1 intermittent codex
-  submit-confirm flake (medium); E21/OBS-2 agent-timeout-via-wait exit-code spec inconsistency (low);
-  E06 `{rand}`-selector reason nit (low).
+  **E07 kill-during-promotion pane leak (medium)** — fixed post-run (`f856951` test, `c811a0b` fix;
+  regression `e2e_kill_during_promotion_no_pane_leak`).
+- **Open (orcr defects):** E02/OBS-1 intermittent codex submit-confirm flake (medium); E21/OBS-2
+  agent-timeout-via-wait exit-code spec inconsistency (low); E06 `{rand}`-selector reason nit (low).
 - **Open (not orcr bugs — env):** real-claude `ask`/`wait`/`logs` return path on this enterprise box (no
   native transcript) — E01/E03/E05 and the claude leg of E18.
 

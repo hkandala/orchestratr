@@ -16,23 +16,31 @@ their disposition.
      mid-boot; `engine.rs::confirm_submit` now re-sends Enter until the pane leaves idle
      or `submit_confirm_ms` elapses (per-provider tuning).
 
-## Open — real orcr issues
+## Fixed after manual-e2e
 
-### E07 — pane leak on the kill-during-promotion race  ·  medium  ·  REAL BUG
-`handle_agent_kill` classifies each matched agent from the snapshot taken when the kill
-begins. If an agent transitions `queued → starting` (and its herdr pane is spawned by
+### E07 — pane leak on the kill-during-promotion race  ·  medium  ·  REAL BUG  ·  **FIXED**
+`handle_agent_kill` classified each matched agent from the snapshot taken when the kill
+begins. If an agent transitioned `queued → starting` (and its herdr pane was spawned by
 the queue worker's `promote_and_dispatch`) in the window between that snapshot and the
-kill's per-agent action, the kill ends the row via the pane-less "queued → canceled"
-path and never closes the just-spawned pane → a live zombie pane (orcr row `ended`,
-herdr pane alive; row even carries a stale `pane_id`). Only session teardown reaps it.
+kill's per-agent action, the kill ended the row via the pane-less "queued → canceled"
+path and never closed the just-spawned pane → a live zombie pane (orcr row `ended`,
+herdr pane alive; row even carried a stale `pane_id`). Only session teardown reaped it.
 - Repro: cap the provider low, queue many, `agent kill "<scope>/**" -y` while a slot is
   freeing (promotion in flight).
-- Fix direction: in the kill path, re-read each target's row **under the write lock**
-  and, if it now has a pane (promoted since the snapshot), close that pane (treat as a
-  running kill) instead of a pane-less dequeue; and/or a promotion↔kill admission
-  barrier so a scope being killed doesn't dispatch new panes. Single-writer server, so
-  this is a contained CAS fix.
-- Disposition: **fixing now** (real resource leak, contained fix).
+- **Fix (commits `f856951` test, `c811a0b` fix):** in the kill's per-agent loop, re-read
+  each row **under the store lock** at action time. A still-`queued` row is dequeued
+  atomically via `store.end_if_status(queued → canceled)` — promotion moves `queued →
+  starting` under the same lock *before* it ever spawns a pane, so a successful guarded
+  end proves no pane exists (the pane-less cancel is safe). If it lost the race to
+  promotion (or the fresh read already shows `starting`/running), it routes through the
+  shared `kill_live_agent` helper, which sets the cancel interlock and closes the pane;
+  `pipeline_inner`'s post-`agent.start` re-check + `bail_if_cancelled` close any pane
+  created-but-not-yet-recorded. Best-effort `pane_close` tolerates the double-close.
+- **Regression:** `tests/gc_e2e.rs::e2e_kill_during_promotion_no_pane_leak` (mock, global
+  cap 1) forces the race deterministically via the `ORCR_TEST_KILL_ITER_DELAY_MS` hook and
+  asserts no live pane survives for the just-promoted agent after the bulk kill. Fails
+  before `c811a0b`, passes after. Green: build/clippy(-D warnings)/fmt/164 unit +
+  `gc_e2e` (16) + `agent_e2e` (10).
 
 ## Open — deferred by owner (not being fixed now)
 
