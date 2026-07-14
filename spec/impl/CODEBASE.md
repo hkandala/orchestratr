@@ -45,7 +45,9 @@ Current state: **through M7 (SDK & skill).**
   positive, `concurrency.max ≥ 1`, per-provider caps clamped. Defaults built in. **M3**:
   optional `integrations.<provider>.*` completion-tuning overrides (`IntegrationTuning`, ms).
   **M5** adds `timings.loop_tick` (scheduler tick, default 1s) + `timings.run_term_grace`
-  (run TERM→KILL grace, default 10s).
+  (run TERM→KILL grace, default 10s). `Config::load` also honors an `ORCR_HERDR_SESSION` env
+  override (empty → file/default) so a config-less orcr child never falls back to the literal
+  `orcr` owned-session name (test-isolation belt-and-suspenders; loop-run children pin it).
 - `duration.rs` — human duration parsing/formatting (`45s`, `20m`, `3h`); units required.
 - `cron.rs` — **M5 own cron evaluator** (§6.2/§11.3): five-field `min hour dom month dow`
   (`*`/`a`/`a-b`/`a,b`/`*/n`/`a-b/n`, dow 0-6 with 0/7=Sun, dom+dow-restricted → OR).

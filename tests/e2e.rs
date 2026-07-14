@@ -65,6 +65,15 @@ impl Drop for Harness {
         // Best-effort teardown; never touches the user's default session.
         let _ = self.bin.session_stop(&self.session);
         let _ = self.bin.session_delete(&self.session);
+        // Known-issues #1: the disposable session must not leak. Skipped mid-panic so a real
+        // failure isn't masked by a double panic (abort).
+        if !std::thread::panicking() {
+            assert!(
+                matches!(self.bin.find_session(&self.session), Ok(None)),
+                "disposable session `{}` leaked after teardown",
+                self.session
+            );
+        }
     }
 }
 

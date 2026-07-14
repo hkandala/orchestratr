@@ -120,6 +120,7 @@ impl TestServer {
         let mut cmd = Command::new(orcr_bin());
         cmd.args(["server", "start"])
             .env("ORCR_HOME", self.home.path())
+            .env("ORCR_HERDR_SESSION", &self.session)
             .env("ORCR_ALLOW_MOCK_PROVIDER", "1")
             .env("ORCR_DISABLE_DISCOVERY", "1")
             .env("ORCR_MOCK_AGENT_BIN", mock_agent_bin())
@@ -154,6 +155,7 @@ impl TestServer {
         cmd.arg(sdk_dir().join(rel))
             .current_dir(sdk_dir())
             .env("ORCR_HOME", self.home_path())
+            .env("ORCR_HERDR_SESSION", &self.session)
             .env("ORCR_BIN", orcr_bin())
             .env("ORCR_RECIPE_AGENT", "mock")
             .env("ORCR_RECIPE_VERIFIER", "mock");
@@ -175,13 +177,19 @@ impl TestServer {
 
 impl Drop for TestServer {
     fn drop(&mut self) {
-        // Kill every loop run's process group FIRST, while the server + throwaway home still
+        // Drive every loop run to termination FIRST, while the server + throwaway home still
         // exist. The §9.7 durable-handoff recipe schedules `tsx resume.ts` loop-run children;
         // if one outlives teardown (e.g. a test panic mid-run), the SDK's auto-start could
         // bootstrap a server against the deleted home, fall back to the default config, and
-        // leak the real `orcr` herdr session (known-issues #1). Runs unconditionally so it
-        // also fires on panic. Mirrors tests/loop_e2e.rs.
-        if let Ok(loops) = self.request("loop.ls", json!({ "all": true })) {
+        // leak the shared `orcr` herdr session (known-issues #1). Kill process groups
+        // repeatedly until no run is still running/stopping/pending — re-reading pgids each
+        // pass closes the allocate→record window where `pgid` is briefly NULL. Runs
+        // unconditionally so it also fires on panic. Mirrors tests/loop_e2e.rs.
+        for _ in 0..50 {
+            let Ok(loops) = self.request("loop.ls", json!({ "all": true })) else {
+                break; // server unreachable — nothing left to drive
+            };
+            let mut any_active = false;
             for l in loops["loops"].as_array().cloned().unwrap_or_default() {
                 if let Some(name) = l["name"].as_str() {
                     let runs = self
@@ -189,6 +197,10 @@ impl Drop for TestServer {
                         .map(|r| r["runs"].as_array().cloned().unwrap_or_default())
                         .unwrap_or_default();
                     for run in runs {
+                        let status = run["status"].as_str().unwrap_or("");
+                        if matches!(status, "running" | "stopping" | "pending") {
+                            any_active = true;
+                        }
                         if let Some(pgid) = run["pgid"].as_i64() {
                             unsafe {
                                 libc::kill(-(pgid as i32), libc::SIGKILL);
@@ -197,6 +209,10 @@ impl Drop for TestServer {
                     }
                 }
             }
+            if !any_active {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
         let _ = self.request("server.stop", json!({}));
         for _ in 0..20 {
@@ -222,6 +238,20 @@ impl Drop for TestServer {
                 Ok(None) => break,
                 _ => std::thread::sleep(Duration::from_millis(200)),
             }
+        }
+        // Known-issues #1: neither the disposable session nor the shared `orcr` session (only
+        // ever created by a leaked default-config bootstrap) may survive. Skipped mid-panic so
+        // a real failure isn't masked by a double panic (abort).
+        if !std::thread::panicking() {
+            assert!(
+                matches!(self.bin.find_session(&self.session), Ok(None)),
+                "disposable session `{}` leaked after teardown",
+                self.session
+            );
+            assert!(
+                matches!(self.bin.find_session("orcr"), Ok(None)),
+                "shared `orcr` herdr session leaked (a child bootstrapped the default session)"
+            );
         }
     }
 }

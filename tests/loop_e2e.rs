@@ -59,6 +59,7 @@ impl TestServer {
         let out = Command::new(orcr_bin())
             .args(["server", "start"])
             .env("ORCR_HOME", self.home.path())
+            .env("ORCR_HERDR_SESSION", &self.session)
             .env("ORCR_ALLOW_MOCK_PROVIDER", "1")
             .env("ORCR_DISABLE_DISCOVERY", "1")
             .env("ORCR_MOCK_AGENT_BIN", mock_agent_bin())
@@ -119,14 +120,24 @@ impl TestServer {
 
 impl Drop for TestServer {
     fn drop(&mut self) {
-        // Kill every loop run's process group FIRST, while the server + throwaway home still
+        // Drive every loop run to termination FIRST, while the server + throwaway home still
         // exist — otherwise a lingering `orcr agent run` in a run command could execute against
-        // a torn-down home, fall back to the default config, and bootstrap the real `orcr`
-        // session (a safety defect). We read pgids over the live socket, then signal them.
-        if let Ok(loops) = self.request("loop.ls", json!({ "all": true })) {
+        // a torn-down home, fall back to the default config, and bootstrap the shared `orcr`
+        // session (a safety defect). Kill process groups repeatedly until no run is still
+        // running/stopping/pending — re-reading pgids each pass closes the allocate→record
+        // window where `pgid` is briefly NULL (known-issues #1).
+        for _ in 0..50 {
+            let Ok(loops) = self.request("loop.ls", json!({ "all": true })) else {
+                break; // server unreachable — nothing left to drive
+            };
+            let mut any_active = false;
             for l in loops["loops"].as_array().cloned().unwrap_or_default() {
                 if let Some(name) = l["name"].as_str() {
                     for run in self.run_ls(name, true) {
+                        let status = run["status"].as_str().unwrap_or("");
+                        if matches!(status, "running" | "stopping" | "pending") {
+                            any_active = true;
+                        }
                         if let Some(pgid) = run["pgid"].as_i64() {
                             unsafe {
                                 libc::kill(-(pgid as i32), libc::SIGKILL);
@@ -135,6 +146,10 @@ impl Drop for TestServer {
                     }
                 }
             }
+            if !any_active {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
         let _ = self.request("server.stop", json!({}));
         for _ in 0..20 {
@@ -152,7 +167,26 @@ impl Drop for TestServer {
         }
         let _ = self.bin.session_stop(&self.session);
         let _ = self.bin.session_delete(&self.session);
+        assert_no_session_leak(&self.bin, &self.session);
     }
+}
+
+/// Known-issues #1: after teardown, neither this test's disposable session nor the shared
+/// `orcr` session (the default `herdr.session`, only ever created by a leaked bootstrap) may
+/// survive. Skipped while already panicking so a real test failure isn't masked by a double
+/// panic (abort).
+fn assert_no_session_leak(bin: &HerdrBinary, session: &str) {
+    if std::thread::panicking() {
+        return;
+    }
+    assert!(
+        matches!(bin.find_session(session), Ok(None)),
+        "disposable session `{session}` leaked after teardown"
+    );
+    assert!(
+        matches!(bin.find_session("orcr"), Ok(None)),
+        "shared `orcr` herdr session leaked (a child bootstrapped the default session)"
+    );
 }
 
 fn wait_until(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {

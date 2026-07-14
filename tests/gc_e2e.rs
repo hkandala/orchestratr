@@ -99,6 +99,7 @@ impl TestServer {
         let mut cmd = Command::new(orcr_bin());
         cmd.args(["server", "start"])
             .env("ORCR_HOME", self.home.path())
+            .env("ORCR_HERDR_SESSION", &self.session)
             .env("ORCR_ALLOW_MOCK_PROVIDER", "1")
             .env("ORCR_DEBUG_METHODS", "1")
             .env("ORCR_MOCK_AGENT_BIN", mock_agent_bin())
@@ -216,7 +217,25 @@ impl Drop for TestServer {
         }
         let _ = self.bin.session_stop(&self.session);
         let _ = self.bin.session_delete(&self.session);
+        assert_no_session_leak(&self.bin, &self.session);
     }
+}
+
+/// Known-issues #1: after teardown neither this test's disposable session nor the shared
+/// `orcr` session (default `herdr.session`, only ever created by a leaked bootstrap) may
+/// survive. Skipped mid-panic so a real failure isn't masked by a double panic (abort).
+fn assert_no_session_leak(bin: &HerdrBinary, session: &str) {
+    if std::thread::panicking() {
+        return;
+    }
+    assert!(
+        matches!(bin.find_session(session), Ok(None)),
+        "disposable session `{session}` leaked after teardown"
+    );
+    assert!(
+        matches!(bin.find_session("orcr"), Ok(None)),
+        "shared `orcr` herdr session leaked (a child bootstrapped the default session)"
+    );
 }
 
 /// A second **disposable** herdr session standing in for a user's own session, where we
@@ -266,6 +285,13 @@ impl Drop for UserSession {
     fn drop(&mut self) {
         let _ = self.bin.session_stop(&self.name);
         let _ = self.bin.session_delete(&self.name);
+        if !std::thread::panicking() {
+            assert!(
+                matches!(self.bin.find_session(&self.name), Ok(None)),
+                "user disposable session `{}` leaked after teardown",
+                self.name
+            );
+        }
     }
 }
 
