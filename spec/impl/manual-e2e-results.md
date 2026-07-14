@@ -319,3 +319,45 @@ work of the manual-e2e phase.
 
 - orcr behaved correctly given the environment; the failures are downstream of claude persisting no native transcript on this box (same limitation E01/known-issue #2 documented). On a standard claude that writes native transcripts, steps 3/4/6 are expected to pass.
 - No orcr code changed (this executor observes only). No session leaked.
+
+---
+
+## E04 — Full managed lifecycle on REAL codex: run → send → logs → kill
+
+- **provider:** codex (REAL, enterprise box — gpt-5.5)
+- **verdict:** PARTIAL (env-caused response failure; NOT an orcr bug)
+- **severity:** low for orcr (env/provider-specific); all orcr management plumbing that does not depend on the model actually producing text works
+- **date:** 2026-07-14
+- **ORCR_HOME:** /tmp/orcr_e2e.22JnxQ (disposable) · **session:** orcr_e2e_976c57a1 (disposable) · leak check: `no leak`
+- **git commit:** 1b2e369
+
+### Observed vs expected (step by step)
+
+| step | command | expected | observed | verdict |
+|---|---|---|---|---|
+| 2 | `agent run --path proj/coder -a codex --gc never -p "Say READY." --timeout 15m` | prints `<path> <uuid>`, exit 0 | `proj/coder 019f629b-e5c2-7e10-aac7-d10e58a2d227`, exit 0 (~0s) | PASS |
+| 3 | `agent wait proj/coder` | `turn_complete`, exit 0 | `{"ok":true,…"reason":"turn_complete","status":"idle"…}`, exit 0, **settled in 9s** (unlike claude E03 which hung) | PASS |
+| 3 | `agent logs proj/coder --last-response` | first response text (contains READY) | `transcript_unavailable: no final assistant response is identifiable … {"cause":"no_final_response","status":"idle"}`, exit 1 | FAIL (env-caused) |
+| 4 | `agent send proj/coder "Reply with the single word DONE."` | delivers, starts new tracked turn | `{"ok":true,"result":{"delivered_while":"idle","input_seq":2,…}}`, exit 0 | PASS |
+| 4 | `agent wait proj/coder` | `turn_complete` | `{"ok":true,…"reason":"turn_complete","status":"idle"…}`, exit 0, settled in 5s | PASS |
+| 4 | `agent logs proj/coder --last-response` → `DONE` | `DONE` | `transcript_unavailable: … {"cause":"no_final_response","status":"idle"}`, exit 1 | FAIL (env-caused) |
+| 5 | `agent ls proj/**` | agent under workspace `proj`, tab `coder` | one row: `agent:"codex"`, `path:"proj/coder"`, `pane_id:"w2:p2"`, `status:"idle"`, `cwd:"/Users/hkandala/code/orchestratr"` | PASS |
+| 6 | `agent kill "proj/**" -y` | glob kill closes the pane | `{"ok":true,"all_killed":true,"killed":[{"path":"proj/coder",…}]}`; `agent ls --all` → `proj/coder ended killed`; `herdr pane get w2:p2` → `pane_not_found` | PASS |
+| 7 | `[TEARDOWN]` | no leak | server stopped, session stopped+deleted, `herdr session list` → `no leak` | PASS |
+
+### Root cause / evidence
+
+- **codex produced no textual response — it errored on every turn.** `herdr pane read w2:p2` after each turn showed the prompt echoed (`› Say READY.` / `› Reply with the single word DONE.`) immediately followed by a codex API error, not a reply:
+  ```
+  ■ { "error": { "message": "imagegen deployment must be provided through header: x-ms-oai-image-generation-deployment",
+       "type": "image_generation_user_error", "param": "tools", "code": "invalid_request_error" } }
+  ```
+  This is an enterprise-codex (gpt-5.5) tooling misconfiguration (imagegen tool wired without the required Azure header); the model never emits an assistant message. Reproduced identically on both turns.
+- **No native codex transcript is written for herdr-launched panes on this box.** The spec's expected path is `~/.codex/sessions/**/rollout-*-<session_id>.jsonl`; `find ~/.codex/sessions -name 'rollout-*.jsonl' -newermt '-15 minutes'` returned nothing (newest rollout on disk is 2026-01-27). So even absent the imagegen error there would be no transcript to parse.
+- **orcr behaved correctly.** Unlike claude (E03), codex completion detection settled quickly and cleanly to `turn_complete`/`idle` (server log: `turn 1 complete for proj/coder`); `agent wait` did NOT hang. `send` re-armed the agent (`delivered_while:"idle"`, fresh `input_seq:2`); `ls` resolved the glob to the codex agent under workspace `proj`; glob `kill` closed the pane and removed the workspace; launch.json / env contract written (`ORCR_AGENT_DATA_DIR`, `ORCR_ID`, `ORCR_PATH`, `ORCR_LAUNCH_TOKEN`, `ORCR_HOME`). `logs --last-response` correctly failed with `transcript_unavailable`/`no_final_response` because there is genuinely no final assistant response to return.
+
+### Notes
+
+- The only failing steps (`logs --last-response` on both turns) are downstream of the provider emitting an API error instead of text AND writing no native transcript — both outside orcr's control. On a codex that answers and persists a rollout, steps 3/4 logs are expected to pass, and the rest already pass here.
+- Contrast with E03/known-issue #2 (claude): there `wait` hung on the missing transcript; here codex `wait` settles fine — so completion detection for codex works on this box; only response extraction is blocked (by the provider error + missing transcript).
+- No orcr code changed (this executor observes only). No session leaked (`no leak`).
