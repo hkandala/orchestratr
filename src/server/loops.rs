@@ -285,21 +285,24 @@ impl Server {
         self.promote_pending(&run.loop_uuid);
     }
 
-    /// Start the oldest pending run of a loop if a slot is now free (spec §11.3).
+    /// Start the oldest pending run of a loop if a slot is now free (spec §11.3). The slot is
+    /// **reserved atomically** in one transaction (`claim_pending_run`) before we release the
+    /// store lock and spawn, so two concurrent promoters (exit-monitor threads, the resume/stop
+    /// paths, recovery) can never claim the same slot and double-spawn a run.
     fn promote_pending(&self, loop_uuid: &str) {
-        let (loop_row, next) = {
-            let store = self.inner.store.lock().unwrap();
+        let (loop_row, claimed) = {
+            let mut store = self.inner.store.lock().unwrap();
             let loop_row = store.loop_by_uuid(loop_uuid).ok().flatten();
-            let active = store.active_runs(loop_uuid).map(|v| v.len()).unwrap_or(0);
-            let next = match &loop_row {
-                Some(l) if (active as i64) < l.max_concurrency => {
-                    store.oldest_pending_run(loop_uuid).ok().flatten()
-                }
-                _ => None,
+            let claimed = match &loop_row {
+                Some(l) => store
+                    .claim_pending_run(loop_uuid, l.max_concurrency)
+                    .ok()
+                    .flatten(),
+                None => None,
             };
-            (loop_row, next)
+            (loop_row, claimed)
         };
-        if let (Some(l), Some(run)) = (loop_row, next) {
+        if let (Some(l), Some(run)) = (loop_row, claimed) {
             self.spawn_run(&l, &run);
         }
     }
@@ -319,22 +322,45 @@ impl Server {
             if let Some(l) = loop_row {
                 self.log()
                     .warn(format!("loop {}: run {} timed out", l.name, run.run_id));
-                self.stop_run_process(&l, &run, "timeout");
+                // Enter the `stopping` barrier synchronously (fast, under the store lock) so the
+                // next tick's `timed_out_runs` no longer selects this run, then dispatch the
+                // blocking TERM→grace→KILL onto its own thread. This keeps the shared scheduler
+                // tick free to fire other loops and enforce other timeouts during the grace
+                // period instead of stalling for `run_term_grace` (spec §11.3).
+                self.enter_stop_barrier(&run);
+                let server = self.clone();
+                std::thread::spawn(move || {
+                    server.finish_stop(&l, &run, "timeout");
+                });
             }
         }
     }
 
     /// Stop a run's process group: `stopping` barrier → TERM → grace → KILL → glob-kill the
     /// run's agents until a clean snapshot → finalize with `terminal_status` (spec §6.2,
-    /// §11.3). `terminal_status` is `stopped` (manual/`loop run stop`) or `timeout`.
+    /// §11.3). `terminal_status` is `stopped` (manual/`loop run stop`) or `timeout`. This is
+    /// synchronous (it blocks its caller for the grace period); the manual `loop run stop`
+    /// handler runs off the scheduler tick, so that is by design. The timeout path instead
+    /// enters the barrier then dispatches [`Server::finish_stop`] to a thread.
     pub(super) fn stop_run_process(&self, l: &LoopRow, run: &LoopRunRow, terminal_status: &str) {
-        // Enter the admission barrier so descendant `agent run`s are rejected from here on.
+        self.enter_stop_barrier(run);
+        self.finish_stop(l, run, terminal_status);
+    }
+
+    /// Enter the `stopping` admission barrier so descendant `agent run`s are rejected from here
+    /// on (no-op if the run is not `running`). Publishes the `loop_run.stopping` event.
+    fn enter_stop_barrier(&self, run: &LoopRunRow) {
         let ev = {
             let mut store = self.inner.store.lock().unwrap();
             store.set_run_stopping(&run.uuid).unwrap_or(0)
         };
         self.publish(ev);
+    }
 
+    /// Finish a stop after the barrier is entered: signal the process group, wait the grace
+    /// period, KILL if still alive, glob-kill the run's agents until clean, finalize, and
+    /// promote the next pending run (spec §6.2, §11.3).
+    fn finish_stop(&self, l: &LoopRow, run: &LoopRunRow, terminal_status: &str) {
         // Signal the process group (start-time-guarded, never a reused pgid).
         self.signal_run(run, libc::SIGTERM);
         std::thread::sleep(self.inner.config.timings.run_term_grace);
@@ -999,9 +1025,14 @@ impl Server {
                 .iter()
                 .map(|r| (r.uuid.clone(), r.run_id.clone()))
                 .collect();
+            // Fetch only this loop's + its runs' events (indexed by ref_uuid) rather than
+            // scanning the whole events table (all loop.* events ref the loop uuid; loop_run.*
+            // ref the run uuid — spec §11.6). Retention-trimmed old events are not returned.
             let events = {
+                let mut refs: Vec<&str> = vec![l.uuid.as_str()];
+                refs.extend(runs.iter().map(|r| r.uuid.as_str()));
                 let store = self.inner.store.lock().unwrap();
-                store.events_since(0, 100_000)?
+                store.events_for_refs(&refs)?
             };
             for ev in events {
                 if !ev.kind.starts_with("loop") {
@@ -1016,13 +1047,6 @@ impl Server {
                         .and_then(|v| v.as_str())
                         .map(String::from)
                 });
-                // Loop-scoped events: keep only those for this loop.
-                let is_this_loop = ref_uuid == l.uuid
-                    || run_by_uuid.contains_key(&ref_uuid)
-                    || ev.payload.get("loop_uuid").and_then(|v| v.as_str()) == Some(&l.uuid);
-                if !is_this_loop {
-                    continue;
-                }
                 // A --run filter drops scheduler lines not attributable to that run.
                 if let Some(sel) = &run_sel {
                     match &run_id {
