@@ -1872,10 +1872,53 @@ impl Store {
         due_at: i64,
         max_concurrency: i64,
         overlap: &str,
+        advance: Option<ScheduleAdvance>,
     ) -> Result<(RunAllocation, i64)> {
         let (loop_uuid, kind, overlap) =
             (loop_uuid.to_string(), kind.to_string(), overlap.to_string());
         self.with_immediate_tx(|tx| {
+            let now = now_millis();
+            // Advance the loop's schedule *inside this same txn* as the run allocation, so a
+            // crash can't leave a fired occurrence without its schedule advanced — which would
+            // make restart recovery log a spurious `missed_while_down` for an occurrence that
+            // actually fired (spec §11.3). Applied on every scheduled-fire outcome (allocated /
+            // coalesced / skipped), mirroring the pre-atomic advance_schedule call. Returns the
+            // highest event seq so far (loop.ended for a `once` end, else the allocation's ev).
+            let apply_advance = |tx: &rusqlite::Transaction, base_ev: i64| -> Result<i64> {
+                let Some(adv) = advance.as_ref() else {
+                    return Ok(base_ev);
+                };
+                tx.execute(
+                    "UPDATE loops SET last_fire_at=?2, updated_at=?2 WHERE uuid=?1",
+                    rusqlite::params![loop_uuid, now],
+                )
+                .map_err(map_sqlite)?;
+                match adv {
+                    ScheduleAdvance::EndOnce => {
+                        tx.execute(
+                            "UPDATE loops SET status='ended', ended_reason='fired', \
+                             next_fire_at=NULL, updated_at=?2 WHERE uuid=?1",
+                            rusqlite::params![loop_uuid, now],
+                        )
+                        .map_err(map_sqlite)?;
+                        append_event_tx(
+                            tx,
+                            "loop.ended",
+                            Some(&loop_uuid),
+                            &json!({ "uuid": loop_uuid, "status": "ended", "ended_reason": "fired" }),
+                        )
+                    }
+                    ScheduleAdvance::Next(next) => {
+                        tx.execute(
+                            "UPDATE loops SET next_fire_at=?2, updated_at=?3 WHERE uuid=?1",
+                            rusqlite::params![loop_uuid, next, now],
+                        )
+                        .map_err(map_sqlite)?;
+                        Ok(base_ev)
+                    }
+                }
+            };
+
             let active: i64 = tx
                 .query_row(
                     "SELECT COUNT(*) FROM loop_runs \
@@ -1894,6 +1937,7 @@ impl Store {
                         Some(&loop_uuid),
                         &json!({ "loop_uuid": loop_uuid, "due_at": due_at }),
                     )?;
+                    let ev = apply_advance(tx, ev)?;
                     return Ok((RunAllocation::Skipped, ev));
                 }
                 // overlap == queue: coalesce into the single pending scheduled run.
@@ -1910,7 +1954,7 @@ impl Store {
                     // Keep the earliest missed fire as the coalesced run's due_at.
                     tx.execute(
                         "UPDATE loop_runs SET due_at=MIN(due_at, ?2), updated_at=?3 WHERE uuid=?1",
-                        rusqlite::params![existing_uuid, due_at, now_millis()],
+                        rusqlite::params![existing_uuid, due_at, now],
                     )
                     .map_err(map_sqlite)?;
                     let run = read_run_row_tx(tx, &existing_uuid)?
@@ -1921,6 +1965,7 @@ impl Store {
                         Some(&loop_uuid),
                         &json!({ "loop_uuid": loop_uuid, "run_id": run.run_id, "due_at": due_at }),
                     )?;
+                    let ev = apply_advance(tx, ev)?;
                     return Ok((RunAllocation::Coalesced { run }, ev));
                 }
             }
@@ -1931,7 +1976,6 @@ impl Store {
             // `BEGIN IMMEDIATE` serializes writers and `active` counts running/stopping rows,
             // no concurrent allocation/promotion can hand the same slot out twice (spec §11.3).
             let uuid = uuid::Uuid::now_v7().to_string();
-            let now = now_millis();
             let mut run_id = new_run_id();
             for _ in 0..8 {
                 let taken: bool = tx
@@ -1970,6 +2014,7 @@ impl Store {
                     "due_at": due_at, "pending": !start_now,
                 }),
             )?;
+            let ev = apply_advance(tx, ev)?;
             Ok((RunAllocation::Allocated { run, start_now }, ev))
         })
     }
@@ -2368,6 +2413,18 @@ pub enum RunAllocation {
     Coalesced { run: LoopRunRow },
     /// An `overlap=skip` fire at capacity — dropped (logged).
     Skipped,
+}
+
+/// A scheduled fire's schedule advance, applied **inside** [`Store::allocate_run`]'s transaction
+/// so the run insert (loop.fired) and the schedule advance commit atomically (spec §11.3). A
+/// crash then either leaves nothing done (recovery skips) or leaves both done (recovery sees the
+/// advanced schedule and emits no spurious `missed_while_down`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScheduleAdvance {
+    /// A `once` loop: end it after this fire (status=ended, reason "fired", loop.ended).
+    EndOnce,
+    /// A cron loop: set the next fire (None → no further fires; loop stays active).
+    Next(Option<i64>),
 }
 
 /// A run id: `r` + 5 lowercase alphanumeric chars (spec §5.1). Uniqueness per loop is
@@ -3230,7 +3287,9 @@ mod tests {
         s.create_loop(&new_loop("l1", "nightly", 1, "queue"))
             .unwrap();
         // First scheduled fire: a slot is free → start_now.
-        let (a1, _) = s.allocate_run("l1", "scheduled", 1000, 1, "queue").unwrap();
+        let (a1, _) = s
+            .allocate_run("l1", "scheduled", 1000, 1, "queue", None)
+            .unwrap();
         let run1 = match a1 {
             RunAllocation::Allocated { run, start_now } => {
                 assert!(start_now);
@@ -3243,7 +3302,9 @@ mod tests {
         s.record_run_start(&run1.uuid, 111, 111, Some(5), now_millis(), None)
             .unwrap();
         // Second scheduled fire at capacity → allocated pending (not start_now).
-        let (a2, _) = s.allocate_run("l1", "scheduled", 2000, 1, "queue").unwrap();
+        let (a2, _) = s
+            .allocate_run("l1", "scheduled", 2000, 1, "queue", None)
+            .unwrap();
         let run2 = match a2 {
             RunAllocation::Allocated { run, start_now } => {
                 assert!(!start_now);
@@ -3252,7 +3313,9 @@ mod tests {
             _ => panic!("expected Allocated pending"),
         };
         // Third scheduled fire coalesces into the single pending run, keeping earliest due_at.
-        let (a3, _) = s.allocate_run("l1", "scheduled", 1500, 1, "queue").unwrap();
+        let (a3, _) = s
+            .allocate_run("l1", "scheduled", 1500, 1, "queue", None)
+            .unwrap();
         match a3 {
             RunAllocation::Coalesced { run } => {
                 assert_eq!(run.uuid, run2.uuid);
@@ -3261,7 +3324,9 @@ mod tests {
             _ => panic!("expected Coalesced"),
         }
         // A manual fire at capacity always allocates its own run (pending).
-        let (a4, _) = s.allocate_run("l1", "manual", 3000, 1, "queue").unwrap();
+        let (a4, _) = s
+            .allocate_run("l1", "manual", 3000, 1, "queue", None)
+            .unwrap();
         assert!(matches!(
             a4,
             RunAllocation::Allocated {
@@ -3278,7 +3343,9 @@ mod tests {
             .unwrap();
         // A free-slot allocation reserves the slot *in the same txn* by inserting `running`,
         // so it counts toward capacity immediately — before record_run_start runs.
-        let (a1, ev1) = s.allocate_run("l1", "scheduled", 1000, 1, "queue").unwrap();
+        let (a1, ev1) = s
+            .allocate_run("l1", "scheduled", 1000, 1, "queue", None)
+            .unwrap();
         let run1 = match a1 {
             RunAllocation::Allocated { run, start_now } => {
                 assert!(start_now);
@@ -3293,7 +3360,9 @@ mod tests {
         assert_eq!(s.active_runs("l1").unwrap().len(), 1);
         // A freshly-queued run emits loop.fired(pending:true), never loop.coalesced.
         let fired = s.events_since(ev1 - 1, 10).unwrap();
-        let (a2, ev2) = s.allocate_run("l1", "manual", 2000, 1, "queue").unwrap();
+        let (a2, ev2) = s
+            .allocate_run("l1", "manual", 2000, 1, "queue", None)
+            .unwrap();
         assert!(matches!(
             a2,
             RunAllocation::Allocated {
@@ -3314,14 +3383,18 @@ mod tests {
         s.create_loop(&new_loop("l1", "nightly", 2, "queue"))
             .unwrap();
         // Fill both slots (fresh allocations reserve them as running).
-        let r1 = match s.allocate_run("l1", "manual", 1, 2, "queue").unwrap().0 {
+        let r1 = match s
+            .allocate_run("l1", "manual", 1, 2, "queue", None)
+            .unwrap()
+            .0
+        {
             RunAllocation::Allocated { run, .. } => run,
             _ => panic!(),
         };
-        s.allocate_run("l1", "manual", 2, 2, "queue").unwrap();
+        s.allocate_run("l1", "manual", 2, 2, "queue", None).unwrap();
         // Two queued runs behind them.
-        s.allocate_run("l1", "manual", 3, 2, "queue").unwrap();
-        s.allocate_run("l1", "manual", 4, 2, "queue").unwrap();
+        s.allocate_run("l1", "manual", 3, 2, "queue", None).unwrap();
+        s.allocate_run("l1", "manual", 4, 2, "queue", None).unwrap();
         assert_eq!(s.active_runs("l1").unwrap().len(), 2);
         // At capacity → claim reserves nothing.
         assert!(s.claim_pending_run("l1", 2).unwrap().is_none());
@@ -3345,7 +3418,11 @@ mod tests {
         let mut s = Store::open_in_memory().unwrap();
         s.create_loop(&new_loop("l1", "nightly", 1, "queue"))
             .unwrap();
-        let run = match s.allocate_run("l1", "manual", 1, 1, "queue").unwrap().0 {
+        let run = match s
+            .allocate_run("l1", "manual", 1, 1, "queue", None)
+            .unwrap()
+            .0
+        {
             RunAllocation::Allocated { run, .. } => run,
             _ => panic!(),
         };
@@ -3365,14 +3442,18 @@ mod tests {
         let mut s = Store::open_in_memory().unwrap();
         s.create_loop(&new_loop("l1", "nightly", 1, "skip"))
             .unwrap();
-        let (a1, _) = s.allocate_run("l1", "scheduled", 1000, 1, "skip").unwrap();
+        let (a1, _) = s
+            .allocate_run("l1", "scheduled", 1000, 1, "skip", None)
+            .unwrap();
         let run1 = match a1 {
             RunAllocation::Allocated { run, .. } => run,
             _ => panic!(),
         };
         s.record_run_start(&run1.uuid, 1, 1, Some(1), now_millis(), None)
             .unwrap();
-        let (a2, _) = s.allocate_run("l1", "scheduled", 2000, 1, "skip").unwrap();
+        let (a2, _) = s
+            .allocate_run("l1", "scheduled", 2000, 1, "skip", None)
+            .unwrap();
         assert!(matches!(a2, RunAllocation::Skipped));
         // No pending run was created.
         assert!(s
@@ -3386,7 +3467,9 @@ mod tests {
         let mut s = Store::open_in_memory().unwrap();
         s.create_loop(&new_loop("l1", "nightly", 2, "queue"))
             .unwrap();
-        let (a, _) = s.allocate_run("l1", "manual", 1000, 2, "queue").unwrap();
+        let (a, _) = s
+            .allocate_run("l1", "manual", 1000, 2, "queue", None)
+            .unwrap();
         let run = match a {
             RunAllocation::Allocated { run, .. } => run,
             _ => panic!(),

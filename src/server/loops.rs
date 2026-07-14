@@ -14,7 +14,7 @@ use super::params::{str_array_param, str_param};
 use super::Server;
 use crate::cron::{self, Cron};
 use crate::error::{OrcrError, Result};
-use crate::store::{now_millis, LoopRow, LoopRunRow, RunAllocation};
+use crate::store::{now_millis, LoopRow, LoopRunRow, RunAllocation, ScheduleAdvance};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -80,17 +80,29 @@ impl Server {
     /// the schedule (for scheduled fires), and starts the process if a slot was free. Returns
     /// the allocation for the manual (`loop run start`) caller.
     pub(super) fn fire_loop(&self, l: &LoopRow, due_at: i64, kind: &str) -> Result<RunAllocation> {
+        // For a scheduled fire, advance the schedule *atomically* with the run allocation (spec
+        // §11.3): compute the next occurrence (or the `once`→ended decision) up front and hand it
+        // to allocate_run, so the run insert (loop.fired) and the schedule advance commit in one
+        // transaction. A crash then never leaves a fired occurrence looking "missed" on restart.
+        let advance = (kind == "scheduled").then(|| {
+            if l.cadence_kind == "once" {
+                ScheduleAdvance::EndOnce
+            } else {
+                ScheduleAdvance::Next(self.compute_next_fire(&l.cadence_value, &l.tz, now_millis()))
+            }
+        });
         let (alloc, ev) = {
             let mut store = self.inner.store.lock().unwrap();
-            store.allocate_run(&l.uuid, kind, due_at, l.max_concurrency, &l.overlap)?
+            store.allocate_run(
+                &l.uuid,
+                kind,
+                due_at,
+                l.max_concurrency,
+                &l.overlap,
+                advance,
+            )?
         };
         self.publish(ev);
-
-        // Advance the schedule for scheduled fires: a `once` loop ends after firing; a cron
-        // loop recomputes its next occurrence.
-        if kind == "scheduled" {
-            self.advance_schedule(l);
-        }
 
         if let RunAllocation::Allocated {
             run,
@@ -100,23 +112,6 @@ impl Server {
             self.spawn_run(l, run);
         }
         Ok(alloc)
-    }
-
-    /// Recompute `next_fire_at` after a scheduled fire (or end a `once` loop).
-    fn advance_schedule(&self, l: &LoopRow) {
-        let now = now_millis();
-        let mut store = self.inner.store.lock().unwrap();
-        let _ = store.set_last_fire(&l.uuid, now);
-        if l.cadence_kind == "once" {
-            let ev = store
-                .set_loop_status(&l.uuid, "ended", Some("fired"), "loop.ended")
-                .unwrap_or(0);
-            drop(store);
-            self.publish(ev);
-            return;
-        }
-        let next = self.compute_next_fire(&l.cadence_value, &l.tz, now);
-        let _ = store.set_next_fire(&l.uuid, next);
     }
 
     /// The next UTC-ms fire strictly after `after`, or `None` if the cron never fires again.
@@ -729,7 +724,18 @@ impl Server {
             ));
         }
         let timeout_s = match str_param(params, "timeout").filter(|s| !s.is_empty()) {
-            Some(t) => Some((crate::duration::parse_duration(&t)?.as_millis() as i64) / 1000),
+            Some(t) => {
+                // Loop timeouts are stored with second precision; a positive but sub-second
+                // duration must not silently collapse to 0 (an instant timeout). Reject it.
+                let ms = crate::duration::parse_duration(&t)?.as_millis() as i64;
+                if ms < 1000 {
+                    return Err(OrcrError::invalid_request(
+                        "--timeout must be at least 1s",
+                        "timeout_too_small",
+                    ));
+                }
+                Some(ms / 1000)
+            }
             None => None,
         };
         let cwd = str_param(params, "cwd")
@@ -882,9 +888,11 @@ impl Server {
             };
             for run in runs {
                 match run.status.as_str() {
-                    "pending" => self.stop_or_cancel_run(&l, &run, "stopped"),
+                    "pending" => {
+                        self.stop_or_cancel_run(&l, &run, "stopped");
+                    }
                     "running" | "stopping" if kill_active => {
-                        self.stop_or_cancel_run(&l, &run, "stopped")
+                        self.stop_or_cancel_run(&l, &run, "stopped");
                     }
                     _ => {}
                 }
@@ -980,14 +988,11 @@ impl Server {
         for run in targets {
             match run.status.as_str() {
                 "running" | "stopping" | "pending" => {
-                    // Same dispatch as `loop rm --kill-active` (stop active / cancel pending);
-                    // the handler adds the terminal row (`canceled` for a pending run).
-                    let row_status = if run.status == "pending" {
-                        "canceled"
-                    } else {
-                        "stopped"
-                    };
-                    self.stop_or_cancel_run(&l, &run, "stopped");
+                    // Same dispatch as `loop rm --kill-active` (stop active / cancel pending). The
+                    // handler re-reads the run under the lock and returns the *actual* resulting
+                    // status, so a pending→running promotion in the window is reported as
+                    // `stopped` (not `canceled`) — matching what really happened.
+                    let row_status = self.stop_or_cancel_run(&l, &run, "stopped");
                     stopped.push(json!({
                         "run_id": run.run_id, "path": format!("{}/{}", l.name, run.run_id),
                         "status": row_status,
@@ -1172,17 +1177,39 @@ impl Server {
     }
 
     /// Stop a run if active, or cancel it if still pending (used by `loop rm --kill-active`).
-    fn stop_or_cancel_run(&self, l: &LoopRow, run: &LoopRunRow, terminal_status: &str) {
+    /// Stop a running/stopping run or cancel a pending one, returning the resulting terminal
+    /// status (`"stopped"` | `"canceled"` | the run's already-terminal status). The run row is
+    /// **re-read under the lock** first: a `pending` run captured in the caller's snapshot may
+    /// have been promoted to `running` by a concurrent exit-monitor (`promote_pending`) between
+    /// capture and dispatch, so branching on the stale status would no-op `cancel_pending_run`
+    /// and let the now-running run escape the stop (spec §11.3).
+    fn stop_or_cancel_run(&self, l: &LoopRow, run: &LoopRunRow, terminal_status: &str) -> String {
+        let run = self.reread_run(run);
         match run.status.as_str() {
-            "running" | "stopping" => self.stop_run_process(l, run, terminal_status),
+            "running" | "stopping" => {
+                self.stop_run_process(l, &run, terminal_status);
+                terminal_status.to_string()
+            }
             "pending" => {
                 let ev = {
                     let mut store = self.inner.store.lock().unwrap();
                     store.cancel_pending_run(&run.uuid).unwrap_or(0)
                 };
-                self.publish(ev);
+                if ev != 0 {
+                    self.publish(ev);
+                    return "canceled".to_string();
+                }
+                // Lost the pending→running race after the re-read (cancel matched no pending row):
+                // re-read once more and stop it as a running run so it can't escape the stop.
+                let run = self.reread_run(&run);
+                if matches!(run.status.as_str(), "running" | "stopping") {
+                    self.stop_run_process(l, &run, terminal_status);
+                    terminal_status.to_string()
+                } else {
+                    run.status
+                }
             }
-            _ => {}
+            _ => run.status,
         }
     }
 }
