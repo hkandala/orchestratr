@@ -78,7 +78,9 @@ await orcr.loop.rm(orcr.loopNameFrom(process.env.ORCR_PATH!));   // self-termina
 // server / api / attach (attach is terminal-mediated — exec the command yourself)
 await orcr.server.status(); await orcr.api.snapshot();
 const at = await orcr.agent.prepareAttach("review/worker", { takeover: false });
-// → { command, leaseId, uuid, path, ttlMs }; exec command, then at.heartbeat()/at.release()
+// → { command, leaseId, uuid, path, ttlMs }. Easiest: `await at.run()` spawns the command,
+//   heartbeats the lease while it lives, releases on exit. Or drive it yourself with the
+//   `command` + `at.heartbeat()`/`at.release()` primitives.
 ```
 
 ## Typed errors

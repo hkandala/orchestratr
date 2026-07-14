@@ -4,6 +4,7 @@
 // composed effective paths match the CLI exactly, then sent as absolute selectors.
 
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { GeneratedClient } from "./generated.js";
 import { Subscription, Transport, orcrHome } from "./wire.js";
 import { fromEnv, OrcrContext } from "./context.js";
@@ -309,6 +310,35 @@ export class AttachHandle {
   }
   async release(): Promise<void> {
     await this.orcr.req("agent.attach.release", { lease_id: this.leaseId });
+  }
+
+  /**
+   * Spawn the interactive attach `command` as a child (inheriting stdio), heartbeat the lease on
+   * an interval while it lives, and release on exit — the full lifecycle the spec promises
+   * (§8: "the SDK heartbeats the lease while the child process lives, releases on exit"), so GC
+   * won't park/reap the agent mid-attach. Resolves with the child's exit code. Use the manual
+   * `command` + `heartbeat`/`release` primitives instead when driving the child yourself.
+   */
+  async run(): Promise<number> {
+    if (this.command.length === 0) {
+      throw new Error("attach command is empty");
+    }
+    const [cmd, ...args] = this.command;
+    const child = spawn(cmd, args, { stdio: "inherit" });
+    // Heartbeat well within the lease TTL; clamp so a missing/tiny ttl still beats sensibly.
+    const period = this.ttlMs > 0 ? Math.max(500, Math.floor(this.ttlMs / 2)) : 5000;
+    const timer = setInterval(() => {
+      void this.heartbeat().catch(() => {});
+    }, period);
+    try {
+      return await new Promise<number>((resolve, reject) => {
+        child.on("error", reject);
+        child.on("exit", (code) => resolve(code ?? 0));
+      });
+    } finally {
+      clearInterval(timer);
+      await this.release().catch(() => {});
+    }
   }
 }
 

@@ -242,3 +242,22 @@ worth knowing, and discovered facts.
 - All checks green: `cargo fmt`, `cargo clippy --all-targets`, 160 Rust unit tests, SDK 20/20 +
   `codegen:check` up to date + `npm run build`, `ORCR_E2E=1` recipe_e2e 7/7 and skill_docs 2/2
   against live herdr. `herdr session list` confirms only `default` remains (no leaks).
+
+### Comprehensive-review round 3 (attach lifecycle + shape deviations)
+
+- **`AttachHandle.run()` added (spec §8 lifecycle).** Spec §8 promises the SDK "heartbeats the
+  lease while the child process lives, releases on exit", but the SDK previously exposed only the
+  manual `command` + `heartbeat`/`release` primitives — a caller who exec'd the command and
+  forgot to heartbeat would have the lease expire and GC resume park/reap mid-attach. Added
+  `AttachHandle.run()`: spawns the attach command (stdio inherited), heartbeats on an interval
+  (`ttlMs/2`, clamped) while the child lives, releases in a `finally`, resolves with the exit
+  code — matching the CLI's `agent attach` background-heartbeat lifecycle. The manual primitives
+  stay for callers driving the child themselves. `sdk/ts/src/client.ts`; `skill/references/sdk.md`.
+- **Deliberate deviation — `prepareAttach` result shape.** Spec §8 (line 1130) sketches the
+  result as `{ command, leaseId, uuid, path, terminalId }`, but the server
+  (`agent.attach.prepare`) returns `{ uuid, path, lease_id, takeover, ttl_ms, command }` — no
+  `terminal_id`, plus `ttl_ms`. The SDK's `AttachHandle` mirrors the *actual* server result
+  (surfacing `ttlMs`, omitting `terminalId`): the terminal id is an internal routing detail the
+  attach `command` already encodes, and `ttlMs` is what `run()` needs to size its heartbeat.
+  `sdk.md` documents the real shape honestly. Kept as-is (server + SDK agree; only the spec's
+  illustrative sketch differs) rather than threading an unused `terminal_id` through the stack.
