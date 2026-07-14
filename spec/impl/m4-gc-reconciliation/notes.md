@@ -117,6 +117,40 @@ choices worth knowing, and discovered facts. Capture *decisions and deviations*.
   `PARK_GC` config (idle_after 5s, kill_after 60s) that widens the observable window without
   changing what's tested. Full `ORCR_E2E=1 cargo test` now green across every suite.
 
+## Reviewer findings (round 1 — FAIL) → fixes
+
+- **HIGH — `agent send` / `kill --force` routed unmanaged agents through the OWNED session.**
+  Both handlers used `self.owned_driver()` and then operated on `row.pane_id`, but an
+  unmanaged agent's pane lives in a *foreign* herdr session (sessions are per-socket) and
+  `pane_id` is workspace-scoped (not globally unique). So `send` mis-delivered/failed and
+  `kill --force` never closed the foreign pane (or hit a colliding owned pane), after which
+  discovery re-inserted a duplicate row. **Fix:** new `Server::driver_for_agent` connects to
+  the socket of the session `row.herdr_session` names (owned → cached driver; foreign →
+  `HerdrBinary::find_session(session).socket_path` → `HerdrDriver::connect`, mirroring
+  discovery.rs), and `Server::live_pane_id` resolves the current pane by the globally-unique,
+  move-stable `terminal_id` on that driver (falling back to the recorded `pane_id`).
+  `handle_agent_send` and `handle_agent_kill` now route through both. attach was already
+  correct (it built its exec command from `info.herdr_session` + `terminal_id`).
+
+- **MEDIUM — park vs send race could desync status/location.** A `send` resolving a row after
+  `park_one` committed `begin_move` (move_state=parking) but before its `pane_move`+`finish_park`
+  called `unpark_for_send → recover_one_move`, which read the pane's still-home workspace and
+  rolled back the *live owner's* token; `park_one` then physically moved the pane and its
+  `finish_park` no-oped, leaving the pane in `idle` but the row idle/none with a stale pane_id.
+  **Fix:** a **per-agent move mutex** (`ServerInner::move_locks`, via `Server::lock_move`).
+  `park_one` and the periodic/startup `recover_one_move` acquire it for the whole two-phase
+  move; `handle_agent_send` (managed targets) holds it across the re-read + un-park + delivery,
+  so a send can never pre-empt a live move (it either sees the park fully done — row parked,
+  clean un-park — or the park hasn't started). `recover_one_move` split into a locking wrapper
+  + `recover_one_move_locked` (called by `unpark_for_send`, which already holds the lock).
+
+- **LOW — no e2e for the unmanaged verb contract beyond the no-force skip.** Added
+  `gc_e2e::e2e_unmanaged_verb_contract`: against a mock hand-started in a second disposable
+  (foreign) session, `send @block` lands in the foreign pane (mock → `blocked`, mirrored into
+  the row), `wait` resolves on the blocked agent, `logs` resolves (→ `transcript_unavailable`,
+  not `integration_missing`), and `kill --force` closes the foreign pane + ends the row with no
+  duplicate re-discovered. All 14 gc_e2e + 9 agent_e2e green against live herdr 0.7.2.
+
 ## Verifier & reviewer history
 
 - **Implementation** (this pass): store DAL (park/reap/timeout candidates, two-phase move

@@ -240,6 +240,13 @@ impl UserSession {
             .expect("hand-start mock");
         info.terminal_id
     }
+    /// Whether a pane with this terminal id still exists in the user session.
+    fn terminal_present(&self, terminal_id: &str) -> bool {
+        self.driver
+            .pane_list(None)
+            .map(|ps| ps.iter().any(|p| p.terminal_id == terminal_id))
+            .unwrap_or(false)
+    }
 }
 impl Drop for UserSession {
     fn drop(&mut self) {
@@ -632,6 +639,118 @@ fn e2e_unmanaged_discovery() {
                 .unwrap_or(false)
         }),
         "closed unmanaged terminal → ended"
+    );
+}
+
+/// The §5.7 unmanaged behavior contract, verb by verb, against a hand-started agent living in
+/// a *foreign* herdr session: `send` lands in that session's pane, `wait`/`logs` resolve, and
+/// `kill --force` actually closes the foreign pane (with no duplicate row re-discovered).
+/// Regression guard for cross-session routing — these verbs must address the pane on the
+/// agent's own session's socket, not the owned session's driver (where the workspace-scoped
+/// `pane_id` would miss, or collide with, a different pane).
+#[test]
+fn e2e_unmanaged_verb_contract() {
+    skip_unless_e2e!();
+    let ts = TestServer::start();
+    let user = UserSession::start();
+    let term = user.start_mock();
+    // Discovery picks up our hand-started mock (select ours by provider == mock).
+    let uuid = wait_until_some(Duration::from_secs(15), || {
+        let r = ts.request("agent.ls", json!({ "unmanaged": true })).ok()?;
+        r["agents"]
+            .as_array()?
+            .iter()
+            .find(|x| x["managed"] == json!(false) && x["agent"] == json!("mock"))
+            .and_then(|x| x["uuid"].as_str().map(String::from))
+    })
+    .expect("unmanaged agent discovered");
+
+    // send: the prompt must reach the FOREIGN session's pane. The mock reads `@block` and
+    // reports `blocked`; discovery mirrors that into the row — observable proof the input
+    // arrived (before the cross-session fix, send hit the owned driver and never landed, so the
+    // mock stayed idle).
+    let sent = ts
+        .request(
+            "agent.send",
+            json!({ "target": uuid, "prompt": "@block please" }),
+        )
+        .expect("send to unmanaged");
+    assert!(
+        sent["input_seq"].as_i64().unwrap_or(0) >= 1,
+        "send tracks an input turn"
+    );
+    assert!(
+        wait_until(Duration::from_secs(15), || {
+            ts.status(&uuid).as_deref() == Some("blocked")
+        }),
+        "send must land in the foreign pane (mock → blocked)"
+    );
+
+    // wait: a blocked unmanaged agent is a settle state → resolves promptly (not timed out).
+    let waited = ts
+        .request(
+            "agent.wait",
+            json!({ "targets": [uuid.clone()], "timeout": "10s" }),
+        )
+        .expect("wait on unmanaged");
+    assert_eq!(
+        waited["timed_out"],
+        json!(false),
+        "wait resolves on the blocked unmanaged agent"
+    );
+    assert!(waited["targets"][0]["reason"]
+        .as_str()
+        .unwrap_or("")
+        .starts_with("blocked"));
+
+    // logs: the path resolves (supported provider) — the mock has no native transcript.
+    let logs_err = ts
+        .request(
+            "agent.logs",
+            json!({ "target": uuid.clone(), "last_response": true }),
+        )
+        .unwrap_err();
+    assert_eq!(logs_err.code, orchestratr::ErrorCode::TranscriptUnavailable);
+
+    // kill --force: closes the pane in the FOREIGN session and ends the row.
+    let killed = ts
+        .request(
+            "agent.kill",
+            json!({ "targets": [uuid.clone()], "force": true }),
+        )
+        .expect("kill --force unmanaged");
+    assert_eq!(
+        killed["killed"].as_array().unwrap().len(),
+        1,
+        "unmanaged kill --force kills"
+    );
+    assert!(
+        wait_until(Duration::from_secs(10), || !user.terminal_present(&term)),
+        "kill --force must close the foreign pane"
+    );
+    assert!(
+        wait_until(Duration::from_secs(10), || ts.status(&uuid).as_deref()
+            == Some("ended")),
+        "killed unmanaged row → ended"
+    );
+    // No duplicate row is re-discovered for that (now-gone) terminal: give discovery a couple of
+    // ticks, then confirm no active unmanaged row remains for the user session.
+    std::thread::sleep(Duration::from_secs(7));
+    let prefix = format!("unmanaged/{}/", user.name);
+    let rows = ts
+        .request("agent.ls", json!({ "unmanaged": true, "all": true }))
+        .unwrap();
+    let active_for_session = rows["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|x| {
+            x["path"].as_str().unwrap_or("").starts_with(&prefix) && x["status"] != json!("ended")
+        })
+        .count();
+    assert_eq!(
+        active_for_session, 0,
+        "closed foreign pane leaves no active (re-discovered) unmanaged row"
     );
 }
 
