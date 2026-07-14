@@ -195,7 +195,31 @@ impl Server {
             }
             self.log()
                 .warn(format!("spawn pipeline for {} failed: {e}", agent.path));
+            // If agent.start already created the pane and a *later* step failed (deliver / send /
+            // settle), close it before failing the row: an `ended(failed)` row is never revisited
+            // by reconciliation, so a live (paid) provider process would otherwise leak — only
+            // surfacing later as an unknown_marked_pane in drift, cleaned by hand (§11.1, §11.5).
+            // Best-effort; no-op when the failure preceded agent.start (nothing was created).
+            self.close_pipeline_pane(&uuid);
             self.end_agent(&uuid, "failed");
+        }
+    }
+
+    /// Close the pane recorded for a mid-pipeline-failed agent (best-effort). A no-op when no
+    /// pane was ever recorded (failure before `agent.start`, or the agent.start-itself failure
+    /// which already closes its own root pane) — nothing was leaked in those cases.
+    fn close_pipeline_pane(&self, uuid: &str) {
+        let row = {
+            let store = self.inner.store.lock().unwrap();
+            store.agent_full(uuid).ok().flatten()
+        };
+        let Some(a) = row else { return };
+        if a.pane_id.is_none() {
+            return;
+        }
+        let driver = self.driver_for_agent(&a).ok();
+        if let (Some(d), Some(pane)) = (&driver, self.live_pane(driver.as_ref(), &a)) {
+            let _ = d.pane_close(&pane);
         }
     }
 
@@ -273,8 +297,8 @@ impl Server {
             // Open turn 1 / bump input_seq / re-arm to `working` BEFORE the herdr send, so the
             // agent's public status leads delivery (§5.6: input_seq increments before delivery;
             // a stale idle can never satisfy the new turn, and no synthetic external turn can be
-            // opened in the send gap). A herdr send failure then leaves the turn open — the agent
-            // shows `working` and never completes, visible in `top`.
+            // opened in the send gap). A herdr send failure here propagates to run_pipeline, which
+            // closes the pane and ends the row `failed` (no leaked provider process).
             let ev = {
                 let mut store = self.inner.store.lock().unwrap();
                 store.deliver_input(uuid, "orcr", now_millis())?.1
