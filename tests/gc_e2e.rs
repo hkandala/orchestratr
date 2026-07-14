@@ -856,6 +856,23 @@ fn e2e_unmanaged_kill_requires_force() {
         json!("force_required"),
         "unmanaged kill needs --force"
     );
+    // CLI-level: matched but every target skipped (needs --force) → exit 7 (spec §6.1). Output
+    // is piped (non-TTY), so the confirmation prompt is skipped and the verb runs to completion.
+    let status = Command::new(orcr_bin())
+        .args(["agent", "kill", &uuid])
+        .env("ORCR_HOME", ts.home.path())
+        .env_remove("ORCR_ID")
+        .env_remove("ORCR_PATH")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("run orcr agent kill");
+    assert_eq!(
+        status.code(),
+        Some(7),
+        "all-skipped kill must exit 7 (spec §6.1)"
+    );
 }
 
 /// Soak: many mock agents churn (complete → park → reap); afterwards the owned session is clean
