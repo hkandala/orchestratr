@@ -125,14 +125,15 @@ impl App {
             }
             match sub.next_event() {
                 Ok(Some(frame)) => {
-                    // A `server_stopping` control frame means the server is going away.
-                    let stopping = frame
+                    // A `server_stopping` (server going away) or `cursor_expired` (our cursor
+                    // fell out of the retained window) control frame means we must re-snapshot
+                    // and resubscribe (spec §7, §11.6).
+                    let kind = frame
                         .get("event")
                         .and_then(|e| e.get("kind"))
                         .or_else(|| frame.get("kind"))
-                        .and_then(|k| k.as_str())
-                        == Some("server_stopping");
-                    if stopping {
+                        .and_then(|k| k.as_str());
+                    if matches!(kind, Some("server_stopping") | Some("cursor_expired")) {
                         let _ = tx.send(Msg::Disconnected);
                         return;
                     }

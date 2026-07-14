@@ -524,6 +524,21 @@ impl Server {
                 if stop.load(Ordering::SeqCst) {
                     return;
                 }
+                // If our cursor has fallen out of the retained window (extreme churn + a
+                // slow/backed-up client), the next `events_since` would silently start at the
+                // new oldest row, skipping the trimmed range. Signal `cursor_expired` and stop
+                // so the client re-snapshots and resubscribes (spec §11.6) — mirroring the
+                // subscribe-time check, which only ran once at subscribe.
+                if server.inner.bus.is_expired(next) {
+                    let (_, oldest) = server.inner.bus.cursor();
+                    let frame = event_frame(
+                        &sub_id,
+                        0,
+                        json!({ "kind": "cursor_expired", "oldest_seq": oldest }),
+                    );
+                    let _ = write_to(&writer, &frame);
+                    return;
+                }
                 // Drain everything currently available.
                 loop {
                     let rows = {
