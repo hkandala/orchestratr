@@ -41,7 +41,8 @@ pub enum NameOrPath {
 pub fn valid_segment(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= MAX_SEGMENT_LEN
-        && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 /// Replace every `{rand}` placeholder with 5 random `[a-z0-9]` chars (creation only, §5.1).
@@ -167,10 +168,7 @@ pub fn name_of(path: &str) -> &str {
 
 /// An agent's scope = its path minus its name (§5.3). `None` for a single-segment path.
 pub fn scope_of_agent(path: &str) -> Option<String> {
-    match path.rfind('/') {
-        Some(i) => Some(path[..i].to_string()),
-        None => None,
-    }
+    path.rfind('/').map(|i| path[..i].to_string())
 }
 
 /// The home workspace = the first segment when the path has ≥ 2 segments, else `default`
@@ -342,7 +340,10 @@ mod tests {
 
     #[test]
     fn depth_limit_enforced() {
-        let deep = (0..9).map(|i| format!("s{i}")).collect::<Vec<_>>().join("/");
+        let deep = (0..9)
+            .map(|i| format!("s{i}"))
+            .collect::<Vec<_>>()
+            .join("/");
         let e = validate_path(&deep).unwrap_err();
         assert_eq!(e.details["reason"], "path_too_deep");
         assert_eq!(e.details["segments"], 9);
@@ -363,7 +364,9 @@ mod tests {
         assert!(expanded.ends_with("/file_1"));
         let mid = &expanded["review_".len()..expanded.len() - "/file_1".len()];
         assert_eq!(mid.len(), 5);
-        assert!(mid.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()));
+        assert!(mid
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()));
         // two expansions differ (overwhelmingly likely)
         assert_ne!(expand_rand("{rand}"), expand_rand("{rand}"));
     }
@@ -372,11 +375,17 @@ mod tests {
     fn derived_helpers() {
         assert_eq!(name_of("review/fanout/file_1"), "file_1");
         assert_eq!(name_of("worker"), "worker");
-        assert_eq!(scope_of_agent("review/fanout/file_1").as_deref(), Some("review/fanout"));
+        assert_eq!(
+            scope_of_agent("review/fanout/file_1").as_deref(),
+            Some("review/fanout")
+        );
         assert_eq!(scope_of_agent("worker"), None);
         assert_eq!(home_workspace("refactor/phase_1/review/worker"), "refactor");
         assert_eq!(home_workspace("worker"), "default");
-        assert_eq!(tab_label("refactor/phase_1/review/worker"), "phase_1/review/worker");
+        assert_eq!(
+            tab_label("refactor/phase_1/review/worker"),
+            "phase_1/review/worker"
+        );
         assert_eq!(tab_label("worker"), "worker");
     }
 
@@ -440,7 +449,13 @@ mod tests {
     #[test]
     fn selector_resolution() {
         assert_eq!(resolve_selector(Some("review"), "*").unwrap(), "review/*");
-        assert_eq!(resolve_selector(Some("review"), "/verify/**").unwrap(), "verify/**");
-        assert_eq!(resolve_selector(None, "review/worker").unwrap(), "review/worker");
+        assert_eq!(
+            resolve_selector(Some("review"), "/verify/**").unwrap(),
+            "verify/**"
+        );
+        assert_eq!(
+            resolve_selector(None, "review/worker").unwrap(),
+            "review/worker"
+        );
     }
 }

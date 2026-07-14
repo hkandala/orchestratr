@@ -50,14 +50,20 @@ pub fn launch_plan(
         "claude" => {
             // Bypass permissions so the agent runs unattended (spec §11.4; everything runs
             // bypass-permissions in this release, §17).
-            let mut argv = vec!["claude".to_string(), "--dangerously-skip-permissions".to_string()];
+            let mut argv = vec![
+                "claude".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ];
             if let Some(m) = model {
                 argv.push("--model".to_string());
                 argv.push(m.to_string());
             }
             // claude has no separate effort knob; effort is ignored (documented).
             let _ = effort;
-            Ok(LaunchPlan { argv, shutdown_line: None })
+            Ok(LaunchPlan {
+                argv,
+                shutdown_line: None,
+            })
         }
         "codex" => {
             let mut argv = vec![
@@ -72,7 +78,10 @@ pub fn launch_plan(
                 argv.push("-c".to_string());
                 argv.push(format!("model_reasoning_effort={e}"));
             }
-            Ok(LaunchPlan { argv, shutdown_line: None })
+            Ok(LaunchPlan {
+                argv,
+                shutdown_line: None,
+            })
         }
         MOCK_PROVIDER if mock_provider_enabled() => {
             let bin = std::env::var("ORCR_MOCK_AGENT_BIN").map_err(|_| {
@@ -282,13 +291,22 @@ cursor: current (v1) (/p)
     fn launch_plan_maps_model_and_effort() {
         let claude = launch_plan("claude", Some("opus"), None).unwrap();
         assert_eq!(claude.argv[0], "claude");
-        assert!(claude.argv.iter().any(|a| a == "--dangerously-skip-permissions"));
+        assert!(claude
+            .argv
+            .iter()
+            .any(|a| a == "--dangerously-skip-permissions"));
         assert!(claude.argv.windows(2).any(|w| w == ["--model", "opus"]));
 
         let codex = launch_plan("codex", Some("gpt-5"), Some("high")).unwrap();
-        assert!(codex.argv.iter().any(|a| a == "--dangerously-bypass-approvals-and-sandbox"));
+        assert!(codex
+            .argv
+            .iter()
+            .any(|a| a == "--dangerously-bypass-approvals-and-sandbox"));
         assert!(codex.argv.windows(2).any(|w| w == ["--model", "gpt-5"]));
-        assert!(codex.argv.iter().any(|a| a == "model_reasoning_effort=high"));
+        assert!(codex
+            .argv
+            .iter()
+            .any(|a| a == "model_reasoning_effort=high"));
 
         // Empty model/effort → provider defaults (no flags added).
         let bare = launch_plan("claude", Some(""), Some("")).unwrap();
@@ -311,7 +329,10 @@ cursor: current (v1) (/p)
         let e = ensure_supported(&no_herdr, "claude").unwrap_err();
         assert_eq!(e.code, crate::error::ErrorCode::IntegrationMissing);
         assert_eq!(e.details["missing"], serde_json::json!(["herdr"]));
-        assert!(e.details["install"].as_str().unwrap().contains("herdr integration install claude"));
+        assert!(e.details["install"]
+            .as_str()
+            .unwrap()
+            .contains("herdr integration install claude"));
         assert_eq!(e.exit_code(), 2);
 
         // orcr layer missing (pi has herdr but no orcr built-in).

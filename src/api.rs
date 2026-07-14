@@ -198,9 +198,10 @@ pub fn methods() -> Vec<MethodDef> {
             "name": str_schema(), "path": str_schema(), "agent": str_schema(),
             "prompt": str_schema(), "gc": str_schema(), "model": str_schema(),
             "effort": str_schema(), "cwd": str_schema(), "timeout": str_schema(),
+            "caller_id": str_schema(), "caller_path": str_schema(),
         })),
         object(json!({ "agent": any_object(), "permissions": str_schema() })),
-        false,
+        true,
         false,
     );
     add(
@@ -214,12 +215,15 @@ pub fn methods() -> Vec<MethodDef> {
     add(
         "agent.send",
         "Deliver a prompt to an existing agent's TUI.",
-        object(json!({ "target": str_schema(), "prompt": str_schema() })),
+        object(json!({
+            "target": str_schema(), "prompt": str_schema(),
+            "caller_id": str_schema(), "caller_path": str_schema(),
+        })),
         object(json!({
             "uuid": str_schema(), "path": str_schema(),
             "delivered_while": str_schema(), "input_seq": int_schema(),
         })),
-        false,
+        true,
         false,
     );
     add(
@@ -260,12 +264,15 @@ pub fn methods() -> Vec<MethodDef> {
     add(
         "agent.kill",
         "Kill matched agents (graceful per-integration shutdown; panes closed).",
-        object(json!({ "targets": array_of(str_schema()), "force": bool_schema() })),
+        object(json!({
+            "targets": array_of(str_schema()), "force": bool_schema(),
+            "preview": bool_schema(), "caller_id": str_schema(), "caller_path": str_schema(),
+        })),
         object(json!({
             "killed": array_of(any_object()), "skipped": array_of(any_object()),
             "all_killed": bool_schema(),
         })),
-        false,
+        true,
         false,
     );
     add(
@@ -274,9 +281,10 @@ pub fn methods() -> Vec<MethodDef> {
         object(json!({
             "pattern": str_schema(), "agent": str_schema(), "status": str_schema(),
             "managed": bool_schema(), "unmanaged": bool_schema(), "all": bool_schema(),
+            "caller_id": str_schema(), "caller_path": str_schema(),
         })),
         object(json!({ "agents": array_of(any_object()) })),
-        false,
+        true,
         false,
     );
 

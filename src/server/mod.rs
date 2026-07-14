@@ -7,6 +7,7 @@
 //! shared writer. Wakeups ride the [`EventBus`] condvar so nothing busy-polls the store.
 
 pub mod client;
+mod engine;
 mod log;
 
 pub use client::{Client, StartOutcome};
@@ -19,7 +20,7 @@ use crate::error::{OrcrError, Result};
 use crate::events::{EventBus, WaitOutcome};
 use crate::home::Home;
 use crate::lock::InstanceLock;
-use crate::store::{now_millis, Store};
+use crate::store::{now_millis, AgentFull, Store};
 use crate::wire::{
     err_response, event_frame, ok_response, read_frame, write_frame, Request, ORCR_PROTOCOL,
 };
@@ -54,9 +55,12 @@ pub struct Server {
 
 struct ServerInner {
     config: Config,
+    home: Home,
     store: Mutex<Store>,
     bus: EventBus,
     log: ServerLog,
+    /// The owned herdr session's driver, connected lazily and cached (reconnected on error).
+    driver: Mutex<Option<HerdrDriver>>,
     started_at: i64,
     pid: u32,
     retention: i64,
@@ -65,6 +69,9 @@ struct ServerInner {
     socket_path: PathBuf,
     store_path: PathBuf,
     sub_counter: AtomicU64,
+    /// Serializes owned-session workspace creation so concurrent spawns under one level-1
+    /// segment never create duplicate workspaces (§11.1).
+    spawn_lock: Mutex<()>,
 }
 
 impl Server {
@@ -79,16 +86,32 @@ impl Server {
             let mut store = self.inner.store.lock().unwrap();
             store.append_event(kind, ref_uuid, payload)?
         };
+        self.publish(seq);
+        Ok(seq)
+    }
+
+    /// Wake subscribers up to `seq` and enforce bounded retention. Producers that append
+    /// events *inside* a store transaction call this afterward with the highest event seq
+    /// they wrote (0 = nothing to publish).
+    pub fn publish(&self, seq: i64) {
+        if seq <= 0 {
+            return;
+        }
         self.inner.bus.published(seq);
         let (latest, oldest) = self.inner.bus.cursor();
         if latest - oldest + 1 > self.inner.retention {
             let new_oldest = {
                 let mut store = self.inner.store.lock().unwrap();
-                store.trim_events(self.inner.retention)?
+                match store.trim_events(self.inner.retention) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        self.log().warn(format!("event trim failed: {e}"));
+                        return;
+                    }
+                }
             };
             self.inner.bus.set_oldest_retained(new_oldest);
         }
-        Ok(seq)
     }
 }
 
@@ -143,9 +166,11 @@ pub fn run_foreground(home: &Home, config: Config) -> Result<StartOutcome> {
     let server = Server {
         inner: Arc::new(ServerInner {
             config,
+            home: home.clone(),
             store: Mutex::new(store),
             bus,
             log,
+            driver: Mutex::new(None),
             started_at: now_millis(),
             pid: std::process::id(),
             retention,
@@ -154,6 +179,7 @@ pub fn run_foreground(home: &Home, config: Config) -> Result<StartOutcome> {
             socket_path: home.socket_path(),
             store_path: home.store_path(),
             sub_counter: AtomicU64::new(0),
+            spawn_lock: Mutex::new(()),
         }),
     };
 
@@ -167,6 +193,11 @@ pub fn run_foreground(home: &Home, config: Config) -> Result<StartOutcome> {
 
     // Install signal handlers so SIGTERM/SIGINT trigger a graceful stop.
     install_signal_handlers(&server);
+
+    // Reconcile the store against herdr reality on start (spec §11.5), then start the queue
+    // engine (promotion + spawn pipelines + stuck-start guard, §5.5/§11.1).
+    server.reconcile_on_start();
+    server.start_queue_worker();
 
     server.serve(listener);
 
@@ -307,6 +338,26 @@ impl Server {
             "api.snapshot" => {
                 let (_, snap) = self.build_snapshot();
                 let _ = write_to(writer, &ok_response(&req.id, snap));
+                false
+            }
+            "agent.run" => {
+                let out = self.handle_agent_run(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "agent.send" => {
+                let out = self.handle_agent_send(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "agent.kill" => {
+                let out = self.handle_agent_kill(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "agent.ls" => {
+                let out = self.handle_agent_ls(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
                 false
             }
             "events.subscribe" => {
@@ -502,11 +553,23 @@ impl Server {
     fn build_snapshot(&self) -> (i64, Value) {
         let store = self.inner.store.lock().unwrap();
         let seq = store.latest_event_seq().unwrap_or(0);
+        let all = store
+            .list_agents(&crate::store::AgentFilter {
+                include_ended: false,
+                ..Default::default()
+            })
+            .unwrap_or_default();
+        let agents: Vec<Value> = all.iter().map(|a| agent_row_json(&store, a)).collect();
+        let queue: Vec<Value> = all
+            .iter()
+            .filter(|a| a.status == "queued")
+            .map(|a| json!({ "uuid": a.uuid, "path": a.path, "agent": a.agent }))
+            .collect();
         let snap = json!({
             "snapshot_seq": seq,
-            "agents": [],
+            "agents": agents,
             "loops": [],
-            "queue": [],
+            "queue": queue,
         });
         (seq, snap)
     }
@@ -609,6 +672,50 @@ impl Server {
             );
         }
         Value::Object(map)
+    }
+}
+
+/// The flat `agent ls` / snapshot row for an agent (spec §6.1, §13). `queue_position` and
+/// `parent_path` are derived (never stored, §12).
+fn agent_row_json(store: &Store, a: &AgentFull) -> Value {
+    let mut row = json!({
+        "uuid": a.uuid,
+        "path": a.path,
+        "status": a.status,
+        "managed": a.managed,
+        "agent": a.agent,
+        "cwd": a.cwd,
+        "pane_id": a.pane_id,
+        "created_at": a.created_at,
+    });
+    if a.status == "queued" {
+        if let Ok(Some(q)) = store.queue_position(&a.uuid) {
+            row["queue_position"] = json!(q);
+        }
+    }
+    if let Some(pid) = &a.parent_id {
+        row["parent_id"] = json!(pid);
+        if let Ok(Some(parent)) = store.agent_full(pid) {
+            row["parent_path"] = json!(parent.path);
+        }
+    }
+    if let Some(bk) = &a.blocked_kind {
+        row["blocked_kind"] = json!(bk);
+    }
+    if let Some(er) = &a.exit_reason {
+        row["exit_reason"] = json!(er);
+    }
+    if let Some(ea) = a.ended_at {
+        row["ended_at"] = json!(ea);
+    }
+    row
+}
+
+/// Turn a handler `Result<Value>` into a wire response envelope correlated by `id`.
+fn respond(id: &Value, out: Result<Value>) -> Value {
+    match out {
+        Ok(v) => ok_response(id, v),
+        Err(e) => err_response(id, &e),
     }
 }
 

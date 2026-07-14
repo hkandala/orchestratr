@@ -12,7 +12,7 @@ use crate::home::Home;
 use crate::server::{self, Client};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -30,6 +30,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Spawn, message, and manage agents (§6.1).
+    Agent {
+        #[command(subcommand)]
+        cmd: AgentCmd,
+    },
     /// The orcr server: single writer, socket API (§6.4).
     Server {
         #[command(subcommand)]
@@ -39,6 +44,76 @@ pub enum Command {
     Api {
         #[command(subcommand)]
         cmd: ApiCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AgentCmd {
+    /// Spawn a managed agent (async): validate, enqueue, print `<path> <uuid>`.
+    Run {
+        /// The agent's name (lands directly in your scope). Exactly one of --name/--path.
+        #[arg(long)]
+        name: Option<String>,
+        /// The agent's path (last segment = name; relative to scope, `/` = absolute).
+        #[arg(long)]
+        path: Option<String>,
+        /// Provider (falls back to config `defaults.agent`).
+        #[arg(short = 'a', long = "agent")]
+        agent: Option<String>,
+        /// Prompt text; `-p -` reads the prompt from stdin.
+        #[arg(short = 'p', long = "prompt")]
+        prompt: Option<String>,
+        /// GC policy for the pane's lifetime.
+        #[arg(long, value_parser = ["auto", "immediate", "never"])]
+        gc: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        effort: Option<String>,
+        /// Working directory for the agent (default: the caller's cwd).
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Kill the agent after this duration (no default timeout).
+        #[arg(long)]
+        timeout: Option<String>,
+    },
+    /// Deliver a prompt to an existing agent's TUI (exact target).
+    Send {
+        /// The target agent (`<path|uuid>`; no wildcards).
+        target: String,
+        /// The prompt (positional); `-` reads from stdin. Or use -p.
+        prompt: Option<String>,
+        /// Prompt text; `-p -` reads from stdin.
+        #[arg(short = 'p', long = "prompt")]
+        prompt_flag: Option<String>,
+    },
+    /// Kill matched agents (patterns + uuids); graceful shutdown → pane closed.
+    Kill {
+        /// Targets (`<pattern|uuid>...`).
+        #[arg(required = true)]
+        targets: Vec<String>,
+        /// Kill unmanaged agents too (closes a pane orcr does not own).
+        #[arg(long)]
+        force: bool,
+        /// Skip the TTY confirmation.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+    /// List active (and, with --all, ended) agents.
+    Ls {
+        /// Optional path pattern to filter by.
+        pattern: Option<String>,
+        #[arg(short = 'a', long = "agent")]
+        agent: Option<String>,
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long)]
+        managed: bool,
+        #[arg(long)]
+        unmanaged: bool,
+        /// Include ended agents (history).
+        #[arg(long)]
+        all: bool,
     },
 }
 
@@ -92,6 +167,7 @@ pub fn run() -> i32 {
 
 fn dispatch(cli: &Cli) -> Result<()> {
     match &cli.command {
+        Command::Agent { cmd } => dispatch_agent(cli.json, cmd),
         Command::Server { cmd } => match cmd {
             ServerCmd::Start { foreground } => cmd_server_start(cli.json, *foreground),
             ServerCmd::Stop => cmd_server_stop(cli.json),
@@ -102,6 +178,304 @@ fn dispatch(cli: &Cli) -> Result<()> {
             ApiCmd::Schema { output } => cmd_api_schema(cli.json, output.as_deref()),
             ApiCmd::Snapshot => cmd_api_snapshot(cli.json),
         },
+    }
+}
+
+// --- agent ---
+
+fn dispatch_agent(json: bool, cmd: &AgentCmd) -> Result<()> {
+    match cmd {
+        AgentCmd::Run {
+            name,
+            path,
+            agent,
+            prompt,
+            gc,
+            model,
+            effort,
+            cwd,
+            timeout,
+        } => cmd_agent_run(
+            json, name, path, agent, prompt, gc, model, effort, cwd, timeout,
+        ),
+        AgentCmd::Send {
+            target,
+            prompt,
+            prompt_flag,
+        } => cmd_agent_send(json, target, prompt.as_deref(), prompt_flag.as_deref()),
+        AgentCmd::Kill {
+            targets,
+            force,
+            yes,
+        } => cmd_agent_kill(json, targets, *force, *yes),
+        AgentCmd::Ls {
+            pattern,
+            agent,
+            status,
+            managed,
+            unmanaged,
+            all,
+        } => cmd_agent_ls(json, pattern, agent, status, *managed, *unmanaged, *all),
+    }
+}
+
+/// The caller identity (`ORCR_ID`/`ORCR_PATH`) from the CLI's own env — how lineage + scope
+/// assemble for nested agents (§5.3). Absent at a plain shell.
+fn caller_identity() -> (Option<String>, Option<String>) {
+    let id = std::env::var("ORCR_ID").ok().filter(|s| !s.is_empty());
+    let path = std::env::var("ORCR_PATH").ok().filter(|s| !s.is_empty());
+    (id, path)
+}
+
+/// Resolve a `-p <text>` / `-p -` prompt: `-` reads all of stdin.
+fn resolve_prompt(p: Option<&str>) -> Result<Option<String>> {
+    match p {
+        Some("-") => {
+            let mut buf = String::new();
+            std::io::stdin()
+                .lock()
+                .read_to_string(&mut buf)
+                .map_err(|e| {
+                    OrcrError::invalid_request(format!("cannot read stdin: {e}"), "stdin")
+                })?;
+            Ok(Some(buf))
+        }
+        Some(text) => Ok(Some(text.to_string())),
+        None => Ok(None),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_agent_run(
+    json: bool,
+    name: &Option<String>,
+    path: &Option<String>,
+    agent: &Option<String>,
+    prompt: &Option<String>,
+    gc: &Option<String>,
+    model: &Option<String>,
+    effort: &Option<String>,
+    cwd: &Option<String>,
+    timeout: &Option<String>,
+) -> Result<()> {
+    if name.is_some() == path.is_some() {
+        return Err(OrcrError::invalid_request(
+            "naming is mandatory: pass exactly one of --name or --path",
+            "name_required",
+        ));
+    }
+    let prompt = resolve_prompt(prompt.as_deref())?;
+    // Default cwd = the caller's current directory (§6.1).
+    let cwd = match cwd {
+        Some(c) => Some(c.clone()),
+        None => std::env::current_dir()
+            .ok()
+            .map(|p| p.display().to_string()),
+    };
+    let (caller_id, caller_path) = caller_identity();
+
+    let mut params = json!({});
+    let obj = params.as_object_mut().unwrap();
+    if let Some(n) = name {
+        obj.insert("name".into(), json!(n));
+    }
+    if let Some(p) = path {
+        obj.insert("path".into(), json!(p));
+    }
+    if let Some(a) = agent {
+        obj.insert("agent".into(), json!(a));
+    }
+    if let Some(p) = &prompt {
+        obj.insert("prompt".into(), json!(p));
+    }
+    if let Some(g) = gc {
+        obj.insert("gc".into(), json!(g));
+    }
+    if let Some(m) = model {
+        obj.insert("model".into(), json!(m));
+    }
+    if let Some(e) = effort {
+        obj.insert("effort".into(), json!(e));
+    }
+    if let Some(c) = &cwd {
+        obj.insert("cwd".into(), json!(c));
+    }
+    if let Some(t) = timeout {
+        obj.insert("timeout".into(), json!(t));
+    }
+    if let Some(id) = &caller_id {
+        obj.insert("caller_id".into(), json!(id));
+    }
+    if let Some(cp) = &caller_path {
+        obj.insert("caller_path".into(), json!(cp));
+    }
+
+    let result = connect_and_request("agent.run", params)?;
+    let a = &result["agent"];
+    let agent_path = a["path"].as_str().unwrap_or_default().to_string();
+    let uuid = a["uuid"].as_str().unwrap_or_default().to_string();
+    emit_success(json, result.clone(), || {
+        // `<path> <uuid>` on one stdout line (cut-friendly, §5.1).
+        println!("{agent_path} {uuid}");
+        if stdout_is_tty() {
+            let name = agent_path.rsplit('/').next().unwrap_or(&agent_path);
+            eprintln!(
+                "wait: orcr agent wait {name} · response: orcr agent logs {name} \
+                 --last-response · attach: orcr agent attach {name}"
+            );
+        }
+    });
+    Ok(())
+}
+
+fn cmd_agent_send(
+    json: bool,
+    target: &str,
+    positional_prompt: Option<&str>,
+    prompt_flag: Option<&str>,
+) -> Result<()> {
+    let raw = prompt_flag.or(positional_prompt);
+    let prompt = resolve_prompt(raw)?.ok_or_else(|| {
+        OrcrError::invalid_request(
+            "send requires a prompt (positional or -p)",
+            "prompt_required",
+        )
+    })?;
+    let (caller_id, caller_path) = caller_identity();
+    let mut params = json!({ "target": target, "prompt": prompt });
+    add_caller(&mut params, &caller_id, &caller_path);
+    let result = connect_and_request("agent.send", params)?;
+    emit_success(json, result.clone(), || {
+        println!(
+            "{} delivered (while {}) input_seq={}",
+            result["path"].as_str().unwrap_or_default(),
+            result["delivered_while"].as_str().unwrap_or_default(),
+            result["input_seq"],
+        );
+    });
+    Ok(())
+}
+
+fn cmd_agent_kill(json: bool, targets: &[String], force: bool, yes: bool) -> Result<()> {
+    let (caller_id, caller_path) = caller_identity();
+
+    // TTY confirmation by default (spec §6): preview the matched set, then ask. Non-TTY and
+    // --json callers proceed without prompting.
+    if !yes && !json && stdout_is_tty() {
+        let mut preview = json!({ "targets": targets, "force": force, "preview": true });
+        add_caller(&mut preview, &caller_id, &caller_path);
+        let matched = connect_and_request("agent.kill", preview)?;
+        let rows = matched["targets"].as_array().cloned().unwrap_or_default();
+        eprintln!("Matched {} agent(s):", rows.len());
+        for r in &rows {
+            eprintln!(
+                "  {} [{}]",
+                r["path"].as_str().unwrap_or_default(),
+                r["status"].as_str().unwrap_or_default()
+            );
+        }
+        eprint!("Kill these {} agent(s)? [y/N] ", rows.len());
+        std::io::stderr().flush().ok();
+        let mut answer = String::new();
+        std::io::stdin().lock().read_line(&mut answer).ok();
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            eprintln!("aborted");
+            return Ok(());
+        }
+    }
+
+    let mut params = json!({ "targets": targets, "force": force });
+    add_caller(&mut params, &caller_id, &caller_path);
+    let result = connect_and_request("agent.kill", params)?;
+    emit_success(json, result.clone(), || {
+        let killed = result["killed"].as_array().map(|a| a.len()).unwrap_or(0);
+        for k in result["killed"].as_array().into_iter().flatten() {
+            println!("killed {}", k["path"].as_str().unwrap_or_default());
+        }
+        for s in result["skipped"].as_array().into_iter().flatten() {
+            println!(
+                "skipped {} ({})",
+                s["path"].as_str().unwrap_or_default(),
+                s["reason"].as_str().unwrap_or_default()
+            );
+        }
+        if killed == 0
+            && result["skipped"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(true)
+        {
+            println!("no agents killed");
+        }
+    });
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_agent_ls(
+    json: bool,
+    pattern: &Option<String>,
+    agent: &Option<String>,
+    status: &Option<String>,
+    managed: bool,
+    unmanaged: bool,
+    all: bool,
+) -> Result<()> {
+    let (caller_id, caller_path) = caller_identity();
+    let mut params = json!({ "managed": managed, "unmanaged": unmanaged, "all": all });
+    let obj = params.as_object_mut().unwrap();
+    if let Some(p) = pattern {
+        obj.insert("pattern".into(), json!(p));
+    }
+    if let Some(a) = agent {
+        obj.insert("agent".into(), json!(a));
+    }
+    if let Some(s) = status {
+        obj.insert("status".into(), json!(s));
+    }
+    add_caller(&mut params, &caller_id, &caller_path);
+    let result = connect_and_request("agent.ls", params)?;
+    emit_success(json, result.clone(), || print_ls_human(&result));
+    Ok(())
+}
+
+/// Attach the caller identity params to a request object.
+fn add_caller(params: &mut Value, caller_id: &Option<String>, caller_path: &Option<String>) {
+    let obj = params.as_object_mut().unwrap();
+    if let Some(id) = caller_id {
+        obj.insert("caller_id".into(), json!(id));
+    }
+    if let Some(cp) = caller_path {
+        obj.insert("caller_path".into(), json!(cp));
+    }
+}
+
+/// Auto-start the server if needed, then send one request.
+fn connect_and_request(method: &str, params: Value) -> Result<Value> {
+    let home = Home::ensure()?;
+    let config = load_config(&home)?;
+    let client = Client::new(home.socket_path());
+    client.ensure_running(&home, &config)?;
+    client.request(method, params)
+}
+
+/// Render `agent ls` as a path tree (spec §6.1): `PATH UUID STATUS AGENT AGE`.
+fn print_ls_human(result: &Value) {
+    let agents = result["agents"].as_array().cloned().unwrap_or_default();
+    if agents.is_empty() {
+        println!("no agents");
+        return;
+    }
+    for a in &agents {
+        let uuid = a["uuid"].as_str().unwrap_or_default();
+        let short = uuid.get(..8).unwrap_or(uuid);
+        println!(
+            "{:<40} {:<8} {:<9} {:<8}",
+            a["path"].as_str().unwrap_or_default(),
+            short,
+            a["status"].as_str().unwrap_or_default(),
+            a["agent"].as_str().unwrap_or("-"),
+        );
     }
 }
 

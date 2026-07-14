@@ -269,7 +269,8 @@ impl Store {
                 .map_err(map_sqlite)?;
 
             // Per-provider used counts.
-            let mut used: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+            let mut used: std::collections::BTreeMap<String, i64> =
+                std::collections::BTreeMap::new();
             {
                 let mut stmt = tx
                     .prepare(
@@ -319,12 +320,7 @@ impl Store {
                     rusqlite::params![uuid, now],
                 )
                 .map_err(map_sqlite)?;
-                append_event_tx(
-                    tx,
-                    "queue.promoted",
-                    Some(&uuid),
-                    &json!({ "uuid": uuid }),
-                )?;
+                append_event_tx(tx, "queue.promoted", Some(&uuid), &json!({ "uuid": uuid }))?;
                 last_ev = append_event_tx(
                     tx,
                     "agent.status_changed",
@@ -467,7 +463,9 @@ impl Store {
         };
         match matches.len() {
             0 => Ok(UuidLookup::NotFound),
-            1 => Ok(UuidLookup::Found(Box::new(matches.into_iter().next().unwrap()))),
+            1 => Ok(UuidLookup::Found(Box::new(
+                matches.into_iter().next().unwrap(),
+            ))),
             _ => Ok(UuidLookup::Ambiguous(
                 matches.into_iter().map(|a| a.uuid).collect(),
             )),
@@ -649,8 +647,20 @@ impl Store {
         };
         Ok(rows
             .into_iter()
-            .filter(|a| filter.provider.as_deref().map(|p| a.agent.as_deref() == Some(p)).unwrap_or(true))
-            .filter(|a| filter.status.as_deref().map(|s| a.status == s).unwrap_or(true))
+            .filter(|a| {
+                filter
+                    .provider
+                    .as_deref()
+                    .map(|p| a.agent.as_deref() == Some(p))
+                    .unwrap_or(true)
+            })
+            .filter(|a| {
+                filter
+                    .status
+                    .as_deref()
+                    .map(|s| a.status == s)
+                    .unwrap_or(true)
+            })
             .filter(|a| pattern.as_ref().map(|p| p.matches(&a.path)).unwrap_or(true))
             .collect())
     }
@@ -920,14 +930,16 @@ pub struct AgentFilter {
 
 /// `SELECT <cols> FROM agents` (column order matches [`read_agent_full_row`]) — append a
 /// `WHERE`/`ORDER BY` clause.
-const AGENT_FULL_SELECT: &str = "SELECT uuid, path, managed, origin, parent_id, agent, model, effort, \
+const AGENT_FULL_SELECT: &str =
+    "SELECT uuid, path, managed, origin, parent_id, agent, model, effort, \
      gc_mode, cwd, herdr_session, terminal_id, pane_id, launch_token, \
      agent_session_kind, agent_session_value, status, blocked_kind, input_seq, \
      cancel_requested, exit_reason, queue_seq, deadline_at, created_at, starting_at, \
      last_status_change_at, ended_at FROM agents";
 
 /// The same read scoped to one uuid.
-const AGENT_FULL_SELECT_ONE: &str = "SELECT uuid, path, managed, origin, parent_id, agent, model, effort, \
+const AGENT_FULL_SELECT_ONE: &str =
+    "SELECT uuid, path, managed, origin, parent_id, agent, model, effort, \
      gc_mode, cwd, herdr_session, terminal_id, pane_id, launch_token, \
      agent_session_kind, agent_session_value, status, blocked_kind, input_seq, \
      cancel_requested, exit_reason, queue_seq, deadline_at, created_at, starting_at, \
@@ -1202,8 +1214,12 @@ mod tests {
     fn promotion_respects_global_cap_and_fifo() {
         let mut s = Store::open_in_memory().unwrap();
         for i in 0..5 {
-            s.enqueue_agent(&NewAgent::queued(format!("u{i}"), format!("w/a{i}"), "claude"))
-                .unwrap();
+            s.enqueue_agent(&NewAgent::queued(
+                format!("u{i}"),
+                format!("w/a{i}"),
+                "claude",
+            ))
+            .unwrap();
         }
         // Cap 2 → exactly the first two (FIFO) promote.
         let (promoted, _) = s.promote_queued(2, &caps(2), now_millis()).unwrap();
@@ -1217,7 +1233,8 @@ mod tests {
         let (again, _) = s.promote_queued(2, &caps(2), now_millis()).unwrap();
         assert!(again.is_empty());
         // End one → the next FIFO agent promotes.
-        s.transition_status("u0", "ended", Some("completed")).unwrap();
+        s.transition_status("u0", "ended", Some("completed"))
+            .unwrap();
         let (more, _) = s.promote_queued(2, &caps(2), now_millis()).unwrap();
         assert_eq!(more.len(), 1);
         assert_eq!(more[0].uuid, "u2");
@@ -1226,9 +1243,12 @@ mod tests {
     #[test]
     fn promotion_respects_per_provider_cap() {
         let mut s = Store::open_in_memory().unwrap();
-        s.enqueue_agent(&NewAgent::queued("c1", "w/c1", "claude")).unwrap();
-        s.enqueue_agent(&NewAgent::queued("c2", "w/c2", "claude")).unwrap();
-        s.enqueue_agent(&NewAgent::queued("x1", "w/x1", "codex")).unwrap();
+        s.enqueue_agent(&NewAgent::queued("c1", "w/c1", "claude"))
+            .unwrap();
+        s.enqueue_agent(&NewAgent::queued("c2", "w/c2", "claude"))
+            .unwrap();
+        s.enqueue_agent(&NewAgent::queued("x1", "w/x1", "codex"))
+            .unwrap();
         // Global 10, but claude capped at 1 → only c1 (claude) + x1 (codex) promote.
         let mut per = std::collections::BTreeMap::new();
         per.insert("claude".to_string(), 1);
@@ -1242,17 +1262,29 @@ mod tests {
     #[test]
     fn resolution_path_first_then_uuid() {
         let mut s = Store::open_in_memory().unwrap();
-        s.enqueue_agent(&NewAgent::queued("11111111-2222-3333-4444-555555555555", "review/worker", "claude"))
-            .unwrap();
+        s.enqueue_agent(&NewAgent::queued(
+            "11111111-2222-3333-4444-555555555555",
+            "review/worker",
+            "claude",
+        ))
+        .unwrap();
         // Active path resolves.
         let r = s.find_by_path("review/worker").unwrap().unwrap();
         assert_eq!(r.tag(), "active");
         assert_eq!(r.row().uuid, "11111111-2222-3333-4444-555555555555");
         // End it, insert a new one at the same path.
-        s.transition_status("11111111-2222-3333-4444-555555555555", "ended", Some("completed"))
-            .unwrap();
-        s.enqueue_agent(&NewAgent::queued("99999999-2222-3333-4444-555555555555", "review/worker", "claude"))
-            .unwrap();
+        s.transition_status(
+            "11111111-2222-3333-4444-555555555555",
+            "ended",
+            Some("completed"),
+        )
+        .unwrap();
+        s.enqueue_agent(&NewAgent::queued(
+            "99999999-2222-3333-4444-555555555555",
+            "review/worker",
+            "claude",
+        ))
+        .unwrap();
         let r = s.find_by_path("review/worker").unwrap().unwrap();
         assert_eq!(r.tag(), "active");
         assert_eq!(r.row().uuid, "99999999-2222-3333-4444-555555555555");
@@ -1266,8 +1298,18 @@ mod tests {
     #[test]
     fn ambiguous_uuid_prefix() {
         let mut s = Store::open_in_memory().unwrap();
-        s.enqueue_agent(&NewAgent::queued("abcd0000-0000-0000-0000-000000000001", "w/a", "claude")).unwrap();
-        s.enqueue_agent(&NewAgent::queued("abcd0000-0000-0000-0000-000000000002", "w/b", "claude")).unwrap();
+        s.enqueue_agent(&NewAgent::queued(
+            "abcd0000-0000-0000-0000-000000000001",
+            "w/a",
+            "claude",
+        ))
+        .unwrap();
+        s.enqueue_agent(&NewAgent::queued(
+            "abcd0000-0000-0000-0000-000000000002",
+            "w/b",
+            "claude",
+        ))
+        .unwrap();
         match s.find_by_uuid_or_prefix("abcd0000").unwrap() {
             UuidLookup::Ambiguous(cands) => assert_eq!(cands.len(), 2),
             other => panic!("expected Ambiguous, got {other:?}"),
@@ -1277,7 +1319,8 @@ mod tests {
     #[test]
     fn location_session_cancel_and_turns() {
         let mut s = Store::open_in_memory().unwrap();
-        s.enqueue_agent(&NewAgent::queued("u1", "review/worker", "claude")).unwrap();
+        s.enqueue_agent(&NewAgent::queued("u1", "review/worker", "claude"))
+            .unwrap();
         s.record_location("u1", "orcr", "term_x", "w1:p1").unwrap();
         s.record_agent_session("u1", "id", "sess-1").unwrap();
         let a = s.agent_full("u1").unwrap().unwrap();
@@ -1295,10 +1338,12 @@ mod tests {
     #[test]
     fn stuck_starting_only_targets_paneless() {
         let mut s = Store::open_in_memory().unwrap();
-        s.enqueue_agent(&NewAgent::queued("u1", "w/a", "claude")).unwrap();
-        s.enqueue_agent(&NewAgent::queued("u2", "w/b", "claude")).unwrap();
+        s.enqueue_agent(&NewAgent::queued("u1", "w/a", "claude"))
+            .unwrap();
+        s.enqueue_agent(&NewAgent::queued("u2", "w/b", "claude"))
+            .unwrap();
         s.promote_queued(10, &caps(10), 1_000).unwrap(); // starting_at = 1000
-        // u2 recorded a pane → progress, exempt.
+                                                         // u2 recorded a pane → progress, exempt.
         s.record_location("u2", "orcr", "t2", "w1:p2").unwrap();
         let stuck = s.stuck_starting(2_000).unwrap();
         let ids: Vec<&str> = stuck.iter().map(|a| a.uuid.as_str()).collect();
@@ -1308,21 +1353,34 @@ mod tests {
     #[test]
     fn ls_filters() {
         let mut s = Store::open_in_memory().unwrap();
-        s.enqueue_agent(&NewAgent::queued("u1", "review/a", "claude")).unwrap();
-        s.enqueue_agent(&NewAgent::queued("u2", "review/b", "codex")).unwrap();
-        s.enqueue_agent(&NewAgent::queued("u3", "verify/c", "claude")).unwrap();
-        s.transition_status("u3", "ended", Some("completed")).unwrap();
+        s.enqueue_agent(&NewAgent::queued("u1", "review/a", "claude"))
+            .unwrap();
+        s.enqueue_agent(&NewAgent::queued("u2", "review/b", "codex"))
+            .unwrap();
+        s.enqueue_agent(&NewAgent::queued("u3", "verify/c", "claude"))
+            .unwrap();
+        s.transition_status("u3", "ended", Some("completed"))
+            .unwrap();
         // Default excludes ended.
         let active = s.list_agents(&AgentFilter::default()).unwrap();
         assert_eq!(active.len(), 2);
         // Pattern review/* → u1, u2.
-        let f = AgentFilter { pattern: Some("review/*".into()), ..Default::default() };
+        let f = AgentFilter {
+            pattern: Some("review/*".into()),
+            ..Default::default()
+        };
         assert_eq!(s.list_agents(&f).unwrap().len(), 2);
         // Provider filter.
-        let f = AgentFilter { provider: Some("codex".into()), ..Default::default() };
+        let f = AgentFilter {
+            provider: Some("codex".into()),
+            ..Default::default()
+        };
         assert_eq!(s.list_agents(&f).unwrap().len(), 1);
         // include_ended surfaces u3.
-        let f = AgentFilter { include_ended: true, ..Default::default() };
+        let f = AgentFilter {
+            include_ended: true,
+            ..Default::default()
+        };
         assert_eq!(s.list_agents(&f).unwrap().len(), 3);
     }
 
