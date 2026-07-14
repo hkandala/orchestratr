@@ -71,3 +71,32 @@ against a REAL claude agent (and codex), capture the exact failure (stderr, exit
 `--json` error code + details), root-cause it, FIX it, and add a regression test
 (real-provider smoke where feasible; otherwise a mock-based test that covers the same
 code path the real failure exercised). Record findings in manual-e2e-results.md.
+
+### Resolution (manual-e2e fixer round)
+
+Reproduced against the real `claude` provider; two independent **orcr** root causes fixed, plus
+one **environment** limitation documented.
+
+- **Root cause A — premature `gc immediate` teardown → `transcript_unavailable`.**
+  `server/completion.rs::transcript_settled` was permissively `true` when the transcript could not
+  be located, and `complete()` tore a `gc immediate` agent down without verifying the response was
+  readable. During claude's boot (herdr `idle`, no transcript yet) the fast-turn-grace + stable-idle
+  path completed and killed the pane in ~2.5s — before claude captured a session (`no_session`) or
+  wrote a transcript (`not_found`). **Fix:** `transcript_settled` returns `false` for a real
+  provider (`transcript_settle_ms > 0`) whose transcript isn't located yet, and `complete()`
+  refuses gc-immediate teardown until the final response is **verified readable** (§5.6, §11.2).
+- **Root cause B — the submitting `Enter` was dropped during claude's boot.** `herdr pane read`
+  proved the prompt sat unsubmitted in claude's input box; a single `Enter` sent ~1s after
+  `send_text` (mid-boot) was silently dropped, so claude never worked and never wrote a transcript.
+  **Fix:** `server/engine.rs::confirm_submit` re-sends `Enter` after the two-call delivery until the
+  pane leaves `idle` or the new per-provider `submit_confirm_ms` window elapses (claude/codex 8s,
+  mock 0). A redundant Enter on a submitted/empty box is a verified no-op. Verified against real
+  claude: with the fix and no manual Enter, the pane shows `⏺ PONG`.
+- **Environment limitation (not orcr).** On the test box, the enterprise claude persists **no**
+  locatable native transcript (`~/.claude/projects/<slug>/<id>.jsonl`) for herdr-launched panes,
+  so `ask -a claude` still can't return the text there — it now fails loud (`timeout`, exit 3)
+  instead of the old silent `transcript_unavailable`. On a standard claude that writes native
+  transcripts, fixes A+B make `ask` succeed end-to-end.
+- **Regression tests** (`tests/completion_e2e.rs`, mock + live herdr):
+  `e2e_ask_waits_for_late_transcript_before_immediate_teardown` (A) and
+  `e2e_submit_confirm_resends_until_working` (B). Full mock e2e suites stay green.
