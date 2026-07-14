@@ -942,50 +942,100 @@ impl Server {
             // Test-only: widen the kill-during-promotion window (E07) so the race is
             // deterministic in the regression test. A no-op in production.
             kill_iter_delay_hook();
+            // Re-read the row under the store lock at action time. The queue worker's
+            // `promote_and_dispatch` runs on a separate thread and can transition this agent
+            // queued → starting → running (spawning its herdr pane) in the window between the
+            // kill's target snapshot and here (E07). Acting on the stale snapshot would classify
+            // a now-running agent as `queued` and dequeue it pane-less, leaking the just-spawned
+            // pane. A row that already ended since the snapshot (raced by another kill / the
+            // stuck-start guard) is skipped.
+            let a = {
+                let store = self.inner.store.lock().unwrap();
+                match store.agent_full(&a.uuid)? {
+                    Some(cur) if cur.status != "ended" => cur,
+                    _ => continue,
+                }
+            };
             // Route to the session the pane lives in: an unmanaged agent's pane is in a foreign
             // herdr session (§5.7), so closing it via the owned driver would miss it (or close a
             // colliding owned pane). Managed agents resolve to the owned session's driver.
             let driver = self.driver_for_agent(&a).ok();
-            match a.status.as_str() {
-                "queued" => {
-                    self.end_agent(&a.uuid, "canceled");
+            if a.status == "queued" {
+                // Dequeue atomically, but ONLY while still queued. Promotion moves queued →
+                // starting under the store lock *before* it ever spawns a pane, so a successful
+                // guarded end proves no pane exists (§5.5) — the pane-less cancel is safe. If it
+                // lost the race to promotion, fall through to `kill_live_agent` so the freshly
+                // spawned pane is closed rather than leaked (E07).
+                let canceled = {
+                    let mut store = self.inner.store.lock().unwrap();
+                    store.end_if_status(&a.uuid, "queued", "canceled")?
+                };
+                if let Some(seq) = canceled {
+                    self.publish(seq);
                     killed.push(json!({ "uuid": a.uuid, "path": a.path }));
+                    continue;
                 }
-                "starting" => {
-                    // Cancel via the interlock; close the pane if one already exists.
-                    {
-                        let mut store = self.inner.store.lock().unwrap();
-                        let _ = store.request_cancel(&a.uuid);
+                // Promoted since the re-read — re-read once more and kill it as a live agent.
+                let promoted = {
+                    let store = self.inner.store.lock().unwrap();
+                    store.agent_full(&a.uuid)?
+                };
+                match promoted {
+                    Some(cur) if cur.status != "ended" => {
+                        self.kill_live_agent(&cur, driver.as_ref(), &mut killed)
                     }
-                    if let (Some(d), Some(pane)) = (&driver, self.live_pane(driver.as_ref(), &a)) {
-                        let _ = d.pane_close(&pane);
-                    }
-                    self.end_agent(&a.uuid, "canceled");
-                    killed.push(json!({ "uuid": a.uuid, "path": a.path }));
+                    _ => continue,
                 }
-                _ => {
-                    // working / idle / blocked / parked / lost: graceful shutdown → pane close.
-                    // Hold the per-agent move lock (managed) so GC can't relocate the pane
-                    // mid-kill.
-                    let move_lock = if a.managed {
-                        Some(self.lock_move(&a.uuid))
-                    } else {
-                        None
-                    };
-                    let _held = move_lock.as_ref().map(|m| m.lock().unwrap());
-                    if let (Some(d), Some(pane)) = (&driver, self.live_pane(driver.as_ref(), &a)) {
-                        self.graceful_shutdown(d, &a, &pane);
-                    }
-                    // An explicit kill resolving a `lost` agent ends it as `lost`, not `killed`
-                    // (§5.6: reconciliation OR explicit kill → ended (exit_reason: lost)).
-                    let reason = if a.status == "lost" { "lost" } else { "killed" };
-                    self.end_agent(&a.uuid, reason);
-                    killed.push(json!({ "uuid": a.uuid, "path": a.path }));
-                }
+                continue;
             }
+            self.kill_live_agent(&a, driver.as_ref(), &mut killed);
         }
         let all_killed = skipped.is_empty();
         Ok(json!({ "killed": killed, "skipped": skipped, "all_killed": all_killed }))
+    }
+
+    /// Kill an agent that is starting or running (and may already have a live herdr pane): cancel
+    /// an in-flight spawn via the interlock and close its pane, or graceful-shutdown a running
+    /// agent, then end the row. Shared by the kill's direct starting/running path and the
+    /// queued→promoted fall-through (E07). `driver` addresses the session the pane lives in.
+    fn kill_live_agent(
+        &self,
+        a: &AgentFull,
+        driver: Option<&HerdrDriver>,
+        killed: &mut Vec<Value>,
+    ) {
+        if a.status == "starting" {
+            // Set the cancel interlock BEFORE closing, so the spawn pipeline closes any pane it
+            // created but has not yet recorded (the pane-created-but-unrecorded sub-window, its
+            // post-`agent.start` re-check and `bail_if_cancelled` both close on a set cancel /
+            // ended row, §5.5/§11.1); close the pane here too if one is already recorded.
+            {
+                let mut store = self.inner.store.lock().unwrap();
+                let _ = store.request_cancel(&a.uuid);
+            }
+            if let (Some(d), Some(pane)) = (driver, self.live_pane(driver, a)) {
+                let _ = d.pane_close(&pane);
+            }
+            self.end_agent(&a.uuid, "canceled");
+            killed.push(json!({ "uuid": a.uuid, "path": a.path }));
+            return;
+        }
+        // working / idle / blocked / parked / lost: graceful shutdown → pane close. Hold the
+        // per-agent move lock (managed) so GC can't relocate the pane mid-kill.
+        let move_lock = if a.managed {
+            Some(self.lock_move(&a.uuid))
+        } else {
+            None
+        };
+        let _held = move_lock.as_ref().map(|m| m.lock().unwrap());
+        if let (Some(d), Some(pane)) = (driver, self.live_pane(driver, a)) {
+            self.graceful_shutdown(d, a, &pane);
+        }
+        // An explicit kill resolving a `lost` agent ends it as `lost`, not `killed`
+        // (§5.6: reconciliation OR explicit kill → ended (exit_reason: lost)).
+        let reason = if a.status == "lost" { "lost" } else { "killed" };
+        self.end_agent(&a.uuid, reason);
+        killed.push(json!({ "uuid": a.uuid, "path": a.path }));
     }
 
     /// The per-integration graceful shutdown recipe → pane close (§6.1). Best-effort: the
