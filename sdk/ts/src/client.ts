@@ -30,7 +30,7 @@ export interface SpawnOptions {
   timeout?: string;
 }
 export interface RunOptions extends SpawnOptions {
-  gc?: "immediate" | "idle" | "never" | string;
+  gc?: "auto" | "immediate" | "never";
 }
 
 export interface WaitOptions {
@@ -92,6 +92,23 @@ function resolveCreateAbs(opts: { name?: string; path?: string }): string {
   const input: NameOrPath = hasName ? { name: opts.name! } : { path: opts.path! };
   const effective = resolveCreate(currentScope(), input);
   return `/${effective}`;
+}
+
+/** Assemble the shared spawn params for `agent.run`/`agent.ask` (mirrors the Rust CLI's
+ * `build_spawn_params`): absolute path + prompt + caller lineage + the optional
+ * agent/model/effort/cwd/timeout knobs. `run()` adds `gc` on top. */
+function buildSpawnParams(opts: SpawnOptions): Record<string, unknown> {
+  const params: Record<string, unknown> = {
+    path: resolveCreateAbs(opts),
+    prompt: opts.prompt,
+    ...callerParams(),
+  };
+  if (opts.agent) params.agent = opts.agent;
+  if (opts.model) params.model = opts.model;
+  if (opts.effort) params.effort = opts.effort;
+  if (opts.cwd) params.cwd = opts.cwd;
+  if (opts.timeout) params.timeout = opts.timeout;
+  return params;
 }
 
 /** Resolve a selector/pattern to an absolute form; undefined → `<scope>/**` (or throw at root). */
@@ -216,17 +233,8 @@ class AgentApi {
 
   /** `agent.run` — spawn a managed agent; returns a handle immediately. */
   async run(opts: RunOptions): Promise<AgentHandle> {
-    const params: Record<string, unknown> = {
-      path: resolveCreateAbs(opts),
-      prompt: opts.prompt,
-      ...callerParams(),
-    };
-    if (opts.agent) params.agent = opts.agent;
+    const params = buildSpawnParams(opts);
     if (opts.gc) params.gc = opts.gc;
-    if (opts.model) params.model = opts.model;
-    if (opts.effort) params.effort = opts.effort;
-    if (opts.cwd) params.cwd = opts.cwd;
-    if (opts.timeout) params.timeout = opts.timeout;
     const r = (await this.orcr.req("agent.run", params)) as Record<string, unknown>;
     return new AgentHandle(this.orcr, r.agent as Record<string, unknown>);
   }
@@ -468,16 +476,7 @@ export class OrcrClient {
 
   /** The one-liner: `agent.run({gc:immediate}) → wait → lastResponse`. Returns the text. */
   async ask(opts: SpawnOptions): Promise<string> {
-    const params: Record<string, unknown> = {
-      path: resolveCreateAbs(opts),
-      prompt: opts.prompt,
-      ...callerParams(),
-    };
-    if (opts.agent) params.agent = opts.agent;
-    if (opts.model) params.model = opts.model;
-    if (opts.effort) params.effort = opts.effort;
-    if (opts.cwd) params.cwd = opts.cwd;
-    if (opts.timeout) params.timeout = opts.timeout;
+    const params = buildSpawnParams(opts);
     const r = (await this.req("agent.ask", params)) as Record<string, unknown>;
     const resp = r.response as Record<string, unknown> | undefined;
     // Share the transcript-unavailable contract with AgentHandle.lastResponse():
