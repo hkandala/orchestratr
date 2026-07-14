@@ -151,14 +151,30 @@ fn assert_no_session_leak(bin: &HerdrBinary, session: &str) {
     if std::thread::panicking() {
         return;
     }
+    // The disposable session is the real per-test guarantee: every server + loop-run child pins
+    // ORCR_HERDR_SESSION + ORCR_HOME, so a leaked child can only ever create *this* session.
     assert!(
         matches!(bin.find_session(session), Ok(None)),
         "disposable session `{session}` leaked after teardown"
     );
-    assert!(
-        matches!(bin.find_session("orcr"), Ok(None)),
-        "shared `orcr` herdr session leaked (a child bootstrapped the default session)"
-    );
+    // Belt-and-suspenders (known-issues #1): a test must never bootstrap the shared `orcr`
+    // session. Skipped when an external `orcr` session pre-existed the run (a developer using
+    // orcr concurrently on the same box — its default session is literally `orcr`); that is not
+    // a leak this suite produced, and we must not delete an in-use session to satisfy the check.
+    if !orcr_session_preexisted(bin) {
+        assert!(
+            matches!(bin.find_session("orcr"), Ok(None)),
+            "shared `orcr` herdr session leaked (a child bootstrapped the default session)"
+        );
+    }
+}
+
+/// Whether an `orcr` herdr session already existed when this test binary first probed (captured
+/// once). Used to skip the shared-session leak check when a developer is running orcr
+/// concurrently, without weakening the per-test disposable-session guarantee.
+fn orcr_session_preexisted(bin: &HerdrBinary) -> bool {
+    static SEEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| matches!(bin.find_session("orcr"), Ok(Some(_))))
 }
 
 fn wait_until(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
