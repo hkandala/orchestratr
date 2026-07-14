@@ -3,3 +3,8 @@
 *.pdb
 .DS_Store
 /.orcr-test/
+
+# TypeScript SDK / scaffolded projects
+node_modules/
+sdk/ts/dist/
+*.tsbuildinfo
