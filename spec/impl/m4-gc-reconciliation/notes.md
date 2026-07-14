@@ -85,6 +85,38 @@ choices worth knowing, and discovered facts. Capture *decisions and deviations*.
   M4). Un-park on `send` is fully implemented. Not harmful: the pane stays in the idle
   workspace but the agent is tracked correctly and will re-park.
 
+## Verifier findings (round 1 — FAIL)
+
+- **REGRESSION: `tests/e2e.rs::e2e_server_status_reports_herdr` fails under `ORCR_E2E=1`.**
+  M4's discovery poller scans the real `default` session and counts its live agent into
+  `counts.live`, so the M0/M1 assertion `counts.live == 0` gets `1`. The three other non-M4
+  suites (agent_e2e, completion_e2e, server_protocol) were given `ORCR_DISABLE_DISCOVERY=1`
+  but this harness was missed. Self-report's "e2e 5/5 / no regressions" is false in a normal
+  dev env (a live agent in `default`). Fix: add `.env("ORCR_DISABLE_DISCOVERY","1")` to that
+  test's server spawn (matching the sibling suites).
+- **Related (root cause): `counts.live` includes unmanaged agents.** `counts()` uses
+  `status NOT IN ('ended','lost')` with no `managed=1` filter, so discovered non-owned-session
+  agents inflate `live` (double-counted with `unmanaged`). Spec §5.6 (line 1866) lists
+  `live` and `unmanaged` as distinct fields. Preferred fix: make `live` count managed agents
+  only (`AND managed = 1`) — this also makes the e2e assertion robust regardless of discovery.
+
+### Round-1 fixes (reviser)
+
+- **`counts()` now filters `managed = 1`** for `live`/`queued`/`blocked` (src/server/mod.rs).
+  `unmanaged` stays `managed = 0 AND status != 'ended'`. Live and unmanaged are now the
+  distinct categories spec §5.6 lists; discovered non-owned-session agents no longer inflate
+  `live` (and are no longer double-counted).
+- **`tests/e2e.rs::e2e_server_status_reports_herdr` given `ORCR_DISABLE_DISCOVERY=1`** on the
+  server spawn, matching the three sibling non-M4 suites — kills the regression at its source.
+- **New coverage:** `gc_e2e::e2e_unmanaged_discovery` now asserts the managed/unmanaged split
+  (`counts.live == 0` while `counts.unmanaged >= 1`) against live herdr + mock.
+- **Flake hardening (adjacent):** `gc_e2e::e2e_park_send_unpark` was load-sensitive — under
+  full-suite load the observer thread got starved past the narrow `park` window (FAST_GC:
+  idle_after 1s → idle-re-park, kill_after 2s → reap). Fixed by (a) polling for the home-move
+  right after `send` instead of a single-shot read after `agent.wait`, and (b) a dedicated
+  `PARK_GC` config (idle_after 5s, kill_after 60s) that widens the observable window without
+  changing what's tested. Full `ORCR_E2E=1 cargo test` now green across every suite.
+
 ## Verifier & reviewer history
 
 - **Implementation** (this pass): store DAL (park/reap/timeout candidates, two-phase move

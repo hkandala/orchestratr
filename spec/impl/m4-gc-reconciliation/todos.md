@@ -50,5 +50,12 @@ Ships: gc auto park/reap, attach + leases, reconciler, unmanaged discovery.
 - [x] cargo build, cargo test (unit), cargo clippy -D warnings, cargo fmt
 - [x] gc_e2e.rs against live herdr + mock provider
 
+## Verifier round-1 fixes
+- [x] `counts.live/queued/blocked` filter `managed = 1` (spec §5.6: live vs unmanaged distinct)
+- [x] `tests/e2e.rs::e2e_server_status_reports_herdr` gets `ORCR_DISABLE_DISCOVERY=1` (fix regression)
+- [x] gc_e2e unmanaged-discovery asserts counts split (live 0, unmanaged >= 1)
+- [x] Harden `e2e_park_send_unpark` against load starvation (poll home-move + PARK_GC wide window)
+- [x] Full `ORCR_E2E=1 cargo test` green across every suite (no regressions)
+
 ## Deferred / out of scope
 - Loops (M5), top (M6). Background-subagent detection (future; §5.4 caveat documented).
