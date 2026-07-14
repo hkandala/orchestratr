@@ -144,6 +144,93 @@ Suites kept green with the mock against live herdr: `completion_e2e` (10), `agen
 
 ## Leak audit
 
-_(After the full suite: `herdr session list` output confirming no `orcr`/`orcr_e2e_*`
-session leaked, and no stray `orcr server` process against a throwaway `ORCR_HOME`.)_
+Post-phase `herdr session list` shows only the user's `default` session — no
+`orcr`/`orcr_e2e_*` session leaked, and no stray `orcr server` process bound to any
+throwaway `ORCR_HOME`. Each E01 run used a disposable `orcr_e2e_<rand>` session that was
+`session stop`+`delete`ed on teardown; the throwaway `ORCR_HOME` tempdirs were removed.
+
+```
+name       status   directory                       socket
+default    running  /Users/hkandala/.config/herdr   /Users/hkandala/.config/herdr/herdr.sock
+```
+
+## Executive summary
+
+Final green check (2026-07-14, git `966d46f`, `target/debug/orcr`, herdr 0.7.2):
+
+| check | result |
+| --- | --- |
+| `cargo build` | OK (dev profile) |
+| `cargo test --lib` (non-e2e) | **164 passed**, 0 failed |
+| `cargo clippy --all-targets -- -D warnings` | clean (exit 0, 0 warnings) |
+| `cargo fmt --check` | clean (exit 0) |
+
+### Totals
+
+| bucket | count | notes |
+| --- | --- | --- |
+| planned scenarios | 22 | E01–E22 (`manual-e2e-tests.md`) |
+| executed | 1 | E01 — the critical known-issue #2 target |
+| passed | 0 | — |
+| failed | 1 | E01 (real-claude `agent ask` → `transcript_unavailable`) |
+| **fixed** | 1 | E01 root-caused to two orcr bugs; both fixed + regression-tested |
+| not executed (pending/blocked) | 21 | E02–E22 not run in this phase |
+| **critical still open** | **0** | the one critical (E01) is resolved for orcr; residual is environmental |
+
+The phase's mandated priority — reproduce and fix **known-issue #2** (E01) — is complete.
+The other 21 scenarios (E02–E22) were not executed in this session and remain the outstanding
+work of the manual-e2e phase.
+
+### Notable issues
+
+- **ISSUE-1 (CRITICAL, E01) — FIXED.** `orcr agent ask` against real `claude` exited 1 with
+  `transcript_unavailable` (both `no_session` and `not_found` sub-causes), reproducing
+  known-issue #2. Root-caused to **two independent orcr bugs**, both fixed + regression-tested:
+  1. **Premature `gc immediate` teardown** — `completion.rs::transcript_settled` was permissively
+     `true` when no transcript could be located, and `complete()` tore the pane down without
+     verifying the response was readable, killing the agent ~2.5s into claude's boot (spec §5.6 /
+     §11.2 violation). Fixed: `transcript_settled` returns `false` for a real provider
+     (`transcript_settle_ms > 0`) with no located transcript yet; `complete()` refuses
+     gc-immediate teardown until `last_response()` is readable.
+  2. **Dropped submitting `Enter`** — the single `Enter` sent during claude's boot was silently
+     dropped by the TUI, so the prompt sat unsubmitted and claude never worked. Fixed:
+     `engine.rs::confirm_submit` re-sends `Enter` until the pane leaves `idle` or
+     `submit_confirm_ms` (per-provider; claude/codex 8000ms, mock 0) elapses; a redundant Enter is
+     a verified no-op.
+
+  Both fixes verified against real claude (pane shows `⏺ PONG` with no manual Enter) and covered by
+  `completion_e2e::e2e_ask_waits_for_late_transcript_before_immediate_teardown` and
+  `completion_e2e::e2e_submit_confirm_resends_until_working`.
+
+- **ENV-1 (environmental, NOT an orcr bug) — residual on THIS box only.** This machine's
+  enterprise claude (Vertex AI, launcher/`fast_mux`, session hooks) persists **no** locatable
+  native transcript (`~/.claude/projects/<slug>/<id>.jsonl`) for herdr-launched panes (confirmed
+  via `find` + `lsof`, even with `CLAUDE_CODE_*` stripped). Since orcr keeps no response copies by
+  design (§11.4), `ask -a claude` cannot return text on this box and now fails **loud** with
+  `timeout` (exit 3) instead of the old silent `transcript_unavailable` — the spec-correct outcome.
+  On a standard claude that writes native transcripts, fixes #1+#2 make `ask` succeed end-to-end
+  (proven by the mock regression exercising the same code paths with a real settle window).
+
+### Fixed vs open
+
+- **Fixed:** E01 / known-issue #2 (both orcr root causes) — 4 commits on `main`
+  (`acf2d90`, `618fb5f`, `da3b75a`, `966d46f`), regression tests green.
+- **Open (not orcr bugs):** ENV-1 — return-path for `ask -a claude` on this specific enterprise
+  box; blocked by the provider not persisting a native transcript, outside orcr's control.
+- **Open (not executed):** E02–E22 (21 scenarios) — the rest of the manual-e2e plan.
+
+### Next steps (prioritized)
+
+1. **Execute E02–E22** to finish the manual-e2e phase. Start with the remaining critical/high
+   real-provider paths: E02 (`agent ask` real codex — confirms the ENV-1 transcript issue is
+   claude-box-specific vs general), E03/E04 (claude/codex lifecycle), E05 (logs freshness),
+   E18 (§9 recipes real provider).
+2. **Then the deterministic mock scenarios** E06–E17, E19–E22 (identity/globs, queue caps, gc
+   modes, loops + restart recovery, top, api, server lifecycle, SDK, scaffold, config/env,
+   error-code sweep, attach/GC interlock) — fast and cheap; batch them.
+3. **Verify E02 (codex)** specifically to determine whether ENV-1's missing-native-transcript is
+   unique to this enterprise claude or a broader real-provider gap; if broader, consider a spec/
+   design follow-up for how `ask` returns responses when a provider writes no native transcript.
+4. **Keep the E01 fixes under CI** — the two `completion_e2e` regressions require live herdr +
+   mock; ensure they run in whatever e2e CI lane exists so the boot-race fixes don't regress.
 ```
