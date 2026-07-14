@@ -68,5 +68,3 @@ registry + self-describing schema), events + snapshot-then-subscribe.
 - server enable/disable → M5 (per milestone out-of-scope)
 - Agent/loop/queue/GC/reconciliation handler bodies → later milestones (registered as stubs here)
 - Real event producers (agent/loop lifecycle) → later milestones; M1 proves the transport via a gated `__debug.emit_event` (not in the public schema)
-</content>
-</invoke>

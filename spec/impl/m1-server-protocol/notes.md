@@ -94,4 +94,22 @@ Capture *decisions and deviations*, not a play-by-play.
   `cargo clippy --all-targets -D warnings`, `cargo test` (unit + `tests/server_protocol`),
   and `ORCR_E2E=1 cargo test --test e2e` (5/5 against live herdr 0.7.2). Post-run
   `herdr session list` shows only the untouched `default` session.
-</content>
+- **Verify — round 1: FAIL → fixed → PASS.** The verifier found one concrete issue: the
+  race test could leave an auto-start-revived `--foreground` orphan bound to a
+  soon-deleted tempdir (a mid-start child grabbing the lock the instant the winner is
+  `kill -9`ed). Resolved by `TestHome::reap_server()` + a `Drop` guard on every test that
+  loops `kill -9` on the handshake-reported pid until the socket stays dead across 8
+  probes, with the race test asserting stable-dead (commit `dea1d6c`). Re-verify: full
+  suite green, `pgrep -f 'orcr server start --foreground'` empty after 5 repeat runs.
+- **Review: PASS.** Code-review pass over the M1 surface (wire/framing, registry/schema
+  generation, event bus + cursor retention, flock single-instance, threaded server +
+  subscription pumps, client auto-start, CLI) found no blocking correctness/robustness/
+  spec-adherence issues; the nonblocking-accept and orphan-reap fixes above were the
+  substantive items and were already resolved.
+- **Scribe — final green check** (2026-07-13, on `main`, clean tree): `cargo build` ok;
+  `cargo fmt --check` ok; `cargo clippy --all-targets -- -D warnings` clean; `cargo test`
+  green (unit + `handshake` + `home_config` + `server_protocol` 6/6 + `e2e` skip-path);
+  `ORCR_E2E=1 cargo test --test e2e` 5/5 against live herdr 0.7.2;
+  `ORCR_E2E=1 cargo test --test conformance_live` 1/1 (contract matches live
+  `herdr api schema`). Post-run `herdr session list` shows only the untouched `default`
+  session; no `--foreground` orphans. **M1 green.**
