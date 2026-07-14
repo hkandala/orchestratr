@@ -77,6 +77,49 @@ pub enum AgentCmd {
         #[arg(long)]
         timeout: Option<String>,
     },
+    /// Spawn, wait for the first completion, and print the response (`run --gc immediate`
+    /// → `wait` → `logs --last-response`), all in one call.
+    Ask {
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(short = 'a', long = "agent")]
+        agent: Option<String>,
+        #[arg(short = 'p', long = "prompt")]
+        prompt: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        effort: Option<String>,
+        #[arg(long)]
+        cwd: Option<String>,
+        #[arg(long)]
+        timeout: Option<String>,
+    },
+    /// Block until every target agent settles (patterns + uuids).
+    Wait {
+        /// Targets (`<pattern|uuid>...`).
+        #[arg(required = true)]
+        targets: Vec<String>,
+        /// Give up waiting after this duration (partial result, exit 3).
+        #[arg(long)]
+        timeout: Option<String>,
+    },
+    /// Read an agent's native transcript (exact target).
+    Logs {
+        /// The target agent (`<path|uuid>`; no wildcards).
+        target: String,
+        /// Print only the final assistant response (fails loudly if none).
+        #[arg(long = "last-response")]
+        last_response: bool,
+        /// Show only the last N entries.
+        #[arg(long)]
+        tail: Option<usize>,
+        /// Keep streaming new entries after the tail.
+        #[arg(long)]
+        follow: bool,
+    },
     /// Deliver a prompt to an existing agent's TUI (exact target).
     Send {
         /// The target agent (`<path|uuid>`; no wildcards).
@@ -198,6 +241,23 @@ fn dispatch_agent(json: bool, cmd: &AgentCmd) -> Result<()> {
         } => cmd_agent_run(
             json, name, path, agent, prompt, gc, model, effort, cwd, timeout,
         ),
+        AgentCmd::Ask {
+            name,
+            path,
+            agent,
+            prompt,
+            model,
+            effort,
+            cwd,
+            timeout,
+        } => cmd_agent_ask(json, name, path, agent, prompt, model, effort, cwd, timeout),
+        AgentCmd::Wait { targets, timeout } => cmd_agent_wait(json, targets, timeout.as_deref()),
+        AgentCmd::Logs {
+            target,
+            last_response,
+            tail,
+            follow,
+        } => cmd_agent_logs(json, target, *last_response, *tail, *follow),
         AgentCmd::Send {
             target,
             prompt,
@@ -354,6 +414,172 @@ fn cmd_agent_send(
         );
     });
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_agent_ask(
+    json: bool,
+    name: &Option<String>,
+    path: &Option<String>,
+    agent: &Option<String>,
+    prompt: &Option<String>,
+    model: &Option<String>,
+    effort: &Option<String>,
+    cwd: &Option<String>,
+    timeout: &Option<String>,
+) -> Result<()> {
+    if name.is_some() == path.is_some() {
+        return Err(OrcrError::invalid_request(
+            "naming is mandatory: pass exactly one of --name or --path",
+            "name_required",
+        ));
+    }
+    let prompt = resolve_prompt(prompt.as_deref())?;
+    let cwd = match cwd {
+        Some(c) => Some(c.clone()),
+        None => std::env::current_dir()
+            .ok()
+            .map(|p| p.display().to_string()),
+    };
+    let (caller_id, caller_path) = caller_identity();
+    let mut params = json!({});
+    let obj = params.as_object_mut().unwrap();
+    if let Some(n) = name {
+        obj.insert("name".into(), json!(n));
+    }
+    if let Some(p) = path {
+        obj.insert("path".into(), json!(p));
+    }
+    if let Some(a) = agent {
+        obj.insert("agent".into(), json!(a));
+    }
+    if let Some(p) = &prompt {
+        obj.insert("prompt".into(), json!(p));
+    }
+    if let Some(m) = model {
+        obj.insert("model".into(), json!(m));
+    }
+    if let Some(e) = effort {
+        obj.insert("effort".into(), json!(e));
+    }
+    if let Some(c) = &cwd {
+        obj.insert("cwd".into(), json!(c));
+    }
+    if let Some(t) = timeout {
+        obj.insert("timeout".into(), json!(t));
+    }
+    add_caller(&mut params, &caller_id, &caller_path);
+    let result = connect_and_request("agent.ask", params)?;
+    emit_success(json, result.clone(), || {
+        // The final response on stdout (§6.1).
+        println!(
+            "{}",
+            result["response"]["text"].as_str().unwrap_or_default()
+        );
+    });
+    Ok(())
+}
+
+fn cmd_agent_wait(json: bool, targets: &[String], timeout: Option<&str>) -> Result<()> {
+    let (caller_id, caller_path) = caller_identity();
+    let mut params = json!({ "targets": targets });
+    if let Some(t) = timeout {
+        params["timeout"] = json!(t);
+    }
+    add_caller(&mut params, &caller_id, &caller_path);
+    let result = connect_and_request("agent.wait", params)?;
+    emit_success(json, result.clone(), || {
+        for t in result["targets"].as_array().into_iter().flatten() {
+            println!(
+                "{}  {}",
+                t["path"].as_str().unwrap_or_default(),
+                t["reason"].as_str().unwrap_or_default(),
+            );
+        }
+    });
+    // Exit code from the settle outcome (spec §6.1): 0 all ok · 3 timeout · 4 blocked · 5 dead.
+    let all_ok = result["all_ok"].as_bool().unwrap_or(false);
+    let timed_out = result["timed_out"].as_bool().unwrap_or(false);
+    let any_blocked = result["targets"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .any(|t| t["reason"].as_str().unwrap_or("").starts_with("blocked"))
+        })
+        .unwrap_or(false);
+    let code = if all_ok {
+        0
+    } else if timed_out {
+        3
+    } else if any_blocked {
+        4
+    } else {
+        5
+    };
+    std::process::exit(code);
+}
+
+fn cmd_agent_logs(
+    json: bool,
+    target: &str,
+    last_response: bool,
+    tail: Option<usize>,
+    follow: bool,
+) -> Result<()> {
+    let (caller_id, caller_path) = caller_identity();
+    let mut params = json!({ "target": target, "last_response": last_response });
+    if let Some(n) = tail {
+        params["tail"] = json!(n);
+    }
+    add_caller(&mut params, &caller_id, &caller_path);
+
+    if last_response {
+        let result = connect_and_request("agent.logs", params)?;
+        emit_success(json, result.clone(), || {
+            println!(
+                "{}",
+                result["response"]["text"].as_str().unwrap_or_default()
+            );
+        });
+        return Ok(());
+    }
+
+    let result = connect_and_request("agent.logs", params.clone())?;
+    let mut seen = print_entries(json, &result, 0);
+    if follow {
+        // Follow is a poll under the hood (§6.1): re-read the transcript and print new
+        // entries. Ignore --json for the live stream (each entry printed as it arrives).
+        loop {
+            std::thread::sleep(Duration::from_millis(500));
+            let mut p = json!({ "target": target, "last_response": false });
+            add_caller(&mut p, &caller_id, &caller_path);
+            match connect_and_request("agent.logs", p) {
+                Ok(r) => seen = print_entries(false, &r, seen),
+                Err(_) => continue,
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Print transcript entries beyond `skip`; returns the new total count. In `--json` mode the
+/// whole envelope is printed once (skip is ignored).
+fn print_entries(json: bool, result: &Value, skip: usize) -> usize {
+    let entries = result["entries"].as_array().cloned().unwrap_or_default();
+    if json {
+        emit_success(true, result.clone(), || {});
+        return entries.len();
+    }
+    for e in entries.iter().skip(skip) {
+        let role = e["role"].as_str().unwrap_or("");
+        let kind = e["kind"].as_str().unwrap_or("");
+        if let Some(tool) = e["tool"].as_str() {
+            println!("{role} [{kind}] {tool}");
+        } else {
+            println!("{role} [{kind}] {}", e["text"].as_str().unwrap_or_default());
+        }
+    }
+    entries.len()
 }
 
 fn cmd_agent_kill(json: bool, targets: &[String], force: bool, yes: bool) -> Result<()> {

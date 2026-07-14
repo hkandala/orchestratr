@@ -139,7 +139,9 @@ impl Server {
                     let working_ok = t.working_seen_at.is_some();
                     let fast_ok = !working_ok
                         && t.delivered_at
-                            .map(|d| idle_since.saturating_sub(d) <= tuning.fast_turn_grace_ms as i64)
+                            .map(|d| {
+                                idle_since.saturating_sub(d) <= tuning.fast_turn_grace_ms as i64
+                            })
                             .unwrap_or(false);
                     let stable = now.saturating_sub(idle_since) >= tuning.idle_stable_ms as i64;
                     if (working_ok || fast_ok) && stable && self.transcript_settled(a, &tuning) {

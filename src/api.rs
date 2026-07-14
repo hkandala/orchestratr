@@ -207,9 +207,14 @@ pub fn methods() -> Vec<MethodDef> {
     add(
         "agent.ask",
         "run --gc immediate → wait → last response, in one call.",
-        any_object(),
+        object(json!({
+            "name": str_schema(), "path": str_schema(), "agent": str_schema(),
+            "prompt": str_schema(), "model": str_schema(), "effort": str_schema(),
+            "cwd": str_schema(), "timeout": str_schema(),
+            "caller_id": str_schema(), "caller_path": str_schema(),
+        })),
         object(json!({ "uuid": str_schema(), "path": str_schema(), "response": any_object() })),
-        false,
+        true,
         false,
     );
     add(
@@ -232,23 +237,33 @@ pub fn methods() -> Vec<MethodDef> {
         object(json!({
             "target": str_schema(), "last_response": bool_schema(),
             "tail": int_schema(), "follow": bool_schema(),
+            "caller_id": str_schema(), "caller_path": str_schema(),
         })),
         object(json!({
             "uuid": str_schema(), "path": str_schema(),
             "resolved": str_schema(), "entries": array_of(any_object()),
+            "response": any_object(),
         })),
-        false,
         true,
+        false,
     );
     add(
         "agent.wait",
         "Block until every target agent settles.",
-        object(json!({ "targets": array_of(str_schema()), "timeout": str_schema() })),
         object(json!({
-            "targets": array_of(any_object()), "all_ok": bool_schema(),
+            "targets": array_of(str_schema()), "timeout": str_schema(),
+            "caller_id": str_schema(), "caller_path": str_schema(),
+        })),
+        object(json!({
+            "targets": array_of(object(json!({
+                "uuid": str_schema(), "path": str_schema(), "status": str_schema(),
+                "ok": bool_schema(), "reason": str_schema(), "exit_reason": str_schema(),
+                "next": object(json!({ "kind": str_schema(), "command": str_schema() })),
+            }))),
+            "all_ok": bool_schema(),
             "timed_out": bool_schema(), "decision_seq": int_schema(),
         })),
-        false,
+        true,
         false,
     );
     add(

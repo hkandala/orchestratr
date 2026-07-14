@@ -352,6 +352,21 @@ impl Server {
                 let _ = write_to(writer, &respond(&req.id, out));
                 false
             }
+            "agent.wait" => {
+                let out = self.handle_agent_wait(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "agent.ask" => {
+                let out = self.handle_agent_ask(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "agent.logs" => {
+                let out = self.handle_agent_logs(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
             "agent.kill" => {
                 let out = self.handle_agent_kill(&req.params);
                 let _ = write_to(writer, &respond(&req.id, out));

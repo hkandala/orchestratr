@@ -74,10 +74,7 @@ impl TuningParams {
 
 /// Resolve the completion tuning for a provider: built-in defaults merged with any
 /// `integrations.<provider>.*` config overrides (spec §5.6, §14).
-pub fn tuning_for(
-    provider: &str,
-    overrides: &BTreeMap<String, IntegrationTuning>,
-) -> TuningParams {
+pub fn tuning_for(provider: &str, overrides: &BTreeMap<String, IntegrationTuning>) -> TuningParams {
     let mut t = TuningParams::defaults_for(provider);
     if let Some(o) = overrides.get(provider) {
         t.apply(o);

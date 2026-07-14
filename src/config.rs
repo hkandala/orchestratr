@@ -158,8 +158,14 @@ impl Config {
         let mut cfg = Config::default();
         let mut warnings = Vec::new();
 
-        const TOP_KEYS: &[&str] =
-            &["defaults", "herdr", "concurrency", "timings", "logs", "integrations"];
+        const TOP_KEYS: &[&str] = &[
+            "defaults",
+            "herdr",
+            "concurrency",
+            "timings",
+            "logs",
+            "integrations",
+        ];
         for key in obj.keys() {
             if !TOP_KEYS.contains(&key.as_str()) {
                 warnings.push(unknown_key_warning(key, "", TOP_KEYS));

@@ -157,7 +157,11 @@ fn select_candidate(
             // agent's creation (a stale reuse of the same id would be older).
             let fresh: Vec<PathBuf> = candidates
                 .iter()
-                .filter(|p| file_mtime_ms(p).map(|m| m >= created_at_ms).unwrap_or(false))
+                .filter(|p| {
+                    file_mtime_ms(p)
+                        .map(|m| m >= created_at_ms)
+                        .unwrap_or(false)
+                })
                 .cloned()
                 .collect();
             if fresh.len() == 1 {
@@ -166,7 +170,10 @@ fn select_candidate(
             let list: Vec<String> = candidates.iter().map(|p| p.display().to_string()).collect();
             Err(OrcrError::new(
                 ErrorCode::TranscriptUnavailable,
-                format!("transcript for session `{value}` is ambiguous ({} candidates)", list.len()),
+                format!(
+                    "transcript for session `{value}` is ambiguous ({} candidates)",
+                    list.len()
+                ),
             )
             .with_details(json!({
                 "uuid": uuid, "status": status, "cause": "ambiguous", "candidates": list,
@@ -177,9 +184,7 @@ fn select_candidate(
 
 fn locator(path: PathBuf) -> TranscriptLocator {
     let provider = if path.components().any(|c| c.as_os_str() == "sessions")
-        && path
-            .to_string_lossy()
-            .contains(".codex")
+        && path.to_string_lossy().contains(".codex")
     {
         "codex"
     } else {
@@ -270,9 +275,7 @@ fn walk_jsonl(dir: &Path, f: &mut impl FnMut(&Path)) {
         let Ok(ft) = entry.file_type() else { continue };
         if ft.is_dir() {
             walk_jsonl(&path, f);
-        } else if ft.is_file()
-            && path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-        {
+        } else if ft.is_file() && path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
             f(&path);
         }
     }
@@ -345,7 +348,10 @@ fn claude_block(
     let (kind, text, tool) = match bt {
         "text" => (
             "text",
-            b.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            b.get("text")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
             None,
         ),
         "thinking" => (
@@ -363,9 +369,7 @@ fn claude_block(
         ),
         "tool_result" => (
             "tool_result",
-            b.get("content")
-                .map(value_to_text)
-                .unwrap_or_default(),
+            b.get("content").map(value_to_text).unwrap_or_default(),
             None,
         ),
         _ => ("other", String::new(), None),
@@ -498,15 +502,23 @@ mod tests {
 "#;
         let tmp = tempfile::tempdir().unwrap();
         let p = write(tmp.path(), "s.jsonl", body);
-        let loc = TranscriptLocator { provider: "claude".into(), path: p };
+        let loc = TranscriptLocator {
+            provider: "claude".into(),
+            path: p,
+        };
         let e = loc.read_entries().unwrap();
         assert_eq!(e[0].role, "user");
         assert_eq!(e[0].text, "hello");
         assert!(e.iter().any(|x| x.kind == "thinking"));
-        let text = e.iter().find(|x| x.kind == "text" && x.role == "assistant").unwrap();
+        let text = e
+            .iter()
+            .find(|x| x.kind == "text" && x.role == "assistant")
+            .unwrap();
         assert_eq!(text.text, "hi there");
         assert_eq!(text.output_tokens, Some(3));
-        assert!(e.iter().any(|x| x.kind == "tool_use" && x.tool.as_deref() == Some("Bash")));
+        assert!(e
+            .iter()
+            .any(|x| x.kind == "tool_use" && x.tool.as_deref() == Some("Bash")));
         assert_eq!(loc.last_response("u", "idle").unwrap(), "hi there");
     }
 
@@ -519,7 +531,10 @@ mod tests {
 "#;
         let tmp = tempfile::tempdir().unwrap();
         let p = write(tmp.path(), "rollout-x-sid.jsonl", body);
-        let loc = TranscriptLocator { provider: "codex".into(), path: p };
+        let loc = TranscriptLocator {
+            provider: "codex".into(),
+            path: p,
+        };
         let e = loc.read_entries().unwrap();
         assert_eq!(e.len(), 2);
         assert_eq!(e[1].role, "assistant");
@@ -534,7 +549,10 @@ mod tests {
             "s.jsonl",
             "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
         );
-        let loc = TranscriptLocator { provider: "claude".into(), path: p };
+        let loc = TranscriptLocator {
+            provider: "claude".into(),
+            path: p,
+        };
         let e = loc.last_response("u", "idle").unwrap_err();
         assert_eq!(e.code, ErrorCode::TranscriptUnavailable);
         assert_eq!(e.details["cause"], "no_final_response");

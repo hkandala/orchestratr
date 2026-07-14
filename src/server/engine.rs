@@ -750,10 +750,191 @@ impl Server {
         Ok(json!({ "agents": agents }))
     }
 
+    /// `agent.wait` (spec §6.1): block until **every** snapshotted target settles, then
+    /// return one `{uuid,path,status,ok,reason,exit_reason?,next}` row per target plus
+    /// `all_ok`/`timed_out`/`decision_seq`. Membership is the set of **active** agents
+    /// matching the targets at invocation (snapshot-then-subscribe on the event bus, so no
+    /// transition is missed). A target that un-settles is waited on again — the result is the
+    /// state at one simultaneous `decision_seq`.
+    pub(super) fn handle_agent_wait(&self, params: &Value) -> Result<Value> {
+        let targets: Vec<String> = params
+            .get("targets")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if targets.is_empty() {
+            return Err(OrcrError::invalid_request(
+                "wait requires at least one target",
+                "target_required",
+            ));
+        }
+        let scope = caller_scope(params);
+        let timeout_ms = match str_param(params, "timeout").filter(|s| !s.is_empty()) {
+            Some(t) => Some(crate::duration::parse_duration(&t)?.as_millis() as i64),
+            None => None,
+        };
+
+        // Snapshot membership: the active agents matching any target at invocation.
+        let members = self.resolve_targets(&scope, &targets)?;
+        if members.is_empty() {
+            return Err(OrcrError::not_found(format!(
+                "no active agents matched {targets:?}"
+            )));
+        }
+        let member_uuids: Vec<String> = members.iter().map(|a| a.uuid.clone()).collect();
+
+        let deadline =
+            timeout_ms.map(|ms| std::time::Instant::now() + Duration::from_millis(ms as u64));
+        loop {
+            // One consistent read: all target rows + the current event cursor.
+            let (rows, decision_seq) = {
+                let store = self.inner.store.lock().unwrap();
+                let mut rows = Vec::with_capacity(member_uuids.len());
+                for u in &member_uuids {
+                    if let Some(a) = store.agent_full(u)? {
+                        rows.push(a);
+                    }
+                }
+                (rows, store.latest_event_seq().unwrap_or(0))
+            };
+
+            let all_settled = rows.iter().all(|a| settle_of(a).is_some());
+            let timed_out = deadline
+                .map(|d| std::time::Instant::now() >= d)
+                .unwrap_or(false);
+
+            if all_settled || timed_out {
+                return Ok(wait_result(&rows, decision_seq, timed_out));
+            }
+
+            // Wait for the next event (bounded so timeout is honored promptly).
+            let poll = Duration::from_millis(250);
+            match self.inner.bus.wait_for(decision_seq + 1, poll) {
+                crate::events::WaitOutcome::ShuttingDown => {
+                    return Ok(wait_result(&rows, decision_seq, timed_out));
+                }
+                _ => continue,
+            }
+        }
+    }
+
+    /// `agent.ask` (spec §6.1): documented sugar — `run --gc immediate` → settle `wait` →
+    /// `logs --last-response`. Naming rules are identical to `run`. Blocks through the queue
+    /// and the first completion, then returns `{uuid, path, response}`.
+    pub(super) fn handle_agent_ask(&self, params: &Value) -> Result<Value> {
+        // Force gc=immediate, then reuse the run path (naming enforcement included).
+        let mut run_params = params.clone();
+        if let Some(obj) = run_params.as_object_mut() {
+            obj.insert("gc".into(), json!("immediate"));
+        }
+        let run = self.handle_agent_run(&run_params)?;
+        let uuid = run["agent"]["uuid"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let path = run["agent"]["path"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+
+        let timeout_str = str_param(params, "timeout").filter(|s| !s.is_empty());
+        let wait_params = json!({ "targets": [uuid.clone()], "timeout": timeout_str });
+        let waited = self.handle_agent_wait(&wait_params)?;
+        let target = &waited["targets"][0];
+        let reason = target["reason"].as_str().unwrap_or("");
+        // Blocked → exit 4 (§6.1).
+        if reason.starts_with("blocked") {
+            let kind = reason.strip_prefix("blocked:").unwrap_or("unknown");
+            return Err(
+                OrcrError::new(crate::error::ErrorCode::Blocked, "agent is blocked")
+                    .with_details(json!({ "blocked_kind": kind, "uuid": uuid, "path": path })),
+            );
+        }
+        if waited["timed_out"].as_bool() == Some(true) {
+            return Err(OrcrError::new(
+                crate::error::ErrorCode::Timeout,
+                "ask timed out waiting for completion",
+            )
+            .with_details(json!({ "uuid": uuid, "path": path })));
+        }
+
+        // Read the last response from the native transcript (fails loudly, §6.1).
+        let text = {
+            let store = self.inner.store.lock().unwrap();
+            let a = store
+                .agent_full(&uuid)?
+                .ok_or_else(|| OrcrError::not_found(format!("agent {uuid} vanished")))?;
+            drop(store);
+            let loc = self.agent_transcript(&a)?;
+            loc.last_response(&a.uuid, &a.status)?
+        };
+        Ok(json!({
+            "uuid": uuid,
+            "path": path,
+            "response": { "text": text, "final": true },
+        }))
+    }
+
+    /// `agent.logs` (spec §6.1): read the provider's native transcript. `last_response` returns
+    /// only the final assistant message (fails loudly); otherwise structured entries
+    /// (optionally the last `tail`). History is addressed by uuid; a path resolves active-first.
+    pub(super) fn handle_agent_logs(&self, params: &Value) -> Result<Value> {
+        let target = str_param(params, "target").ok_or_else(|| {
+            OrcrError::invalid_request("logs requires a target", "target_required")
+        })?;
+        let scope = caller_scope(params);
+        let last_response = params
+            .get("last_response")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let tail = params.get("tail").and_then(|v| v.as_u64());
+
+        let (row, resolved) = self.resolve_singleton_tagged(&scope, &target)?;
+
+        // Both-layers-required for logs (§6.1): an unsupported provider → integration_missing.
+        if let Some(provider) = &row.agent {
+            ensure_supported(&self.integration_state_typed(), provider)?;
+        }
+
+        let loc = self.agent_transcript(&row)?;
+        if last_response {
+            let text = loc.last_response(&row.uuid, &row.status)?;
+            return Ok(json!({
+                "uuid": row.uuid, "path": row.path, "resolved": resolved,
+                "response": { "text": text, "final": true },
+            }));
+        }
+        let mut entries = loc.read_entries()?;
+        if let Some(n) = tail {
+            let n = n as usize;
+            if entries.len() > n {
+                entries = entries.split_off(entries.len() - n);
+            }
+        }
+        Ok(json!({
+            "uuid": row.uuid, "path": row.path, "resolved": resolved,
+            "entries": entries,
+        }))
+    }
+
     // --- resolution helpers ---
 
     /// Resolve an exact singleton target (§5.1): wildcards rejected; path-first then uuid.
     fn resolve_singleton(&self, scope: &Option<String>, raw: &str) -> Result<AgentFull> {
+        Ok(self.resolve_singleton_tagged(scope, raw)?.0)
+    }
+
+    /// Like [`resolve_singleton`] but also reports how it resolved (`active` | `latest_ended`,
+    /// spec §5.1) — used by `logs`.
+    fn resolve_singleton_tagged(
+        &self,
+        scope: &Option<String>,
+        raw: &str,
+    ) -> Result<(AgentFull, &'static str)> {
         if path::is_pattern(raw) {
             return Err(OrcrError::invalid_request(
                 format!("`{raw}` is a pattern; this verb takes an exact target"),
@@ -761,16 +942,27 @@ impl Server {
             ));
         }
         let store = self.inner.store.lock().unwrap();
+        let tag_of = |a: &AgentFull| {
+            if a.status == "ended" {
+                "latest_ended"
+            } else {
+                "active"
+            }
+        };
         if raw.contains('-') {
-            return uuid_lookup(store.find_by_uuid_or_prefix(raw)?, raw);
+            let a = uuid_lookup(store.find_by_uuid_or_prefix(raw)?, raw)?;
+            let tag = tag_of(&a);
+            return Ok((a, tag));
         }
         let resolved = path::resolve_selector(scope.as_deref(), raw)?;
         if let Some(res) = store.find_by_path(&resolved)? {
-            return Ok(res.row().clone());
+            let tag = res.tag();
+            return Ok((res.row().clone(), tag));
         }
-        // Fall back to a uuid prefix (≥ 8 hex) only if nothing matched as a path.
         if is_uuid_prefix(raw) {
-            return uuid_lookup(store.find_by_uuid_or_prefix(raw)?, raw);
+            let a = uuid_lookup(store.find_by_uuid_or_prefix(raw)?, raw)?;
+            let tag = tag_of(&a);
+            return Ok((a, tag));
         }
         Err(OrcrError::not_found(format!("no agent matched `{raw}`")))
     }
@@ -852,6 +1044,102 @@ impl Server {
         serde_json::from_str(&text)
             .map_err(|e| OrcrError::server_error("launch_decode", format!("bad launch.json: {e}")))
     }
+}
+
+/// A settled wait target (spec §6.1). `None` from [`settle_of`] = not yet settled.
+struct Settled {
+    ok: bool,
+    reason: String,
+    next_kind: &'static str,
+}
+
+/// Map an agent's `status × exit_reason` to its wait settle outcome (spec §6.1 table).
+/// Returns `None` for queued/starting/working — the caller keeps waiting.
+fn settle_of(a: &AgentFull) -> Option<Settled> {
+    let s = match a.status.as_str() {
+        "idle" | "parked" => Settled {
+            ok: true,
+            reason: "turn_complete".to_string(),
+            next_kind: "logs_last_response",
+        },
+        "blocked" => {
+            let kind = a.blocked_kind.as_deref().unwrap_or("unknown");
+            Settled {
+                ok: false,
+                reason: format!("blocked:{kind}"),
+                next_kind: "attach",
+            }
+        }
+        "lost" => Settled {
+            ok: false,
+            reason: "lost".to_string(),
+            next_kind: "none",
+        },
+        "ended" => {
+            let er = a.exit_reason.as_deref().unwrap_or("failed");
+            let (ok, reason, next) = match er {
+                "completed" => (true, "completed", "logs_last_response"),
+                "reaped" => (true, "reaped", "logs_history"),
+                "timeout" => (false, "timeout", "none"),
+                "lost" => (false, "lost", "none"),
+                other => (false, other, "none"), // killed | canceled | failed
+            };
+            Settled {
+                ok,
+                reason: reason.to_string(),
+                next_kind: next,
+            }
+        }
+        _ => return None,
+    };
+    Some(s)
+}
+
+/// The structured `next` hint (spec §6.1): a stable enum kind + a rendered command string.
+fn next_hint(kind: &str, path: &str, uuid: &str) -> Value {
+    let command = match kind {
+        "logs_last_response" => format!("orcr agent logs {path} --last-response"),
+        "attach" => format!("orcr agent attach {path}"),
+        "logs_history" => format!("orcr agent logs {uuid}"),
+        _ => String::new(),
+    };
+    json!({ "kind": kind, "command": command })
+}
+
+/// Build the `agent.wait` result envelope from the snapshot of target rows (spec §6.1).
+/// Unsettled targets (only possible on a timed-out wait) report `wait_timeout`.
+fn wait_result(rows: &[AgentFull], decision_seq: i64, timed_out: bool) -> Value {
+    let mut rows: Vec<&AgentFull> = rows.iter().collect();
+    rows.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut targets = Vec::with_capacity(rows.len());
+    let mut all_ok = true;
+    for a in rows {
+        let (ok, reason, next_kind) = match settle_of(a) {
+            Some(s) => (s.ok, s.reason, s.next_kind),
+            None => (false, "wait_timeout".to_string(), "none"),
+        };
+        if !ok {
+            all_ok = false;
+        }
+        let mut row = json!({
+            "uuid": a.uuid,
+            "path": a.path,
+            "status": a.status,
+            "ok": ok,
+            "reason": reason,
+            "next": next_hint(next_kind, &a.path, &a.uuid),
+        });
+        if let Some(er) = &a.exit_reason {
+            row["exit_reason"] = json!(er);
+        }
+        targets.push(row);
+    }
+    json!({
+        "targets": targets,
+        "all_ok": all_ok,
+        "timed_out": timed_out,
+        "decision_seq": decision_seq,
+    })
 }
 
 /// Extract a string param.
