@@ -1,3 +1,0 @@
-{"response_item":{"type":"output_text","text":"response item fallback"}}
-{"agent_message":"agent message wins"}
-{"usage":{"input_tokens":13,"output_tokens":5}}

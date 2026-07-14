@@ -1,3 +1,0 @@
-{"response_item":{"type":"output_text","text":"response item fallback"}}
-{"agent_message":"agent message fallback"}
-{"task_complete":{"last_agent_message":"task complete wins"}}
