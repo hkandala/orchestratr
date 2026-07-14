@@ -175,6 +175,29 @@ impl TestServer {
 
 impl Drop for TestServer {
     fn drop(&mut self) {
+        // Kill every loop run's process group FIRST, while the server + throwaway home still
+        // exist. The §9.7 durable-handoff recipe schedules `tsx resume.ts` loop-run children;
+        // if one outlives teardown (e.g. a test panic mid-run), the SDK's auto-start could
+        // bootstrap a server against the deleted home, fall back to the default config, and
+        // leak the real `orcr` herdr session (known-issues #1). Runs unconditionally so it
+        // also fires on panic. Mirrors tests/loop_e2e.rs.
+        if let Ok(loops) = self.request("loop.ls", json!({ "all": true })) {
+            for l in loops["loops"].as_array().cloned().unwrap_or_default() {
+                if let Some(name) = l["name"].as_str() {
+                    let runs = self
+                        .request("loop.run.ls", json!({ "name": name, "all": true }))
+                        .map(|r| r["runs"].as_array().cloned().unwrap_or_default())
+                        .unwrap_or_default();
+                    for run in runs {
+                        if let Some(pgid) = run["pgid"].as_i64() {
+                            unsafe {
+                                libc::kill(-(pgid as i32), libc::SIGKILL);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let _ = self.request("server.stop", json!({}));
         for _ in 0..20 {
             match self.client().handshake() {

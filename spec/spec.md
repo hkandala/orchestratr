@@ -649,7 +649,8 @@ exactly one (parallel asks therefore need distinct names, e.g. `verify/check_1`,
 **send** — exact target only (§5.1). Types the prompt into the agent's TUI and
 submits, whatever status the agent is in (provider TUIs queue mid-turn input
 natively). It waits for the delivery to be confirmed on the pane and returns success
-or failure — the result reports `delivered_while: working|idle|parked` + `input_seq`.
+or failure — the result reports `delivered_while: working|idle|blocked|parked` (the
+agent's status at delivery) + `input_seq`.
 Sending to a parked agent un-parks it (atomically, before delivery). Ended target →
 `not_found` (exit 6). *Planned: per-provider steer/stop options (§17).*
 
@@ -1701,7 +1702,8 @@ terminal disappears are marked `ended`.
   `*_applied` after the observed fact — and reconciliation emits repair events for
   anything it derives after a crash, so subscribers never see a state the recovery
   path skipped. Defined kinds: `agent.created / status_changed / turn_completed /
-  response_captured / location_changed / ended`, `queue.changed / promoted`,
+  response_captured / location_changed / ended`, `queue.promoted` (queue membership
+  is otherwise derived from `agent.created` / `agent.ended` / `queue.promoted`),
   `attach.started / ended`, `loop.created / fired / coalesced / skipped / paused /
   resumed / removed`, `loop_run.started / ended`; every payload carries enough
   fields to update an `api snapshot` state incrementally. Subscriptions accept
@@ -1844,7 +1846,7 @@ return `{}` or an obvious echo, e.g. `server start → {status:"started|already_
 agent run        {agent:{uuid,path,status,agent,managed,cwd,data_dir,
                   queue_position?,parent_id?,parent_path?}, permissions:"bypass"}
 agent ask        raw response text on stdout · --json {uuid, path, response:{text,final}}
-agent send       {uuid, path, delivered_while:"working|idle|parked", input_seq}
+agent send       {uuid, path, delivered_while:"working|idle|blocked|parked", input_seq}
 agent logs       {uuid, path, resolved:"active|latest_ended", entries:[…]}
                  · --last-response {uuid, path, resolved, response:{text,final}}
 agent wait       {targets:[{uuid,path,status,ok,reason,exit_reason?,
