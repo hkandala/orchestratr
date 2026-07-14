@@ -681,7 +681,27 @@ impl Server {
             .list_loops(&[], None, false)
             .unwrap_or_default()
             .iter()
-            .map(loops::loop_row_json)
+            .map(|l| {
+                let mut row = loops::loop_row_json(l);
+                // Active runs (running/stopping) become the loop's subtree in `top` (§7).
+                let runs: Vec<Value> = store
+                    .active_runs(&l.uuid)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|r| {
+                        json!({
+                            "uuid": r.uuid,
+                            "run_id": r.run_id,
+                            "kind": r.kind,
+                            "status": r.status,
+                            "due_at": r.due_at,
+                            "started_at": r.started_at,
+                        })
+                    })
+                    .collect();
+                row["runs"] = json!(runs);
+                row
+            })
             .collect();
         let snap = json!({
             "snapshot_seq": seq,
@@ -829,10 +849,27 @@ fn agent_row_json(store: &Store, a: &AgentFull) -> Value {
         "status": a.status,
         "managed": a.managed,
         "agent": a.agent,
+        "model": a.model,
         "cwd": a.cwd,
         "pane_id": a.pane_id,
+        "move_state": a.move_state,
         "created_at": a.created_at,
+        "last_status_change_at": a.last_status_change_at,
     });
+    // Fields the `top` tree needs to place/annotate a row (spec §7): the herdr session for
+    // unmanaged grouping, and the clocks that drive the age column per status.
+    if let Some(s) = &a.herdr_session {
+        row["herdr_session"] = json!(s);
+    }
+    if let Some(t) = a.starting_at {
+        row["starting_at"] = json!(t);
+    }
+    if let Some(t) = a.idle_since {
+        row["idle_since"] = json!(t);
+    }
+    if let Some(t) = a.parked_at {
+        row["parked_at"] = json!(t);
+    }
     if a.status == "queued" {
         if let Ok(Some(q)) = store.queue_position(&a.uuid) {
             row["queue_position"] = json!(q);

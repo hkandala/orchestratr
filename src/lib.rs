@@ -20,6 +20,7 @@ pub mod path;
 pub mod server;
 pub mod service;
 pub mod store;
+pub mod top;
 pub mod wire;
 
 pub use error::{ErrorCode, OrcrError, Result};

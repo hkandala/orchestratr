@@ -50,6 +50,26 @@ pub enum Command {
         #[command(subcommand)]
         cmd: ApiCmd,
     },
+    /// The live, view-only monitoring TUI (§6.3, §7).
+    Top {
+        /// Optional path pattern (or uuid) to pre-scope the tree (§5.1 grammar).
+        pattern: Option<String>,
+        /// Only show agents of this provider.
+        #[arg(short = 'a', long = "agent")]
+        agent: Option<String>,
+        /// Only show agents in this status.
+        #[arg(long)]
+        status: Option<String>,
+        /// Only show managed agents.
+        #[arg(long)]
+        managed: bool,
+        /// Only show unmanaged agents.
+        #[arg(long)]
+        unmanaged: bool,
+        /// Show only loops and their run subtrees.
+        #[arg(long)]
+        loops: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -337,7 +357,58 @@ fn dispatch(cli: &Cli) -> Result<()> {
             ApiCmd::Schema { output } => cmd_api_schema(cli.json, output.as_deref()),
             ApiCmd::Snapshot => cmd_api_snapshot(cli.json),
         },
+        Command::Top {
+            pattern,
+            agent,
+            status,
+            managed,
+            unmanaged,
+            loops,
+        } => cmd_top(pattern, agent, status, *managed, *unmanaged, *loops),
     }
+}
+
+/// `orcr top` (spec §6.3): build the pre-scoping filter from the flags (resolving any pattern
+/// against the caller's `ORCR_PATH` scope, §5.1) and launch the view-only TUI. Live-only by
+/// design — there is no `--all` (that is `ls --all`).
+#[allow(clippy::too_many_arguments)]
+fn cmd_top(
+    pattern: &Option<String>,
+    agent: &Option<String>,
+    status: &Option<String>,
+    managed: bool,
+    unmanaged: bool,
+    loops: bool,
+) -> Result<()> {
+    use crate::top::{model::TopFilter, run_top};
+    let (_caller_id, caller_path) = caller_identity();
+    let scope = caller_path.as_deref().and_then(crate::path::scope_of_agent);
+
+    let compiled = match pattern.as_deref().filter(|s| !s.is_empty()) {
+        Some(p) => {
+            let resolved = crate::path::resolve_selector(scope.as_deref(), p)?;
+            Some(crate::path::Pattern::compile(&resolved)?)
+        }
+        None => None,
+    };
+    if managed && unmanaged {
+        return Err(OrcrError::invalid_request(
+            "pass at most one of --managed / --unmanaged",
+            "conflicting_flags",
+        ));
+    }
+    let filter = TopFilter {
+        pattern: compiled,
+        provider: agent.clone(),
+        status: status.clone(),
+        managed: match (managed, unmanaged) {
+            (true, false) => Some(true),
+            (false, true) => Some(false),
+            _ => None,
+        },
+        loops_only: loops,
+    };
+    run_top(scope, filter)
 }
 
 // --- agent ---
