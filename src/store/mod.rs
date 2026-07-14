@@ -949,6 +949,21 @@ impl Store {
         Ok(rows)
     }
 
+    /// Conservative restart re-arm (spec §5.6): clear `idle_since` for all active managed
+    /// agents so the stable-idle completion timer is re-measured from a **fresh** herdr
+    /// transition after a restart, never trusting a pre-crash idle streak.
+    pub fn clear_active_idle_since(&mut self) -> Result<()> {
+        self.with_immediate_tx(|tx| {
+            tx.execute(
+                "UPDATE agents SET idle_since=NULL WHERE managed=1 \
+                 AND status IN ('working','idle','blocked','parked')",
+                [],
+            )
+            .map_err(map_sqlite)?;
+            Ok(())
+        })
+    }
+
     /// All active managed agents (for reconciliation on server start, spec §11.5).
     pub fn active_managed_agents(&self) -> Result<Vec<AgentFull>> {
         let mut stmt = self

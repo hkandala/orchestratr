@@ -99,8 +99,12 @@ impl Server {
                             self.publish(ev);
                         }
                     }
-                } else if matches!(a.status.as_str(), "idle" | "blocked" | "parked") {
-                    // working with no pending orcr delivery → synthetic external turn (§5.6).
+                } else {
+                    // herdr reports `working` with no open turn — input orcr didn't deliver
+                    // (typed via attach/herdr UI). Record a synthetic external turn (§5.6).
+                    // Fires once: the turn it opens is then the open turn on later ticks. It
+                    // never fires for a no-prompt agent at startup (the mock reports `idle`
+                    // there, so this branch isn't entered).
                     let ev = {
                         let mut store = self.inner.store.lock().unwrap();
                         store.open_external_turn(&a.uuid, now)

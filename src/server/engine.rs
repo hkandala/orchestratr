@@ -319,6 +319,12 @@ impl Server {
     /// that belong to an in-flight spawn (by tab label in the home workspace) are closed so
     /// no duplicate survives; rows whose pane vanished are failed/lost.
     pub(super) fn reconcile_on_start(&self) {
+        // Conservative re-arm: forget any pre-crash idle streak so completion re-measures
+        // stable idle from a fresh transition (§5.6 restart safety).
+        {
+            let mut store = self.inner.store.lock().unwrap();
+            let _ = store.clear_active_idle_since();
+        }
         let agents = {
             let store = self.inner.store.lock().unwrap();
             store.active_managed_agents().unwrap_or_default()
