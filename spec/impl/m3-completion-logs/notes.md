@@ -19,12 +19,41 @@ and deviations*, not a play-by-play.
   transcript every 500ms and prints new entries. The spec says "subscription under the
   hood"; the observable behavior (a live-updating tail) is identical and the acceptance
   (round-trips) doesn't require server push. Recorded as a simplification.
-- **Freshness gate is a fixture-tested pure helper (`driver::transcript_fresh`), applied
-  best-effort at capture; the live read path does not poll-until-fresh.** A strict
-  poll-until-advanced in `logs --last-response` risked flakiness against real providers
-  (transcript mtime vs. the completion timestamp ordering). The gate logic is proven in a
-  unit fixture; capture records the locator/cursor at completion so post-kill reads work.
-  Full freshness enforcement in the read path is deferred (best-effort, §11.4).
+- **Freshness gate is now enforced on the read path** (`Server::last_response_fresh`, used by
+  both `agent.logs --last-response` and `agent.ask`). The threshold is the transcript file
+  mtime **captured at the observed completion** (`turns.transcript_cursor`, an mtime string) —
+  *not* orcr's wall-clock `completed_at`. Using `completed_at` would be wrong: a real provider
+  writes its response to the transcript *before* going idle, and orcr only marks
+  `completed_at` after `idle_stable_ms + transcript_settle_ms` more elapse, so
+  `mtime < completed_at` is the normal case and would make every read stale. Instead the read
+  path requires `current mtime >= recorded-completion cursor` (via the existing
+  `transcript_fresh` helper), polling up to `transcript_freshness_timeout_ms`; a file that
+  never reaches it (rotated/truncated to an older state, or vanished) →
+  `transcript_unavailable{cause:"stale"}` rather than a not-yet-advanced/stale read. This
+  matches §11.4's "advanced past the observed completion" and the documented rotation
+  limitation, while staying immediate (mtime == cursor right after completion) for the happy
+  path. Agents with no recorded completion cursor (the mock has no native transcript) never
+  reach the gate — `agent_transcript`/`locate_transcript` fails first. (Round-1 verifier fix.)
+
+## Round-1 verifier fixes
+
+- **Fast-turn-grace stale-idle race (high).** The completion monitor could falsely complete a
+  freshly re-armed turn via the fast-turn-grace path before the provider ever reported
+  `working`: `fast_ok` only required that idle *began* within `fast_turn_grace_ms` of delivery,
+  so once `idle_stable_ms` (< grace) elapsed on a still-stale idle the turn completed —
+  letting an old idle satisfy a newer send (violates §5.6/§6.1). This was load-sensitive
+  (`e2e_two_sends_no_stale_idle` failed ~1-in-4 under full-suite load). Fix: `fast_ok` now
+  additionally requires the **full grace window** to have elapsed since delivery
+  (`now - delivered_at >= fast_turn_grace_ms`) with continuous idle. Any provider that starts
+  working within the grace window sets `working_seen_at` first, so the fast path never applies
+  to it; a genuinely fast turn (working never observed) still completes, just after the full
+  grace window. Verified deterministic: `e2e_two_sends_no_stale_idle` + `e2e_fast_turn_completes`
+  green across 5 runs under saturated CPU load, plus a full 8/8 completion suite run under load.
+- **`wait` exit-code precedence (low).** §6.1 ranks the outcomes `4 blocked · 5 dead · 3
+  timeout`; the CLI checked `timed_out` (3) before blocked/dead, so a mixed wait that both
+  timed out (a target still working) and had an already-settled blocked/dead target returned
+  3. Reordered `cmd_agent_wait` to `all_ok(0) → any_blocked(4) → any_dead(5) → timed_out(3)`
+  (dead = a target settled non-ok whose reason is neither `blocked*` nor `wait_timeout`).
 
 ## Decisions on under-specified points
 
@@ -87,3 +116,18 @@ and deviations*, not a play-by-play.
   `--test agent_e2e` 9/9 against live herdr 0.7.2 with the mock provider. Real-provider
   (claude/codex) live round-trip is deferred to the manual-e2e phase (best-effort); the
   claude parser was cross-checked against a real on-disk transcript.
+- **Revision round 1** (this pass, on `main`): fixed the four verifier findings —
+  (high) fast-turn-grace stale-idle race in `completion.rs`; (medium) §11.4 freshness gate
+  now enforced on the `last_response` read path (`Server::last_response_fresh`); (low) `wait`
+  exit-code precedence reordered to blocked/dead > timeout in `cli.rs`; (low) the successful
+  last-response read *through the full server stack* against real claude/codex is explicitly
+  tracked for the manual-e2e phase (see below) — the successful locate→parse→read path is
+  otherwise covered by the `transcript.rs` parser fixtures, and only the negative
+  (`transcript_unavailable`) path is exercised in the mock e2e (the mock has no native
+  transcript, so a successful server-stack read cannot be faked without a real provider).
+  Gates after the round: `cargo build`, `cargo fmt --check`, `cargo clippy --all-targets`
+  clean, `cargo test --lib` 111 green, `ORCR_E2E=1 … --test completion_e2e` 8/8 and
+  `--test agent_e2e` 9/9 under saturated CPU load; the previously-flaky
+  `e2e_two_sends_no_stale_idle` is now deterministically green (5/5 focused runs + a full
+  suite run, all under load). A leaked `orcr_test_*` session from an earlier interrupted run
+  was stopped+deleted; the user's `default` session was never touched.

@@ -34,6 +34,8 @@ Ships: turns + completion, wait, transcript adapters, logs, ask, gc immediate.
 - [x] common shape: ordered messages, roles, tool calls, token counts where available
 - [x] identity gate: select by agent_session + created_at; multiple candidates → transcript_unavailable (ambiguous)
 - [x] freshness gate: final response only once transcript advanced past completion (timeout) else transcript_unavailable
+      — enforced on the read path via `Server::last_response_fresh` (logs --last-response + ask); threshold = the
+      completion cursor (transcript mtime at completion), polled up to transcript_freshness_timeout_ms (round-1 fix)
 - [x] record transcript_locator/transcript_cursor on completion; no response copies
 
 ## logs (§6.1)
@@ -70,3 +72,8 @@ Ships: turns + completion, wait, transcript adapters, logs, ask, gc immediate.
 
 ## Deferred / out of scope
 - GC auto parking, attach, loops, pi/opencode adapters (later milestones / future)
+- [deferred → manual-e2e] Successful `send → wait → --last-response` round-trip on **real**
+  claude/codex, i.e. a SUCCESSFUL last-response read through the full server stack. The mock
+  has no native transcript so only the negative (`transcript_unavailable`) path is e2e-tested;
+  the successful locate→parse→read is covered by `transcript.rs` parser fixtures. Best-effort
+  per master-prompt §6 — to be exercised in the final manual-e2e phase (real providers).
