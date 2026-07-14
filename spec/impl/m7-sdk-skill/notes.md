@@ -209,3 +209,36 @@ worth knowing, and discovered facts.
   two `orcr_test_*` sessions that the concurrent-burst drop-guard left behind (pre-existing
   teardown-timing behavior under concurrency, not from these changes); `herdr session list`
   confirms only `default` remains.
+
+### Review round 2 → FAIL; fixed
+
+- **HIGH (fixed) — SDK transport capped every request at 30s wall-clock, killing real
+  blocking `wait`/`ask`.** `wire.ts request()` armed `setTimeout(() => sock.destroy(...))` for
+  every call. `agent.wait`/`agent.ask` hold the connection silently until the target turn
+  settles (or the caller's `timeout` param elapses) — real agent turns run for minutes, so the
+  client died first and a caller `wait({timeout:'5m'})` was unusable. Fix: a `BLOCKING_METHODS`
+  set (`agent.wait`, `agent.ask`) — those never get a client-side timeout (server owns the
+  deadline; a dead server still surfaces via socket close → `server_unreachable`). All other
+  methods keep the 30s guard. Implemented with `Promise.race` between `reader.next()` and the
+  timeout; `Promise.race` attaches handlers to both so a late socket-error rejection after a
+  timeout win stays handled (no unhandled rejection). `sdk/ts/src/wire.ts`.
+- **HIGH (cross-cutting, fixed) — same 30s cap in the Rust CLI client.**
+  `src/server/client.rs::request` set a 30s read timeout on every request. Made it method-aware:
+  `agent.wait`/`agent.ask` → no read timeout (unbounded); everything else keeps 30s. Write
+  timeout unchanged. Keeps CLI and SDK behavior identical.
+- **MEDIUM (fixed) — client timeout now a typed error.** The old path rejected with a raw
+  `new Error("request timed out")`. Now rejects with
+  `EnvironmentError("request timed out", { cause: "client_timeout" })`, catchable via the typed
+  hierarchy like every other failure.
+- **LOW (fixed) — missing packaged README.** `package.json` `files` listed `README.md` but none
+  existed under `sdk/ts/`, so the published tarball would ship without one. Added
+  `sdk/ts/README.md` (SDK quickstart: requirements, scaffold flow, `ask`/`scope` examples,
+  surface summary, `ORCR_SDK_SPEC` note).
+- **LOW (fixed) — `LoopCreateOptions.overlap` advertised an unsupported `'allow'`.** Server only
+  accepts `queue`/`skip` (`loops.rs` → `invalid_overlap`). Narrowed the union to
+  `"queue" | "skip"` (dropped the `| string` escape hatch too). `sdk/ts/src/client.ts`.
+- **LOW (fixed) — stale test comment.** `scope.test.ts` referenced a non-existent
+  `tests/sdk_e2e.rs`; repointed to `tests/recipe_e2e.rs::e2e_sdk_scope_matches_cli`.
+- All checks green: `cargo fmt`, `cargo clippy --all-targets`, 160 Rust unit tests, SDK 20/20 +
+  `codegen:check` up to date + `npm run build`, `ORCR_E2E=1` recipe_e2e 7/7 and skill_docs 2/2
+  against live herdr. `herdr session list` confirms only `default` remains (no leaks).
