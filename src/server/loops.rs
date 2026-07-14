@@ -1070,6 +1070,8 @@ impl Server {
             "ended_at": r.ended_at,
             "exit_code": r.exit_code,
             "signal": r.signal,
+            "pid": r.pid,
+            "pgid": r.pgid,
             "agents": agents,
         })
     }
