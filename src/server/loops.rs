@@ -173,6 +173,10 @@ impl Server {
         cmd.env("ORCR_PATH", &run_path);
         cmd.env("ORCR_LOOP_DATA_DIR", &loop_data_dir);
         cmd.env("ORCR_HOME", self.inner.home.root());
+        // Pin the owned-session name so a config-less child (its throwaway home already deleted)
+        // still targets this server's session rather than falling back to the literal `orcr`
+        // (known-issues #1). Matches config in production; load-bearing for test isolation.
+        cmd.env("ORCR_HERDR_SESSION", &self.inner.config.herdr.session);
         cmd.env_remove("ORCR_PARENT_ID");
         cmd.env_remove("ORCR_PARENT_PATH");
         cmd.env_remove("ORCR_AGENT_DATA_DIR");
@@ -509,12 +513,17 @@ impl Server {
                         ));
                     }
                 } else {
-                    // Dead → close out and glob-kill its agents (spec §11.3).
+                    // Dead → close out and glob-kill its agents (spec §11.3). A run that was
+                    // mid-stop (`stopping`) when the server crashed is `stopped`, not `failed`
+                    // — mirror `spawn_poll_monitor`'s status mapping (spec §6.2).
+                    let ts = if run.status == "stopping" {
+                        "stopped"
+                    } else {
+                        "failed"
+                    };
                     let ev = {
                         let mut store = self.inner.store.lock().unwrap();
-                        store
-                            .finish_run(&run.uuid, "failed", None, None)
-                            .unwrap_or(0)
+                        store.finish_run(&run.uuid, ts, None, None).unwrap_or(0)
                     };
                     self.publish(ev);
                     let run_path = format!("{}/{}", l.name, run.run_id);

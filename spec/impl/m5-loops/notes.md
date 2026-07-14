@@ -9,9 +9,12 @@ the scheduler, and `server enable/disable`.
   (`30m`, `2s` → `now + dur`, the common scripting form) first, else an RFC3339 timestamp,
   else a local wall-clock `YYYY-MM-DDTHH:MM[:SS]` / `YYYY-MM-DD HH:MM[:SS]`. Stored verbatim
   in `cadence_value`; the resolved UTC-ms is the single `next_fire_at`.
-- **A missed `once` fire is not skipped on restart** (only cron missed fires are skipped-and-
-  logged). A one-shot that never ran while the server was down fires when the server comes back
-  (late, but once). Cron missed fires are skipped + logged per spec §6.2/§11.3.
+- **Missed fires are skipped-and-logged on restart, never replayed — for cron AND `once`
+  loops alike** (spec §6.2/§11.3). `recover_loops_on_start` emits a `loop.skipped`
+  (`reason: missed_while_down`) for any fire whose `next_fire_at` passed while the server was
+  down; a `once` loop then ends without ever running (it "fires once then ends", and its one
+  fire was the missed one), while a cron loop simply recomputes its next fire. Nothing is fired
+  late.
 
 ## Decisions on under-specified points
 
@@ -135,6 +138,22 @@ the scheduler, and `server enable/disable`.
   other store write, instead of a bare `conn.execute` — restoring the "all writes go through
   `BEGIN IMMEDIATE`" invariant (§12). Functionally benign before (single connection behind
   `Mutex<Store>`), but the inconsistency is removed.
+
+## Comprehensive-review updates (round 2)
+- **A dead run finalized on restart honors its status** (`recover_loops_on_start`): a run that
+  was mid-stop (`stopping`) when the server crashed is closed as `stopped`, not `failed` —
+  matching `spawn_poll_monitor`'s mapping and §6.2's status vocabulary (a user-stopped run must
+  surface under `--status stopped`, not `failed`).
+- **Loop-run children pin `ORCR_HERDR_SESSION`.** The spawn env now sets
+  `ORCR_HERDR_SESSION = <owned session>` so a config-less orcr child (its throwaway home already
+  deleted mid-teardown) still targets this server's session instead of falling back to
+  `Config::default()`'s literal `orcr` — the root cause of the leaked-`orcr`-session test-hygiene
+  bug (known-issues #1). `Config::load` honors this env override (empty → file/default); matches
+  config in production, load-bearing for test isolation. The e2e harnesses set it on every server
+  they spawn, harden teardown to drive all runs to termination before deleting the throwaway home
+  (killing process groups until no run is running/stopping/pending, closing the allocate→record
+  `pgid`-NULL window), and assert on drop that neither the disposable nor the shared `orcr`
+  session survives.
 
 ## Deferred / out of scope
 - top (M6), SDK loop helpers (M7), Windows Task Scheduler (lands with Windows support, §17).
