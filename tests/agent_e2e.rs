@@ -238,6 +238,113 @@ fn e2e_run_send_kill_lifecycle() {
     );
 }
 
+/// The path-model conformance table (spec §5.1), asserted over the socket **and** the CLI:
+/// `--name` in scope, `--path` relative, leading `/` absolute, agent scope = path minus
+/// name, ended-path reuse + uuid history, depth-limit + reserved errors.
+#[test]
+fn e2e_path_model_conformance() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    let ts = TestServer::start();
+
+    // Resolve a run request and return the effective path (killing the queued agent so the
+    // table can be exercised without dozens of live panes).
+    let resolve = |params: Value| -> orchestratr::Result<String> {
+        let r = ts.request("agent.run", params)?;
+        let path = r["agent"]["path"].as_str().unwrap().to_string();
+        let uuid = r["agent"]["uuid"].as_str().unwrap().to_string();
+        let _ = ts.request("agent.kill", json!({ "targets": [uuid] }));
+        Ok(path)
+    };
+
+    // --name lands directly in the caller's scope (caller `proj/lead` → scope `proj`).
+    assert_eq!(
+        resolve(json!({ "name": "w1", "agent": "mock", "caller_path": "proj/lead" })).unwrap(),
+        "proj/w1"
+    );
+    // --path is relative to the caller's scope.
+    assert_eq!(
+        resolve(json!({ "path": "sub/w2", "agent": "mock", "caller_path": "proj/lead" })).unwrap(),
+        "proj/sub/w2"
+    );
+    // Leading `/` is absolute — scope is ignored.
+    assert_eq!(
+        resolve(json!({ "path": "/root/w3", "agent": "mock", "caller_path": "proj/lead" }))
+            .unwrap(),
+        "root/w3"
+    );
+    // Agent scope = path minus name: a child of `deep/mid/leaf` lands beside it.
+    assert_eq!(
+        resolve(json!({ "name": "child", "agent": "mock", "caller_path": "deep/mid/leaf" }))
+            .unwrap(),
+        "deep/mid/child"
+    );
+
+    // Depth limit (> 8 segments) → invalid_request:path_too_deep, nothing spawned.
+    let deep = (0..9)
+        .map(|i| format!("s{i}"))
+        .collect::<Vec<_>>()
+        .join("/");
+    let e = ts
+        .request("agent.run", json!({ "path": deep, "agent": "mock" }))
+        .unwrap_err();
+    assert_eq!(e.code, orchestratr::ErrorCode::InvalidRequest);
+    assert_eq!(e.details["reason"], json!("path_too_deep"));
+
+    // Reserved level-1 name → invalid_request:reserved_name.
+    let e = ts
+        .request("agent.run", json!({ "path": "idle/x", "agent": "mock" }))
+        .unwrap_err();
+    assert_eq!(e.details["reason"], json!("reserved_name"));
+
+    // Ended-path reuse + uuid history: run, kill (→ ended), reuse the path, both in history.
+    let r1 = ts
+        .request("agent.run", json!({ "name": "reuse", "agent": "mock" }))
+        .unwrap();
+    let u1 = r1["agent"]["uuid"].as_str().unwrap().to_string();
+    ts.request("agent.kill", json!({ "targets": [u1.clone()] }))
+        .unwrap();
+    assert!(ts.wait_status(&u1, "ended", Duration::from_secs(10)));
+    let r2 = ts
+        .request("agent.run", json!({ "name": "reuse", "agent": "mock" }))
+        .unwrap();
+    let u2 = r2["agent"]["uuid"].as_str().unwrap().to_string();
+    assert_ne!(u1, u2, "reused path gets a fresh uuid");
+    let all = ts.request("agent.ls", json!({ "all": true })).unwrap();
+    let reuse_rows: Vec<&Value> = all["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["path"] == json!("reuse"))
+        .collect();
+    assert_eq!(
+        reuse_rows.len(),
+        2,
+        "history keeps both generations by uuid"
+    );
+    let _ = ts.request("agent.kill", json!({ "targets": [u2] }));
+
+    // CLI parity: the same resolution through the `orcr` binary with ORCR_PATH set.
+    let out = Command::new(orcr_bin())
+        .args(["agent", "run", "--name", "climodel", "-a", "mock", "--json"])
+        .env("ORCR_HOME", ts.home.path())
+        .env("ORCR_ALLOW_MOCK_PROVIDER", "1")
+        .env("ORCR_MOCK_AGENT_BIN", mock_agent_bin())
+        .env("ORCR_ID", "cli-caller")
+        .env("ORCR_PATH", "proj/lead")
+        .stdin(Stdio::null())
+        .output()
+        .expect("cli run");
+    let env: Value = serde_json::from_slice(&out.stdout).expect("cli json");
+    assert_eq!(env["ok"], json!(true));
+    assert_eq!(env["result"]["agent"]["path"], json!("proj/climodel"));
+    assert_eq!(env["result"]["agent"]["parent_path"], json!("proj/lead"));
+    let cli_uuid = env["result"]["agent"]["uuid"].as_str().unwrap().to_string();
+    let _ = ts.request("agent.kill", json!({ "targets": [cli_uuid] }));
+}
+
 /// 50 concurrent runs at cap 5: FIFO promotion order, never over cap, queue drains.
 #[test]
 fn e2e_concurrency_caps_and_fifo() {
