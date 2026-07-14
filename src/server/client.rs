@@ -152,6 +152,35 @@ impl Client {
         Ok(StartOutcome::Started)
     }
 
+    // --- typed convenience helpers (SDK groundwork, M3) — thin wrappers over `request` ---
+
+    /// `agent.wait` on one or more targets. Returns the raw wait result document (§6.1).
+    pub fn wait(&self, targets: &[&str], timeout: Option<&str>) -> Result<Value> {
+        let mut params = json!({ "targets": targets });
+        if let Some(t) = timeout {
+            params["timeout"] = json!(t);
+        }
+        self.request("agent.wait", params)
+    }
+
+    /// `agent.logs` — structured transcript entries (optionally the last `tail`).
+    pub fn logs(&self, target: &str, tail: Option<u64>) -> Result<Value> {
+        let mut params = json!({ "target": target, "last_response": false });
+        if let Some(n) = tail {
+            params["tail"] = json!(n);
+        }
+        self.request("agent.logs", params)
+    }
+
+    /// `agent.logs --last-response` — the final assistant message text (fails loudly).
+    pub fn last_response(&self, target: &str) -> Result<String> {
+        let r = self.request(
+            "agent.logs",
+            json!({ "target": target, "last_response": true }),
+        )?;
+        Ok(r["response"]["text"].as_str().unwrap_or_default().to_string())
+    }
+
     /// Open a subscription stream (`events.subscribe` / `watch.open`). Returns the initial
     /// response plus a reader that yields subsequent event frames.
     pub fn open_stream(&self, method: &str, params: Value) -> Result<(Value, Subscription)> {

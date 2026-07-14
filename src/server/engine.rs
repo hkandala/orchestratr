@@ -1174,3 +1174,117 @@ fn uuid_lookup(lookup: UuidLookup, raw: &str) -> Result<AgentFull> {
         UuidLookup::NotFound => Err(OrcrError::not_found(format!("no agent matched `{raw}`"))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn agent(status: &str, exit_reason: Option<&str>) -> AgentFull {
+        AgentFull {
+            uuid: "u1".into(),
+            path: "review/worker".into(),
+            managed: true,
+            origin: "run".into(),
+            parent_id: None,
+            agent: Some("mock".into()),
+            model: None,
+            effort: None,
+            gc_mode: Some("auto".into()),
+            cwd: None,
+            herdr_session: None,
+            terminal_id: None,
+            pane_id: None,
+            launch_token: None,
+            agent_session_kind: None,
+            agent_session_value: None,
+            status: status.into(),
+            blocked_kind: None,
+            input_seq: 1,
+            cancel_requested: false,
+            exit_reason: exit_reason.map(String::from),
+            queue_seq: None,
+            deadline_at: None,
+            created_at: 0,
+            starting_at: None,
+            idle_since: None,
+            last_status_change_at: None,
+            ended_at: None,
+        }
+    }
+
+    #[test]
+    fn settle_mapping_covers_the_table() {
+        for s in ["queued", "starting", "working"] {
+            assert!(settle_of(&agent(s, None)).is_none(), "{s} must not settle");
+        }
+        for s in ["idle", "parked"] {
+            let st = settle_of(&agent(s, None)).unwrap();
+            assert!(st.ok);
+            assert_eq!(st.reason, "turn_complete");
+            assert_eq!(st.next_kind, "logs_last_response");
+        }
+        let cases = [
+            ("completed", true, "completed", "logs_last_response"),
+            ("reaped", true, "reaped", "logs_history"),
+            ("killed", false, "killed", "none"),
+            ("canceled", false, "canceled", "none"),
+            ("failed", false, "failed", "none"),
+            ("timeout", false, "timeout", "none"),
+            ("lost", false, "lost", "none"),
+        ];
+        for (er, ok, reason, next) in cases {
+            let st = settle_of(&agent("ended", Some(er))).unwrap();
+            assert_eq!(st.ok, ok, "exit_reason {er}");
+            assert_eq!(st.reason, reason);
+            assert_eq!(st.next_kind, next);
+        }
+        let st = settle_of(&agent("lost", None)).unwrap();
+        assert!(!st.ok);
+        assert_eq!(st.reason, "lost");
+    }
+
+    #[test]
+    fn blocked_reason_carries_kind() {
+        let mut a = agent("blocked", None);
+        a.blocked_kind = Some("question".into());
+        let st = settle_of(&a).unwrap();
+        assert_eq!(st.reason, "blocked:question");
+        assert_eq!(st.next_kind, "attach");
+        assert!(!st.ok);
+        let st2 = settle_of(&agent("blocked", None)).unwrap();
+        assert_eq!(st2.reason, "blocked:unknown");
+    }
+
+    #[test]
+    fn next_hint_renders_commands() {
+        assert_eq!(
+            next_hint("logs_last_response", "a/b", "u")["command"],
+            json!("orcr agent logs a/b --last-response")
+        );
+        assert_eq!(
+            next_hint("attach", "a/b", "u")["command"],
+            json!("orcr agent attach a/b")
+        );
+        assert_eq!(
+            next_hint("logs_history", "a/b", "uuid-x")["command"],
+            json!("orcr agent logs uuid-x")
+        );
+        assert_eq!(next_hint("none", "a/b", "u")["command"], json!(""));
+    }
+
+    #[test]
+    fn wait_result_aggregates_all_ok_and_timeout() {
+        let rows = vec![agent("idle", None), agent("ended", Some("completed"))];
+        let r = wait_result(&rows, 42, false);
+        assert_eq!(r["all_ok"], json!(true));
+        assert_eq!(r["timed_out"], json!(false));
+        assert_eq!(r["decision_seq"], json!(42));
+        assert_eq!(r["targets"].as_array().unwrap().len(), 2);
+
+        let rows = vec![agent("working", None)];
+        let r = wait_result(&rows, 7, true);
+        assert_eq!(r["all_ok"], json!(false));
+        assert_eq!(r["timed_out"], json!(true));
+        assert_eq!(r["targets"][0]["reason"], json!("wait_timeout"));
+    }
+}

@@ -18,6 +18,11 @@
 //!   herdr-injected `HERDR_PANE_ID`).
 //! - `ORCR_MOCK_AGENT`          — provider name to report as (default "mock").
 //! - `ORCR_MOCK_SESSION_ID`     — agent_session id to report (optional).
+//! - `ORCR_MOCK_TOOL_GAPS`      — simulate a tool-heavy turn: toggle working→idle→working
+//!   this many times mid-turn (idle gaps shorter than the settle window; default 0).
+//! - `ORCR_MOCK_GAP_MS`         — ms of each mid-turn idle gap (default 600).
+//! - `ORCR_MOCK_BLOCK`          — if set, report `blocked` (not idle) at end of turn until the
+//!   next input arrives (the `blocked` matrix case).
 //!
 //! The line `/quit` (or EOF) ends the process. Every response ends with the sentinel
 //! `DONE` so file-convention-style callers have a stable marker.
@@ -101,6 +106,15 @@ fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
+    let tool_gaps: u64 = std::env::var("ORCR_MOCK_TOOL_GAPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let gap_ms: u64 = std::env::var("ORCR_MOCK_GAP_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(600);
+    let block = std::env::var("ORCR_MOCK_BLOCK").is_ok();
 
     // Prove the env contract reached the pane (§5.3): dump every ORCR_* var to a file in the
     // agent's data dir, so e2e can assert it without needing to read pane env over herdr
@@ -144,14 +158,25 @@ fn main() {
 
         // Turn begins: working.
         reporter.report(PaneAgentState::Working);
+        // Optional tool-heavy turn: brief idle gaps that must not settle a completion.
+        for _ in 0..tool_gaps {
+            std::thread::sleep(Duration::from_millis(turn_ms.max(150)));
+            reporter.report(PaneAgentState::Idle);
+            std::thread::sleep(Duration::from_millis(gap_ms));
+            reporter.report(PaneAgentState::Working);
+        }
         if turn_ms > 0 {
             std::thread::sleep(Duration::from_millis(turn_ms));
         }
         println!("RESPONSE: {prompt}");
         println!("DONE");
         let _ = std::io::stdout().flush();
-        // Turn complete: idle.
-        reporter.report(PaneAgentState::Idle);
+        // Turn complete: idle (or blocked, until the next input clears it).
+        if block {
+            reporter.report(PaneAgentState::Blocked);
+        } else {
+            reporter.report(PaneAgentState::Idle);
+        }
 
         turns += 1;
         if once || (exit_after > 0 && turns >= exit_after) {
