@@ -10,7 +10,7 @@ to reflect what that milestone added/changed.
 > *why* behind decisions, read the per-milestone `notes.md` files (especially the herdr
 > facts in `m0-foundations/notes.md`, which are load-bearing for the driver).
 
-Current state: **through M4 (GC & reconciliation).**
+Current state: **through M5 (loops).**
 
 ## Crate & binaries
 
@@ -22,9 +22,10 @@ Current state: **through M4 (GC & reconciliation).**
   registered in `src/api.rs`).
 - Deps in use (through M1): `anyhow`, `thiserror` (v1), `serde`/`serde_json`, `rusqlite`
   (bundled, WAL), `uuid` (v4 + v7), `dirs`, `libc`, `chrono` (clock+std), `clap` (derive),
-  `signal-hook`. dev: `tempfile`, `jsonschema` (schema validity test), `assert_cmd`,
-  `predicates`. Add new deps as milestones need them (cron/chrono-tz for loops in M5,
-  ratatui/crossterm for top in M6, etc.).
+  `signal-hook`. **M5** adds `chrono-tz` + `iana-time-zone` (DST-correct cron; cron is a
+  hand-rolled evaluator in `cron.rs`, no cron crate). dev: `tempfile`, `jsonschema` (schema
+  validity test), `assert_cmd`, `predicates`. Add new deps as milestones need them
+  (ratatui/crossterm for top in M6, etc.).
 - **Server runtime is threaded/blocking, not tokio** (decided in M1 — see
   `m1-server-protocol/notes.md`): `Mutex<Store>` single writer + one thread per connection
   + one pump thread per subscription. orcr's own socket protocol version is
@@ -43,7 +44,24 @@ Current state: **through M4 (GC & reconciliation).**
   with a nearest-name suggestion (Levenshtein), durations require units & must be
   positive, `concurrency.max ≥ 1`, per-provider caps clamped. Defaults built in. **M3**:
   optional `integrations.<provider>.*` completion-tuning overrides (`IntegrationTuning`, ms).
+  **M5** adds `timings.loop_tick` (scheduler tick, default 1s) + `timings.run_term_grace`
+  (run TERM→KILL grace, default 10s).
 - `duration.rs` — human duration parsing/formatting (`45s`, `20m`, `3h`); units required.
+- `cron.rs` — **M5 own cron evaluator** (§6.2/§11.3): five-field `min hour dom month dow`
+  (`*`/`a`/`a-b`/`a,b`/`*/n`/`a-b/n`, dow 0-6 with 0/7=Sun, dom+dow-restricted → OR).
+  `Cron::parse`/`next_after(after, tz)` steps wall-clock minutes **in the creating tz** and
+  converts each candidate to UTC → trivially DST-correct (spring-forward gaps skipped,
+  fall-back folds take earliest), bounded to a 4-year search. Plus `local_tz_name`
+  (iana-time-zone), `tz_from_name` (chrono-tz), and `describe`/`describe_next_fire` (cadence
+  in words + human local+UTC next fire for the create echo). Pure logic, unit-tested incl. the
+  DST acceptance over both 2026 US transitions.
+- `service.rs` — **M5 `server enable/disable`** (§6.4), CLI-side (no server needed):
+  `launchd_plist`/`systemd_unit` build the platform unit (macOS `dev.orchestratr.orcr`
+  RunAtLoad+KeepAlive; Linux `orcr.service` Restart=on-failure) with the **absolute binary
+  path** and propagated `ORCR_HOME`/`ORCR_HERDR_BIN` + redirected logs; `build_unit` picks the
+  platform (`unsupported_platform` elsewhere). `enable`/`disable` write/remove the unit and
+  best-effort `launchctl`/`systemctl` load (so headless CI still gets the durable file). Golden
+  unit-file tests assert content.
 - `path.rs` — **the §5.1 grammar in one place**: segment/path validation, depth+reserved
   checks, `{rand}` expansion, `--name`/`--path` scope resolution (`resolve_create`), selector
   resolution, and the glob `Pattern` (`*` one segment, `**` any depth ≥1, anchored). Plus
@@ -57,7 +75,10 @@ Current state: **through M4 (GC & reconciliation).**
   `streaming`); `schema_document()` generates the versioned `api schema`. Live in M1:
   server.handshake/status/stop, api.schema/snapshot, events.subscribe, watch.open, all
   `agent.*` (M2–M4: run/ask/send/logs/wait/kill/ls + attach.prepare/heartbeat/release).
-  `loop.*` registered as stubs (M5). Also `EVENT_KINDS`, `ERROR_CODES`.
+  `loop.*` (M5: create/pause/resume/rm/ls/logs + run.start/run.stop/run.ls, now
+  `implemented`). Also `EVENT_KINDS` (M5 adds `loop.created/fired/coalesced/skipped/paused/
+  resumed/removed/ended` + `loop_run.started/ended/stopping`), `ERROR_CODES`. `server.status`
+  + `api.snapshot` schemas carry `loops_firing` + `loops`.
 - `events.rs` — `EventBus` (mutex+condvar): wakeups for subscriber pumps + retention
   bookkeeping (`oldest_retained_seq` → `cursor_expired`, `is_expired`). The durable cursor
   is the `events` table; the bus is just the in-memory coordination layer.
@@ -70,11 +91,17 @@ Current state: **through M4 (GC & reconciliation).**
   `--json` envelope, §13 error→exit-code mapping, TTY detection, log tail/follow. Agent verbs
   forward the caller's `ORCR_ID`/`ORCR_PATH` (lineage+scope), resolve `-p -`/positional `-`
   from stdin, default `--cwd` to the caller's cwd, print `<path> <uuid>` + TTY hints, and do
-  the kill TTY confirmation via a `preview` round-trip (`-y` skips).
+  the kill TTY confirmation via a `preview` round-trip (`-y` skips). **M5** adds the `loop`
+  noun (`create` — echoes parsed argv + cadence-in-words + local/UTC next fire + cancel cmd —
+  `pause|resume|rm|ls|logs` + the `loop run {start|stop|ls}` sub-noun, with TTY confirms on
+  `rm`/`run stop` and `logs --follow` re-poll) and `server enable|disable` (calls `service.rs`
+  directly, no server).
 - `server/` — the single-writer server process (§4, §11.6).
   - `mod.rs` — `run_foreground` (lock race → bind socket → open store → **reconcile** →
-    **start queue worker** → serve), the threaded accept/dispatch loop, subscription pumps,
-    `server.status`/`api.snapshot` builders (snapshot now carries real agents + queue),
+    **start queue worker** → **recover loops** → **start loop scheduler** → serve), the threaded
+    accept/dispatch loop, subscription pumps, `server.status`/`api.snapshot` builders (snapshot
+    carries real agents + queue + loops via `loops::loop_row_json`; `handle_request` routes the
+    `loop.*` methods to `loops.rs`),
     graceful stop, `emit_event`/`publish` (append + wake bus + trim), and `agent_row_json`
     (the flat §6.1 row). **Add new method handlers in `handle_request`** (M2 routes
     `agent.run/send/kill/ls` to `engine.rs`). `ServerInner` now also holds `home`, a cached
@@ -89,6 +116,24 @@ Current state: **through M4 (GC & reconciliation).**
     Also `unpark_for_send` (two-phase move back to the home workspace, called by `agent.send`
     before delivery), the attach-lease GC interlock (`lease_fresh`), the `DriftSnapshot`
     (surfaced in `server status`), and the test-only `ORCR_TEST_PARK_CRASH` fault hook.
+  - `loops.rs` — **the M5 loop scheduler + `loop`/`loop run` handlers** (§6.2, §11.3):
+    `start_loop_scheduler` (tick thread every `timings.loop_tick`: fire due loops, coalesce/skip
+    per `--overlap`, honor pause, enforce per-run `--timeout`, promote oldest pending when a slot
+    frees). `fire_loop` allocates a run row transactionally (uuid + `run_id` + `due_at`, pending
+    at cap) and spawns via `setsid` (own process group) with the §5.3 env contract
+    (`ORCR_ID`=run uuid, `ORCR_PATH`=`<loop>/<run_id>`, `ORCR_LOOP_DATA_DIR`), cwd = loop
+    creation cwd, stdin `/dev/null`, stdout/stderr captured to a line-tagged rotated `run.log`
+    JSONL (`{ts,stream,text}` + sidecar). Process-group **identity guard** (record pid/pgid +
+    OS start time; signal/recover only a live pgid whose start time still matches — pid-reuse
+    safe). `stop_run_process` = `enter_stop_barrier` (fast, sets `stopping`) + `finish_stop`
+    (TERM → `run_term_grace` → KILL → `glob_kill_run_agents` `<loop>/<run_id>/**` until clean).
+    `recover_loops_on_start` (per-loop txn: verify pgids by start time → close dead runs +
+    glob-kill their agents → recompute active → honor paused/ended → decide pending fire once →
+    recompute `next_fire`, cron missed fires skipped-and-logged, never replayed). Also
+    `compute_next_fire` (via `cron`), `loop_data_dir`/`read_loop_payload` (the `loop.json`
+    `LoopPayload`), the `handle_loop_*` verb handlers, and `loop_row_json` (shared with the
+    snapshot builder). Namespace protection + run-scope live in `engine.rs`
+    (`check_loop_namespace`, `caller_context`).
   - `discovery.rs` — **the M4 unmanaged-discovery poller** (§5.7): a 3s-tick thread that
     fans out over non-owned herdr sessions (per-socket), upserts supported-provider agents as
     read-only `unmanaged` rows keyed by (session, `terminal_id`) with path
@@ -148,6 +193,19 @@ Current state: **through M4 (GC & reconciliation).**
     `active_unmanaged`/`path_active`), and `rearm_idle_clocks_on_restart` (replaces M3's
     `clear_active_idle_since`: idle→park-clock-reset, working/blocked→clear). `AgentFull` gained
     `move_state`/`move_token`/`parked_at`. `debug_delete_agent` (test-only, behind the debug gate).
+    **M5 loop/run DAL**: `create_loop` (`NewLoop`; unique among active/paused) + `loop.created`,
+    `find_loop_by_name` (active-first-else-latest-ended)/`loop_by_uuid`/`list_loops`/`all_loops`,
+    `active_loop_names` (namespace protection), `set_loop_status` (pause/resume/end with
+    `removed`/`removed_by_run`/`fired` + events), `loops_due`/`set_next_fire`/`set_last_fire`;
+    runs: `allocate_run` (→`RunAllocation::{Allocated{start_now},Coalesced,Skipped}`, fresh row
+    always emits `loop.fired`, coalesce folds an existing pending scheduled run),
+    `claim_pending_run(loop,max)` (atomic slot reservation — counts active + flips oldest
+    pending→running in one `BEGIN IMMEDIATE`, concurrency-safe promotion), `record_run_start`
+    (fills pid/pgid/start-time `WHERE status IN ('running','stopping')` — never clobbers the stop
+    barrier), `finish_run`/`set_run_stopping`/`cancel_pending_run`, `run_by_id_or_uuid`/
+    `run_by_uuid`/`runs_for_loop`/`active_runs`/`oldest_pending_run`/`runs_in_status`/
+    `timed_out_runs` (`LoopRow`/`LoopRunRow`). Also `events_for_refs(&refs)` (index-scoped event
+    fetch for `loop logs`, not a full `events` scan).
     Store methods that write events append them in-txn and return the seq; the server calls `publish(seq)`.
 - `driver/` — the herdr socket driver (see `m0-foundations/notes.md` for the verified
   wire facts; **the driver is the riskiest surface — trust the notes**).
@@ -214,7 +272,8 @@ Current state: **through M4 (GC & reconciliation).**
   with `ORCR_E2E=1 cargo test --test e2e` (driver/harness) and
   `ORCR_E2E=1 cargo test --test agent_e2e -- --test-threads=1` (M2 agent core) and
   `ORCR_E2E=1 cargo test --test completion_e2e -- --test-threads=1` (M3) and
-  `ORCR_E2E=1 cargo test --test gc_e2e -- --test-threads=1` (M4). They
+  `ORCR_E2E=1 cargo test --test gc_e2e -- --test-threads=1` (M4) and
+  `ORCR_E2E=1 cargo test --test loop_e2e -- --test-threads=1` (M5). They
   exercise real behavior against **live herdr** using the mock provider. Non-M4 e2e
   harnesses set `ORCR_DISABLE_DISCOVERY=1` so unmanaged discovery doesn't pull the
   developer's real sessions into their stores.
@@ -237,6 +296,16 @@ Current state: **through M4 (GC & reconciliation).**
   vanished-pane → lost → ended(lost), unmanaged discovery in a second disposable session
   (appears in `ls`, kill needs `--force`, terminal-gone → ended), and a scaled soak
   (`ORCR_SOAK_AGENTS`, default 20) asserting no leaked/wrongly-closed panes or workspaces.
+- `tests/loop_e2e.rs` (M5) proves the loop acceptance: `--once-at` fire, capacity/FIFO
+  promotion + coalesce (cap 1 slow runs → one pending, later fires fold), `loop run start` on a
+  paused loop fires once (scheduled fires stay held), `loop run stop <run_id>` kills one of two
+  concurrent runs + glob-kills its agents (the other survives), restart recovery (dead run
+  closed + agents killed + pending decided once), `loop logs --run` isolation, missed-cron-fire
+  skipped-and-logged (`e2e_missed_cron_fire_skipped`), and concurrency-safe promotion
+  (`e2e_concurrent_promotion_no_double_spawn`: cap 2, 8 queued runs, no double-spawn). Drop
+  guard kills each run's process group (via recorded `pgid`) **before** teardown so no lingering
+  `orcr agent run` executes against a dead home. DST + cron next-fire are unit-tested in
+  `src/cron.rs`; enable/disable unit files are golden-tested in `src/service.rs`.
 - `tests/conformance_live.rs` diffs the pinned driver contract against live
   `herdr api schema` (guards herdr version drift).
 - **e2e safety pattern (MANDATORY, reuse it):** each e2e test creates a throwaway
@@ -272,4 +341,7 @@ Current state: **through M4 (GC & reconciliation).**
 - New event kind → add to `EVENT_KINDS` in `src/api.rs`; producers write it with
   `store::append_event_tx` in the same txn as the change, then `Server::emit_event`
   publishes + trims (or call `emit_event` directly for out-of-txn cases).
+- New loop/scheduler behavior → `server/loops.rs` (tick + fire + stop/recover) + loop/run DAL
+  in `store/mod.rs`; keep slot reservation atomic (`claim_pending_run` in one `BEGIN IMMEDIATE`).
+- New OS service surface → `service.rs` (launchd/systemd unit builders + golden tests).
 - New e2e → copy the disposable-home + disposable-session harness in `tests/`.
