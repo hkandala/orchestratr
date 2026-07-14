@@ -25,6 +25,19 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
+    /// Every code, in the stable §13 order — the single source for the schema's error table.
+    pub const ALL: &'static [ErrorCode] = &[
+        ErrorCode::NotFound,
+        ErrorCode::InvalidRequest,
+        ErrorCode::StateConflict,
+        ErrorCode::Blocked,
+        ErrorCode::Timeout,
+        ErrorCode::IntegrationMissing,
+        ErrorCode::TranscriptUnavailable,
+        ErrorCode::EnvironmentError,
+        ErrorCode::ServerError,
+    ];
+
     /// The stable wire string for this code.
     pub fn as_str(self) -> &'static str {
         match self {

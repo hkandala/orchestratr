@@ -311,11 +311,7 @@ impl Server {
     pub(super) fn agent_transcript(&self, a: &AgentFull) -> Result<TranscriptLocator> {
         let provider = a.agent.as_deref().unwrap_or_default();
         // The agent's data dir mirrors its path (§8) — used by the `mock` transcript adapter.
-        let mut data_dir = self.inner.home.data_dir();
-        for seg in a.path.split('/') {
-            data_dir.push(seg);
-        }
-        data_dir.push(&a.uuid);
+        let data_dir = self.agent_data_dir(&a.path, &a.uuid);
         locate_transcript(
             provider,
             a.agent_session_kind.as_deref(),

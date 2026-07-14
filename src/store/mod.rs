@@ -307,7 +307,11 @@ impl Store {
     /// Read the full row for an agent by uuid.
     pub fn agent_full(&self, uuid: &str) -> Result<Option<AgentFull>> {
         self.conn
-            .query_row(AGENT_FULL_SELECT_ONE, [uuid], read_agent_full_row)
+            .query_row(
+                &format!("{AGENT_FULL_SELECT} WHERE uuid = ?1"),
+                [uuid],
+                read_agent_full_row,
+            )
             .optional()
             .map_err(map_sqlite)
     }
@@ -1788,7 +1792,6 @@ impl Store {
         );
         self.with_immediate_tx(|tx| {
             let now = now_millis();
-            let ended_at = if status == "ended" { Some(now) } else { None };
             tx.execute(
                 "UPDATE loops SET status=?2, ended_reason=COALESCE(?3, ended_reason), \
                  next_fire_at=CASE WHEN ?2='ended' THEN NULL ELSE next_fire_at END, \
@@ -1796,7 +1799,6 @@ impl Store {
                 rusqlite::params![uuid, status, ended_reason, now],
             )
             .map_err(map_sqlite)?;
-            let _ = ended_at;
             append_event_tx(
                 tx,
                 &event_kind,
@@ -2555,16 +2557,7 @@ const AGENT_FULL_SELECT: &str =
      cancel_requested, exit_reason, queue_seq, deadline_at, created_at, starting_at, \
      idle_since, parked_at, last_status_change_at, ended_at FROM agents";
 
-/// The same read scoped to one uuid.
-const AGENT_FULL_SELECT_ONE: &str =
-    "SELECT uuid, path, managed, origin, parent_id, agent, model, effort, \
-     gc_mode, cwd, herdr_session, terminal_id, pane_id, launch_token, \
-     agent_session_kind, agent_session_value, status, move_state, move_token, \
-     blocked_kind, input_seq, \
-     cancel_requested, exit_reason, queue_seq, deadline_at, created_at, starting_at, \
-     idle_since, parked_at, last_status_change_at, ended_at FROM agents WHERE uuid = ?1";
-
-/// Deserialize an `AgentFull` from a row selecting [`AGENT_FULL_COLUMNS`] in order.
+/// Deserialize an `AgentFull` from a row selecting [`AGENT_FULL_SELECT`]'s columns in order.
 fn read_agent_full_row(r: &rusqlite::Row) -> rusqlite::Result<AgentFull> {
     Ok(AgentFull {
         uuid: r.get(0)?,
@@ -2603,9 +2596,13 @@ fn read_agent_full_row(r: &rusqlite::Row) -> rusqlite::Result<AgentFull> {
 
 /// Read one `AgentFull` inside a transaction (used by promotion).
 fn read_agent_full_tx(tx: &rusqlite::Transaction, uuid: &str) -> Result<Option<AgentFull>> {
-    tx.query_row(AGENT_FULL_SELECT_ONE, [uuid], read_agent_full_row)
-        .optional()
-        .map_err(map_sqlite)
+    tx.query_row(
+        &format!("{AGENT_FULL_SELECT} WHERE uuid = ?1"),
+        [uuid],
+        read_agent_full_row,
+    )
+    .optional()
+    .map_err(map_sqlite)
 }
 
 /// Escape SQL LIKE metacharacters in a uuid-prefix literal (only `%`/`_`/`\`).
