@@ -135,14 +135,12 @@ impl Config {
     /// no warnings. A present file is parsed as strict JSON and validated.
     pub fn load(home: &Home) -> Result<LoadedConfig, OrcrError> {
         let path = home.config_path();
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(LoadedConfig {
-                    config: Config::default(),
-                    warnings: Vec::new(),
-                });
-            }
+        let mut loaded = match std::fs::read_to_string(&path) {
+            Ok(t) => Config::parse(&t)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => LoadedConfig {
+                config: Config::default(),
+                warnings: Vec::new(),
+            },
             Err(e) => {
                 return Err(OrcrError::environment(
                     "config_invalid",
@@ -150,7 +148,17 @@ impl Config {
                 ));
             }
         };
-        Config::parse(&text)
+        // An `ORCR_HERDR_SESSION` env override wins over the file/default owned-session name.
+        // Belt-and-suspenders for test isolation: a config-less orcr child (e.g. a loop-run's
+        // `orcr agent run` that outlives its throwaway home) reads `Config::default()` whose
+        // session is the literal `orcr`; inheriting this env instead keeps it on the test's
+        // disposable session so nothing ever bootstraps the shared `orcr` session (known-issues #1).
+        if let Ok(s) = std::env::var("ORCR_HERDR_SESSION") {
+            if !s.trim().is_empty() {
+                loaded.config.herdr.session = s;
+            }
+        }
+        Ok(loaded)
     }
 
     /// Parse + validate config from a JSON string. Used by [`Config::load`] and tests.
