@@ -660,3 +660,23 @@ fn e2e_follow_logs_streams_to_completion() {
     );
     let _ = wait_until(Duration::from_secs(15), || ts.active_agents().is_empty());
 }
+
+/// The curated §8 helpers that lacked SDK-level coverage: `orcr.watch()` (snapshot-then-subscribe
+/// — snapshot/snapshotSeq getters + typed async iteration over a live status change) and
+/// `orcr.prepareAttach()`/`AttachHandle` (command + lease field extraction, heartbeat/release
+/// round-trips). Driven by `test/e2e/watch_attach.ts` against live herdr + the mock.
+#[test]
+fn e2e_sdk_watch_and_attach() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    let ts = TestServer::start(&[]);
+    let (ok, log) = ts.run_recipe("test/e2e/watch_attach.ts", &[]);
+    assert!(ok, "watch/attach driver failed:\n{log}");
+    assert!(
+        log.contains("OK watch+attach"),
+        "watch/attach driver did not confirm success:\n{log}"
+    );
+    let _ = wait_until(Duration::from_secs(15), || ts.active_agents().is_empty());
+}
