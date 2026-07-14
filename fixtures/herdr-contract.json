@@ -1,0 +1,76 @@
+{
+  "_comment": "Generated from `herdr api schema --json` (herdr 0.7.2). Pins the herdr methods and result-type tags orcr's M0 driver depends on. Regenerate on herdr upgrades; the conformance suite fails on drift.",
+  "protocol": 16,
+  "ops": [
+    {
+      "op": "ping",
+      "method": "ping",
+      "result_type": "pong"
+    },
+    {
+      "op": "session_snapshot",
+      "method": "session.snapshot",
+      "result_type": "session_snapshot"
+    },
+    {
+      "op": "agent_list",
+      "method": "agent.list",
+      "result_type": "agent_list"
+    },
+    {
+      "op": "pane_list",
+      "method": "pane.list",
+      "result_type": "pane_list"
+    },
+    {
+      "op": "pane_get",
+      "method": "pane.get",
+      "result_type": "pane_info"
+    },
+    {
+      "op": "workspace_list",
+      "method": "workspace.list",
+      "result_type": "workspace_list"
+    },
+    {
+      "op": "workspace_create",
+      "method": "workspace.create",
+      "result_type": "workspace_created"
+    },
+    {
+      "op": "agent_start",
+      "method": "agent.start",
+      "result_type": "agent_started"
+    },
+    {
+      "op": "pane_send_text",
+      "method": "pane.send_text",
+      "result_type": "ok"
+    },
+    {
+      "op": "pane_send_keys",
+      "method": "pane.send_keys",
+      "result_type": "ok"
+    },
+    {
+      "op": "pane_move",
+      "method": "pane.move",
+      "result_type": "pane_move"
+    },
+    {
+      "op": "pane_close",
+      "method": "pane.close",
+      "result_type": "ok"
+    },
+    {
+      "op": "notification_show",
+      "method": "notification.show",
+      "result_type": "notification_show"
+    },
+    {
+      "op": "pane_report_agent",
+      "method": "pane.report_agent",
+      "result_type": "ok"
+    }
+  ]
+}
