@@ -307,7 +307,7 @@ fn e2e_external_input_synthetic_turn() {
     // didn't deliver → synthetic external turn.
     // A non-trivial turn so the monitor observes the working→idle transition (the signal for
     // a synthetic external turn).
-    let pane = ts.pane_of("worker").expect("agent pane");
+    let pane = ts.pane_of("ext/worker").expect("agent pane");
     ts.driver
         .pane_send_text(&pane, "@turn_ms=1500 external work")
         .unwrap();

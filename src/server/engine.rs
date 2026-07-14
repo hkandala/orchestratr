@@ -217,7 +217,7 @@ impl Server {
         // agent.start — herdr creates the tab + pane; returned ids are authoritative (§11.7).
         self.bail_if_cancelled(uuid, None)?;
         let params = AgentStartParams {
-            name: path::tab_label(&agent.path),
+            name: path::herdr_name(&agent.path),
             argv: payload.argv.clone(),
             cwd: payload.cwd.clone(),
             env: payload.env.clone(),
@@ -455,10 +455,10 @@ impl Server {
                 }
             }
             // No pane recorded: an in-flight spawn crashed before recording it. Match any
-            // orphan pane by its tab label (unique among active paths) and close it, then
-            // fail the row — no duplicate pane survives (§11.1).
+            // orphan pane by its herdr name/label (the full path — session-unique) and close
+            // it, then fail the row — no duplicate pane survives (§11.1).
             None => {
-                let label = path::tab_label(&a.path);
+                let label = path::herdr_name(&a.path);
                 for p in panes.iter().filter(|p| p.label.as_deref() == Some(&label)) {
                     let _ = driver.pane_close(&p.pane_id);
                     self.log().warn(format!(

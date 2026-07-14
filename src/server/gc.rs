@@ -128,7 +128,7 @@ impl Server {
             pane,
             PaneMoveDestination::NewTab {
                 workspace_id: Some(idle_ws),
-                label: Some(path::tab_label(&a.path)),
+                label: Some(path::herdr_name(&a.path)),
             },
         )?;
         // Close the idle workspace's root shell (if we just created it) so it holds only
@@ -254,7 +254,7 @@ impl Server {
             &pane,
             PaneMoveDestination::NewTab {
                 workspace_id: Some(home_ws),
-                label: Some(path::tab_label(&cur.path)),
+                label: Some(path::herdr_name(&cur.path)),
             },
         )?;
         if let Some(root) = &root_pane {

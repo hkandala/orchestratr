@@ -187,7 +187,9 @@ fn e2e_run_send_kill_lifecycle() {
         "agent should reach working"
     );
 
-    // The pane exists in the owned session, in workspace `review`, labeled `worker`.
+    // The pane exists in the owned session, in workspace `review`, labeled with the full
+    // session-unique herdr name `review/worker` (herdr 0.7.2 requires session-global name
+    // uniqueness — see `path::herdr_name`).
     let ws = ts
         .driver
         .workspace_list()
@@ -200,7 +202,7 @@ fn e2e_run_send_kill_lifecycle() {
         .pane_list(Some(&ws.workspace_id))
         .unwrap()
         .iter()
-        .any(|p| p.label.as_deref() == Some("worker")));
+        .any(|p| p.label.as_deref() == Some("review/worker")));
 
     // The env contract reached the pane (mock dumped it to its data dir, §5.3).
     let env: Value = serde_json::from_str(
@@ -482,7 +484,7 @@ fn e2e_kill_during_starting() {
             .pane_list(None)
             .unwrap()
             .iter()
-            .any(|p| p.label.as_deref() == Some("me"))
+            .any(|p| p.label.as_deref() == Some("cancel/me"))
     }));
 }
 
@@ -538,7 +540,7 @@ fn e2e_crash_recovery_repairs_running() {
             .pane_list(None)
             .unwrap()
             .iter()
-            .any(|p| p.label.as_deref() == Some("worker"))
+            .any(|p| p.label.as_deref() == Some("survive/worker"))
     };
     assert!(pane_present(&ts));
 
@@ -560,7 +562,7 @@ fn e2e_crash_recovery_repairs_running() {
         .pane_list(None)
         .unwrap()
         .into_iter()
-        .filter(|p| p.label.as_deref() == Some("worker"))
+        .filter(|p| p.label.as_deref() == Some("survive/worker"))
         .count();
     assert_eq!(workers, 1, "exactly one pane survives (no duplicate)");
 
@@ -602,13 +604,15 @@ fn e2e_crash_recovery_closes_orphan() {
             .unwrap();
     }
 
-    // Create the orphan pane in the owned session (workspace `recover`, pane label `orphan`).
+    // Create the orphan pane in the owned session (workspace `recover`, herdr name/label
+    // `recover/orphan` — the full session-unique path a real crashed spawn would have used, so
+    // the reconciler's label-match finds and closes it).
     let ws = ts
         .driver
         .workspace_create(Some("recover"), None, &std::collections::BTreeMap::new())
         .unwrap();
     let orphan = orchestratr::driver::AgentStartParams {
-        name: "orphan".into(),
+        name: "recover/orphan".into(),
         argv: vec!["sh".into(), "-c".into(), "sleep 120".into()],
         cwd: None,
         env: std::collections::BTreeMap::new(),

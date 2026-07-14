@@ -182,13 +182,16 @@ pub fn home_workspace(path: &str) -> String {
     }
 }
 
-/// The herdr tab label = the path after its first segment (§5.2); for a single-segment
-/// path (workspace `default`) the label is the whole path.
-pub fn tab_label(path: &str) -> String {
-    match path.split_once('/') {
-        Some((_, rest)) => rest.to_string(),
-        None => path.to_string(),
-    }
+/// The herdr agent `name` (and pane `label`) for a path. herdr 0.7.2 enforces that an
+/// agent's `name` is **unique across the whole session**, not scoped to its workspace, so the
+/// §5.2 tab label (the path after the first segment) is *not* usable as the herdr name: two
+/// agents in different top-level scopes (e.g. `review_a/fanout/file_0` and
+/// `review_b/fanout/file_0`) would collide with `agent_name_taken`. orcr already guarantees
+/// full paths are unique among active agents, so the **full effective path** is the correct
+/// session-unique herdr name. (See m7-sdk-skill/notes.md — this is why the visible tab shows
+/// the full path rather than the path-after-first-segment that §5.2 sketches.)
+pub fn herdr_name(path: &str) -> String {
+    path.to_string()
 }
 
 /// True if `s` (a resolved path) contains a wildcard segment (`*` or `**`).
@@ -382,11 +385,13 @@ mod tests {
         assert_eq!(scope_of_agent("worker"), None);
         assert_eq!(home_workspace("refactor/phase_1/review/worker"), "refactor");
         assert_eq!(home_workspace("worker"), "default");
+        // The herdr agent name must be the full, session-unique path (herdr 0.7.2 enforces
+        // session-global name uniqueness — see `herdr_name`).
         assert_eq!(
-            tab_label("refactor/phase_1/review/worker"),
-            "phase_1/review/worker"
+            herdr_name("refactor/phase_1/review/worker"),
+            "refactor/phase_1/review/worker"
         );
-        assert_eq!(tab_label("worker"), "worker");
+        assert_eq!(herdr_name("worker"), "worker");
     }
 
     #[test]
