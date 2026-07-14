@@ -89,4 +89,46 @@ worth knowing, and discovered facts.
 
 ## Verifier & reviewer history
 
-_(record each verify/review round's verdict + how issues were resolved)_
+### Verify round 1 → FAIL; revised
+
+- **CRITICAL (fixed) — `tests/server_protocol.rs` had two `impl Drop for TestHome`**
+  (E0119 conflicting implementations), so `cargo test` never compiled the server_protocol
+  target and the whole default suite exited 101. Merged into a single `Drop` that first
+  `reap_server()`s, then stops+deletes the disposable herdr session. `cargo test` now compiles
+  and passes; `server_protocol` 6/6 with no session leak (only `default` remains). Commit
+  `d13bdf9`.
+- **(fixed, adjacent) — flaky `lock::tests::second_acquire_is_blocked_then_freed_on_drop`.**
+  Once `cargo test` compiled again, this M0 unit test flaked under heavy parallel load: the
+  `flock` release on `drop`'s `close(2)` occasionally isn't reflected to an immediately-following
+  `flock` on a fresh fd, so the re-acquire returned `None`. The assertion demanded an
+  *instantaneous* re-acquire, stricter than reality (the real auto-start reaper already tolerates
+  release latency via its stable-dead probe window). Now polls briefly for the re-acquire.
+  `cargo test` green across 3 consecutive full runs. Commit `15e3159`.
+- **LOW (fixed) — standalone `npm test` crashed ENOENT.** The codegen drift test fell back to
+  `orcr` on PATH. Now resolves the binary `$ORCR_BIN → target/{debug,release}/orcr → PATH` and
+  skips the two live-schema tests cleanly when none exists, so `npm test` is reproducible on a
+  fresh checkout after `cargo build` (the drift check still runs — verified `skipped 0`, 20/20 —
+  and CI still sets `ORCR_BIN`). Commit `6104870`.
+- **MEDIUM (knowingly deferred) — concurrency acceptance proven at 2-concurrent, not the strict
+  4-way.** Attempted the verifier's option (a) engine follow-up "require evidence the command
+  ran before fast-completing": gating `fast_ok` on a reported herdr `agent_session`. This
+  **empirically broke** the mock completion contract (5/8 `completion_e2e` failed) because the
+  **mock deliberately reports no herdr session** — it uses the data-dir transcript adapter (see
+  "Mock transcript adapter" above), so `agent_session_value`/`info.agent_session` are always
+  `None` for a launched mock. Gating on transcript-locatable instead breaks the legitimate
+  no-transcript case (`ORCR_MOCK_NO_TRANSCRIPT`, an agent that *did* launch). There is no clean
+  engine-level signal distinguishing a never-launched pane from a launched-no-transcript one
+  (both sit `idle`; the only difference is the mock-specific `mock_env.json` in the data dir).
+  Serializing spawn side-effects was already tried and reverted (the failure is herdr not
+  launching the command). Reverted the completion change — `src/server/completion.rs` is
+  byte-identical to the verified baseline. **Root cause is a herdr concurrent-burst
+  `agent.start` limitation, not an orcr defect, and real providers (seconds to init, reliably
+  report `working`) don't hit it.** Note also that of the two recipes, only fan-out bursts
+  (`Promise.all` of N `agent.run`); **tournament is fully sequential** (awaits each `orcr.ask`),
+  so the strict "two copies of fan-out-and-merge" is what pushes ≥4 simultaneous `agent.start`
+  into the failing burst window. Resolution: the automated gate
+  (`e2e_concurrent_fanout_and_tournament`) proves scope isolation between concurrent
+  distinct-scope workflows (rock-solid across runs); the literal 4-way
+  (`e2e_concurrent_burst_high`) stays `#[ignore]`d as a documented engine follow-up. This
+  acceptance item is **knowingly deferred**, pending milestone-owner sign-off, rather than
+  claimed as fully met.

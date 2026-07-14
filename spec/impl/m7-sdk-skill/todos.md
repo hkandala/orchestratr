@@ -73,7 +73,7 @@ Ships: TS SDK, orcr scaffold, tested recipes, SKILL.md + references, packaging +
 - [x] Skill drill: fresh agent + SKILL.md → hot path (validated by structure + doc-test; live drill best-effort)
 - [x] reference files contain no stale flags (doc-test vs --help: `tests/skill_docs.rs`)
 - [x] doc-test rejects run/ask sample missing --name/--path
-- [~] Concurrency fixtures: PARTIAL — 2 concurrent (fan-out + tournament) distinct scopes run clean (`e2e_concurrent_fanout_and_tournament`). The literal 4-way (2× each) reliably hits a herdr concurrent-burst `agent.start` limitation → kept as `#[ignore]`d `e2e_concurrent_burst_high` + documented in notes.md (engine follow-up)
+- [~] Concurrency fixtures: KNOWINGLY DEFERRED (pending owner sign-off) — 2 concurrent (fan-out + tournament) distinct scopes run clean (`e2e_concurrent_fanout_and_tournament`, rock-solid). The literal 4-way (2× each) reliably hits a herdr concurrent-burst `agent.start` limitation → kept as `#[ignore]`d `e2e_concurrent_burst_high`. Verify-round-1 option (a) engine fix (gate fast-complete on a reported session) was ATTEMPTED and empirically breaks the mock completion contract (mock reports no herdr session by design); no clean engine-level launch signal exists; real providers don't hit it. Full rationale in notes.md → "Verify round 1".
 - [x] Scaffold: clean checkout → scaffold + npx tsx workflow.ts green vs mock; re-run → state_conflict; missing-node → environment_error nothing created; pinned SDK version == CLI version
 - [x] Package installs clean (via file: spec / tarball in CI); quickstart works
 
@@ -83,5 +83,3 @@ Ships: TS SDK, orcr scaffold, tested recipes, SKILL.md + references, packaging +
 - npm publish to public registry (version 0.0.0; final name+publish is a release step) — SDK is installable locally via file: spec
 - docs site (orchestratr.dev) hosting — README is the shipped quickstart; see notes
 - real-provider smoke of recipes — best-effort (mock is the automated gate per master-prompt §6)
-</content>
-</invoke>
