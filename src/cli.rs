@@ -497,22 +497,39 @@ fn cmd_agent_wait(json: bool, targets: &[String], timeout: Option<&str>) -> Resu
             );
         }
     });
-    // Exit code from the settle outcome (spec §6.1): 0 all ok · 3 timeout · 4 blocked · 5 dead.
+    // Exit code from the settle outcome (spec §6.1): the outcomes rank
+    // `4 any target blocked · 5 any target dead · 3 --timeout expired`, so a settled
+    // blocked/dead target wins over the wait's own timeout when a mixed wait both times
+    // out (a target still working) and has an already-settled blocked/dead target.
     let all_ok = result["all_ok"].as_bool().unwrap_or(false);
     let timed_out = result["timed_out"].as_bool().unwrap_or(false);
-    let any_blocked = result["targets"]
-        .as_array()
+    let targets = result["targets"].as_array();
+    let any_blocked = targets
         .map(|a| {
             a.iter()
                 .any(|t| t["reason"].as_str().unwrap_or("").starts_with("blocked"))
         })
         .unwrap_or(false);
+    // A "dead" target settled non-ok for a reason other than blocked or the wait's own
+    // timeout (killed / canceled / failed / timeout / lost → exit 5).
+    let any_dead = targets
+        .map(|a| {
+            a.iter().any(|t| {
+                let reason = t["reason"].as_str().unwrap_or("");
+                t["ok"].as_bool() == Some(false)
+                    && !reason.starts_with("blocked")
+                    && reason != "wait_timeout"
+            })
+        })
+        .unwrap_or(false);
     let code = if all_ok {
         0
-    } else if timed_out {
-        3
     } else if any_blocked {
         4
+    } else if any_dead {
+        5
+    } else if timed_out {
+        3
     } else {
         5
     };
