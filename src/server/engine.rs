@@ -7,11 +7,12 @@
 //! session/workspace → `agent.start` → record location → capture `agent_session` → deliver
 //! the first prompt → `working`), checking the `cancel_requested` interlock between steps.
 
+use super::params::{str_array_param, str_param};
 use super::{agent_row_json, Server};
 use crate::driver::{ensure_supported, launch_plan, AgentStartParams, HerdrBinary, HerdrDriver};
 use crate::error::{OrcrError, Result};
 use crate::path::{self, NameOrPath};
-use crate::store::{now_millis, AgentFilter, AgentFull, NewAgent, UuidLookup};
+use crate::store::{now_millis, AgentFilter, AgentFull, NewAgent, Store, UuidLookup};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -530,9 +531,6 @@ impl Server {
 
         let effective = path::resolve_create(scope.as_deref(), &input)?;
 
-        // Active-loop namespace protection + the run admission barrier (§5.1, §6.2, §11.3).
-        self.check_loop_namespace(&effective, caller_path.as_deref())?;
-
         // Build the launch plan (argv + model/effort mapping).
         let plan = launch_plan(&provider, model.as_deref(), effort.as_deref())?;
 
@@ -613,9 +611,16 @@ impl Server {
             deadline_at: timeout_ms.map(|ms| now_millis() + ms),
             created_at: now_millis(),
         };
+        // Active-loop namespace protection + run admission barrier (§5.1, §6.2, §11.3) and the
+        // path-reserving insert run under **one** store-lock hold, so loop-namespace ownership
+        // is enforced atomically with path reservation (no TOCTOU — the single writer means a
+        // `loop.create` cannot interleave between the check and the insert).
         let ev = {
             let mut store = self.inner.store.lock().unwrap();
-            match store.enqueue_agent(&new) {
+            let result = self
+                .check_loop_namespace(&store, &effective, caller_path.as_deref())
+                .and_then(|()| store.enqueue_agent(&new));
+            match result {
                 Ok((_seq, ev)) => ev,
                 Err(e) => {
                     drop(store);
@@ -733,15 +738,7 @@ impl Server {
     /// (for the CLI's TTY confirmation) without side effects. Otherwise kills each matched
     /// active agent and returns `{killed, skipped, all_killed}`.
     pub(super) fn handle_agent_kill(&self, params: &Value) -> Result<Value> {
-        let targets: Vec<String> = params
-            .get("targets")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let targets = str_array_param(params, "targets");
         if targets.is_empty() {
             return Err(OrcrError::invalid_request(
                 "kill requires targets",
@@ -881,15 +878,7 @@ impl Server {
     /// transition is missed). A target that un-settles is waited on again — the result is the
     /// state at one simultaneous `decision_seq`.
     pub(super) fn handle_agent_wait(&self, params: &Value) -> Result<Value> {
-        let targets: Vec<String> = params
-            .get("targets")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let targets = str_array_param(params, "targets");
         if targets.is_empty() {
             return Err(OrcrError::invalid_request(
                 "wait requires at least one target",
@@ -1272,12 +1261,20 @@ impl Server {
     /// (spec §5.1, §6.2, §11.3). A root/unrelated context may not create anything under an
     /// active loop's name; only a context *inside* one of that loop's runs may, and only while
     /// that run is still accepting work (`running`).
-    fn check_loop_namespace(&self, effective: &str, caller_path: Option<&str>) -> Result<()> {
+    ///
+    /// Reads the loop/run tables from the **already-locked** `store` passed in, so the caller
+    /// can run this check and the agent insert under one contiguous store-lock hold. Because
+    /// the store is the single writer (everything, incl. `loop.create`, goes through the same
+    /// `Mutex<Store>`), holding the lock across check+insert makes the namespace/ownership
+    /// enforcement atomic with path reservation, as §5.1 requires (no TOCTOU).
+    fn check_loop_namespace(
+        &self,
+        store: &Store,
+        effective: &str,
+        caller_path: Option<&str>,
+    ) -> Result<()> {
         let level1 = effective.split('/').next().unwrap_or("");
-        let active = {
-            let store = self.inner.store.lock().unwrap();
-            store.active_loop_names().unwrap_or_default()
-        };
+        let active = store.active_loop_names().unwrap_or_default();
         if !active.iter().any(|n| n == level1) {
             return Ok(());
         }
@@ -1294,16 +1291,8 @@ impl Server {
         }
         // The run admission barrier: the run must still be `running` (not stopping/ended).
         let run_id = effective.split('/').nth(1).unwrap_or("");
-        let loop_row = {
-            let store = self.inner.store.lock().unwrap();
-            store.find_loop_by_name(level1).ok().flatten()
-        };
-        if let Some(l) = loop_row {
-            let run = {
-                let store = self.inner.store.lock().unwrap();
-                store.run_by_id_or_uuid(&l.uuid, run_id).ok().flatten()
-            };
-            if let Some(run) = run {
+        if let Some(l) = store.find_loop_by_name(level1).ok().flatten() {
+            if let Some(run) = store.run_by_id_or_uuid(&l.uuid, run_id).ok().flatten() {
                 if run.status != "running" {
                     return Err(OrcrError::state_conflict(format!(
                         "run `{level1}/{run_id}` is {} — not accepting new agents",
@@ -1464,11 +1453,6 @@ fn wait_result(rows: &[AgentFull], decision_seq: i64, timed_out: bool) -> Value 
         "timed_out": timed_out,
         "decision_seq": decision_seq,
     })
-}
-
-/// Extract a string param.
-fn str_param(params: &Value, key: &str) -> Option<String> {
-    params.get(key).and_then(|v| v.as_str()).map(String::from)
 }
 
 /// The caller's resolved scope + lineage (spec §5.3).

@@ -39,11 +39,6 @@ impl ServerLog {
         })
     }
 
-    /// The log file path.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     /// Append a structured line at the given level. Failures are swallowed (logging must
     /// never take the server down), but rotation is attempted first.
     pub fn log(&self, level: &str, msg: impl AsRef<str>) {
@@ -82,21 +77,32 @@ impl ServerLog {
     /// Shift `server.log.(n-1)` → `server.log.n` … and `server.log` → `server.log.1`,
     /// dropping anything past `max_files`, then reopen a fresh empty `server.log`.
     fn rotate(&self) -> Result<File> {
-        for i in (1..self.max_files).rev() {
-            let from = self.numbered(i);
-            let to = self.numbered(i + 1);
-            if from.exists() {
-                let _ = std::fs::rename(&from, &to);
-            }
-        }
-        let first = self.numbered(1);
-        let _ = std::fs::rename(&self.path, &first);
+        rotate_numbered(&self.path, self.max_files);
         open_append(&self.path)
     }
+}
 
-    fn numbered(&self, n: u32) -> PathBuf {
-        self.path.with_file_name(format!("server.log.{n}"))
+/// Shift `path.(n-1)` → `path.n` … up to `max_files`, then `path` → `path.1`, dropping
+/// anything past the cap. Shared by [`ServerLog`] and the per-run `RunLog`; does **not**
+/// reopen `path` (each caller re-opens/reset as its threading model requires).
+pub(super) fn rotate_numbered(path: &Path, max_files: u32) {
+    if max_files == 0 {
+        return;
     }
+    let numbered = |n: u32| -> PathBuf {
+        let name = format!(
+            "{}.{n}",
+            path.file_name().and_then(|s| s.to_str()).unwrap_or("log")
+        );
+        path.with_file_name(name)
+    };
+    for i in (1..max_files).rev() {
+        let from = numbered(i);
+        if from.exists() {
+            let _ = std::fs::rename(&from, numbered(i + 1));
+        }
+    }
+    let _ = std::fs::rename(path, numbered(1));
 }
 
 fn open_append(path: &Path) -> Result<File> {

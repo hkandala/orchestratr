@@ -121,6 +121,21 @@ WantedBy=default.target
     )
 }
 
+/// Whether start-at-login is registered, i.e. the platform service unit file exists (spec
+/// §6.4). Backs `server.status`'s `loops_firing`: loops only survive a reboot before any
+/// `orcr` command runs when the server is `enable`d. Path-only (no binary/herdr discovery),
+/// so it is cheap and never fails; an unsupported platform is never enabled.
+pub fn is_enabled(_home: &Home) -> bool {
+    let path = if cfg!(target_os = "macos") {
+        launchd_path()
+    } else if cfg!(target_os = "linux") {
+        systemd_path()
+    } else {
+        return false;
+    };
+    path.map(|p| p.exists()).unwrap_or(false)
+}
+
 /// The launchd plist path for the current user.
 fn launchd_path() -> Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| {

@@ -13,13 +13,14 @@ mod engine;
 mod gc;
 mod log;
 mod loops;
+mod params;
 
 pub use client::{Client, StartOutcome};
 pub use log::ServerLog;
 
 use crate::api;
 use crate::config::Config;
-use crate::driver::{HerdrBinary, HerdrDriver, IntegrationState};
+use crate::driver::{HerdrBinary, HerdrDriver};
 use crate::error::{OrcrError, Result};
 use crate::events::{EventBus, WaitOutcome};
 use crate::home::Home;
@@ -331,16 +332,42 @@ impl Server {
             return false;
         }
 
+        // Simple request→response methods: each yields a `Result<Value>` written back at the
+        // single write site below. Streaming / side-effecting methods fall through to the
+        // second match.
+        let simple: Option<Result<Value>> = match req.method.as_str() {
+            "server.handshake" => Some(Ok(self.handshake_result())),
+            "server.status" => Some(Ok(self.status_result())),
+            "api.schema" => Some(Ok(api::schema_document())),
+            "api.snapshot" => Some(Ok(self.build_snapshot().1)),
+            "agent.run" => Some(self.handle_agent_run(&req.params)),
+            "agent.send" => Some(self.handle_agent_send(&req.params)),
+            "agent.wait" => Some(self.handle_agent_wait(&req.params)),
+            "agent.ask" => Some(self.handle_agent_ask(&req.params)),
+            "agent.logs" => Some(self.handle_agent_logs(&req.params)),
+            "agent.kill" => Some(self.handle_agent_kill(&req.params)),
+            "agent.ls" => Some(self.handle_agent_ls(&req.params)),
+            "agent.attach.prepare" => Some(self.handle_agent_attach_prepare(&req.params)),
+            "agent.attach.heartbeat" => Some(self.handle_agent_attach_heartbeat(&req.params)),
+            "agent.attach.release" => Some(self.handle_agent_attach_release(&req.params)),
+            "loop.create" => Some(self.handle_loop_create(&req.params)),
+            "loop.pause" => Some(self.handle_loop_set_paused(&req.params, true)),
+            "loop.resume" => Some(self.handle_loop_set_paused(&req.params, false)),
+            "loop.rm" => Some(self.handle_loop_rm(&req.params)),
+            "loop.ls" => Some(self.handle_loop_ls(&req.params)),
+            "loop.logs" => Some(self.handle_loop_logs(&req.params)),
+            "loop.run.start" => Some(self.handle_loop_run_start(&req.params)),
+            "loop.run.stop" => Some(self.handle_loop_run_stop(&req.params)),
+            "loop.run.ls" => Some(self.handle_loop_run_ls(&req.params)),
+            _ => None,
+        };
+        if let Some(out) = simple {
+            let _ = write_to(writer, &respond(&req.id, out));
+            return false;
+        }
+
+        // Streaming / side-effecting / debug methods.
         match req.method.as_str() {
-            "server.handshake" => {
-                let _ = write_to(writer, &ok_response(&req.id, self.handshake_result()));
-                false
-            }
-            "server.status" => {
-                let result = self.status_result();
-                let _ = write_to(writer, &ok_response(&req.id, result));
-                false
-            }
             "server.stop" => {
                 let _ = write_to(
                     writer,
@@ -351,110 +378,6 @@ impl Server {
                 self.inner.shutdown.store(true, Ordering::SeqCst);
                 self.inner.bus.shutdown();
                 true
-            }
-            "api.schema" => {
-                let _ = write_to(writer, &ok_response(&req.id, api::schema_document()));
-                false
-            }
-            "api.snapshot" => {
-                let (_, snap) = self.build_snapshot();
-                let _ = write_to(writer, &ok_response(&req.id, snap));
-                false
-            }
-            "agent.run" => {
-                let out = self.handle_agent_run(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "agent.send" => {
-                let out = self.handle_agent_send(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "agent.wait" => {
-                let out = self.handle_agent_wait(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "agent.ask" => {
-                let out = self.handle_agent_ask(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "agent.logs" => {
-                let out = self.handle_agent_logs(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "agent.kill" => {
-                let out = self.handle_agent_kill(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "agent.ls" => {
-                let out = self.handle_agent_ls(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "agent.attach.prepare" => {
-                let out = self.handle_agent_attach_prepare(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "agent.attach.heartbeat" => {
-                let out = self.handle_agent_attach_heartbeat(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "agent.attach.release" => {
-                let out = self.handle_agent_attach_release(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "loop.create" => {
-                let out = self.handle_loop_create(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "loop.pause" => {
-                let out = self.handle_loop_set_paused(&req.params, true);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "loop.resume" => {
-                let out = self.handle_loop_set_paused(&req.params, false);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "loop.rm" => {
-                let out = self.handle_loop_rm(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "loop.ls" => {
-                let out = self.handle_loop_ls(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "loop.logs" => {
-                let out = self.handle_loop_logs(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "loop.run.start" => {
-                let out = self.handle_loop_run_start(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "loop.run.stop" => {
-                let out = self.handle_loop_run_stop(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
-            }
-            "loop.run.ls" => {
-                let out = self.handle_loop_run_ls(&req.params);
-                let _ = write_to(writer, &respond(&req.id, out));
-                false
             }
             "events.subscribe" => {
                 self.start_subscription(&req, writer, sub_stops, false);
@@ -736,7 +659,10 @@ impl Server {
             "herdr": herdr,
             "integrations": integrations,
             "counts": counts,
-            "loops_firing": true,
+            // Whether loop firing survives a reboot: true only when `server enable` has
+            // registered a launchd/systemd unit (spec §6.4). The scheduler always runs while
+            // the server is up; this reflects the durable start-at-login registration.
+            "loops_firing": crate::service::is_enabled(&self.inner.home),
             "loops": self.loops_status(),
             "drift": {
                 "lost": drift.lost,
@@ -825,10 +751,7 @@ impl Server {
     }
 
     fn integration_state(&self) -> Value {
-        let raw = HerdrBinary::discover(Some(self.inner.config.herdr.bin.as_str()))
-            .and_then(|b| b.integration_status_raw())
-            .unwrap_or_default();
-        let state = IntegrationState::from_herdr_status(&raw);
+        let state = self.integration_state_typed();
         let mut map = serde_json::Map::new();
         for p in &state.providers {
             map.insert(

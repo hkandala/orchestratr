@@ -10,6 +10,7 @@
 //! per-loop pass: dead runs are closed out (their agents glob-killed), pending fires decided
 //! once, and missed cron fires skipped-and-logged (never replayed).
 
+use super::params::{str_array_param, str_param};
 use super::Server;
 use crate::cron::{self, Cron};
 use crate::error::{OrcrError, Result};
@@ -576,7 +577,7 @@ impl Server {
     /// `loop.create` (spec §6.2): validate name/cadence/payload, persist `loop.json`, insert
     /// the durable definition, and echo the parsed argv + cadence + cancel command.
     pub(super) fn handle_loop_create(&self, params: &Value) -> Result<Value> {
-        let name = sp(params, "name").ok_or_else(|| {
+        let name = str_param(params, "name").ok_or_else(|| {
             OrcrError::invalid_request("loop create requires a name", "name_required")
         })?;
         // A loop name is one segment, root-level, never a reserved level-1 name (§5.1, §6.2).
@@ -595,8 +596,8 @@ impl Server {
             .with_details(json!({ "reason": "reserved_name", "name": name })));
         }
 
-        let cron = sp(params, "cron").filter(|s| !s.is_empty());
-        let once_at = sp(params, "once_at").filter(|s| !s.is_empty());
+        let cron = str_param(params, "cron").filter(|s| !s.is_empty());
+        let once_at = str_param(params, "once_at").filter(|s| !s.is_empty());
         let now = now_millis();
         let tz = cron::local_tz_name();
         let (cadence_kind, cadence_value, next_fire_at) = match (cron, once_at) {
@@ -624,15 +625,7 @@ impl Server {
             }
         };
 
-        let command: Vec<String> = params
-            .get("command")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let command = str_array_param(params, "command");
         if command.is_empty() {
             return Err(OrcrError::invalid_request(
                 "loop create requires a command after `--`",
@@ -650,18 +643,18 @@ impl Server {
                 "invalid_max_concurrency",
             ));
         }
-        let overlap = sp(params, "overlap").unwrap_or_else(|| "queue".to_string());
+        let overlap = str_param(params, "overlap").unwrap_or_else(|| "queue".to_string());
         if !matches!(overlap.as_str(), "queue" | "skip") {
             return Err(OrcrError::invalid_request(
                 format!("invalid --overlap `{overlap}` (queue|skip)"),
                 "invalid_overlap",
             ));
         }
-        let timeout_s = match sp(params, "timeout").filter(|s| !s.is_empty()) {
+        let timeout_s = match str_param(params, "timeout").filter(|s| !s.is_empty()) {
             Some(t) => Some((crate::duration::parse_duration(&t)?.as_millis() as i64) / 1000),
             None => None,
         };
-        let cwd = sp(params, "cwd")
+        let cwd = str_param(params, "cwd")
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| ".".to_string());
 
@@ -709,13 +702,7 @@ impl Server {
         };
         let ev = {
             let mut store = self.inner.store.lock().unwrap();
-            store.create_loop(&new)
-        };
-        let ev = match ev {
-            Ok(e) => e,
-            Err(e) => {
-                return Err(e);
-            }
+            store.create_loop(&new)?
         };
         self.publish(ev);
         self.log().info(format!(
@@ -787,7 +774,7 @@ impl Server {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         // Self-removal from inside a run → `removed_by_run` (spec §6.2).
-        let caller_path = sp(params, "caller_path");
+        let caller_path = str_param(params, "caller_path");
         let mut removed = Vec::new();
         let mut skipped = Vec::new();
         for name in &names {
@@ -831,16 +818,8 @@ impl Server {
 
     /// `loop.ls` (spec §6.2).
     pub(super) fn handle_loop_ls(&self, params: &Value) -> Result<Value> {
-        let names: Vec<String> = params
-            .get("names")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let status = sp(params, "status").filter(|s| !s.is_empty());
+        let names = str_array_param(params, "names");
+        let status = str_param(params, "status").filter(|s| !s.is_empty());
         let all = params.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
         let store = self.inner.store.lock().unwrap();
         let loops = store.list_loops(&names, status.as_deref(), all)?;
@@ -851,7 +830,7 @@ impl Server {
     /// `loop.run.start` (spec §6.2): manual trigger (works on paused loops too). Prints
     /// `<loop_name>/<run_id> <run_uuid>`; at capacity the run sits pending.
     pub(super) fn handle_loop_run_start(&self, params: &Value) -> Result<Value> {
-        let name = sp(params, "name").ok_or_else(|| {
+        let name = str_param(params, "name").ok_or_else(|| {
             OrcrError::invalid_request("loop run start requires a name", "name_required")
         })?;
         let l = {
@@ -884,7 +863,7 @@ impl Server {
     /// `loop.run.stop` (spec §6.2): stop run(s) without touching the definition. An optional
     /// `run` targets one run; otherwise all active + pending runs of the loop.
     pub(super) fn handle_loop_run_stop(&self, params: &Value) -> Result<Value> {
-        let name = sp(params, "name").ok_or_else(|| {
+        let name = str_param(params, "name").ok_or_else(|| {
             OrcrError::invalid_request("loop run stop requires a name", "name_required")
         })?;
         let l = {
@@ -892,7 +871,7 @@ impl Server {
             store.find_loop_by_name(&name)?
         };
         let l = l.ok_or_else(|| OrcrError::not_found(format!("no loop named `{name}`")))?;
-        let run_sel = sp(params, "run").filter(|s| !s.is_empty());
+        let run_sel = str_param(params, "run").filter(|s| !s.is_empty());
 
         let targets: Vec<LoopRunRow> = {
             let store = self.inner.store.lock().unwrap();
@@ -945,10 +924,10 @@ impl Server {
 
     /// `loop.run.ls` (spec §6.2).
     pub(super) fn handle_loop_run_ls(&self, params: &Value) -> Result<Value> {
-        let name = sp(params, "name").ok_or_else(|| {
+        let name = str_param(params, "name").ok_or_else(|| {
             OrcrError::invalid_request("loop run ls requires a name", "name_required")
         })?;
-        let status = sp(params, "status").filter(|s| !s.is_empty());
+        let status = str_param(params, "status").filter(|s| !s.is_empty());
         let all = params.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
         let l = {
             let store = self.inner.store.lock().unwrap();
@@ -966,11 +945,11 @@ impl Server {
     /// `loop.logs` (spec §6.2): interleave the runs' captured command output (`run.log`) with
     /// orcr's own scheduler actions (the event log), each line tagged with its run.
     pub(super) fn handle_loop_logs(&self, params: &Value) -> Result<Value> {
-        let name = sp(params, "name").ok_or_else(|| {
+        let name = str_param(params, "name").ok_or_else(|| {
             OrcrError::invalid_request("loop logs requires a name", "name_required")
         })?;
-        let run_sel = sp(params, "run").filter(|s| !s.is_empty());
-        let source = sp(params, "source").filter(|s| !s.is_empty());
+        let run_sel = str_param(params, "run").filter(|s| !s.is_empty());
+        let source = str_param(params, "source").filter(|s| !s.is_empty());
         let tail = params
             .get("tail")
             .and_then(|v| v.as_u64())
@@ -1127,22 +1106,9 @@ impl Server {
     }
 }
 
-/// Extract a string param.
-fn sp(params: &Value, key: &str) -> Option<String> {
-    params.get(key).and_then(|v| v.as_str()).map(String::from)
-}
-
 /// The `names` array param (bulk loop verbs), erroring if empty.
 fn names_param(params: &Value) -> Result<Vec<String>> {
-    let names: Vec<String> = params
-        .get("names")
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let names = str_array_param(params, "names");
     if names.is_empty() {
         return Err(OrcrError::invalid_request(
             "at least one loop name is required",
@@ -1258,28 +1224,8 @@ impl RunLog {
 
     /// Rotate `run.log` → `run.log.1` → … up to `max_files`, then start fresh.
     fn rotate(&mut self) {
-        for i in (1..self.max_files).rev() {
-            let from = self.sidecar(i);
-            let to = self.sidecar(i + 1);
-            let _ = std::fs::rename(&from, &to);
-        }
-        if self.max_files > 0 {
-            let _ = std::fs::rename(&self.path, self.sidecar(1));
-        }
+        super::log::rotate_numbered(&self.path, self.max_files);
         self.written = 0;
-    }
-
-    fn sidecar(&self, n: u32) -> PathBuf {
-        let mut p = self.path.clone();
-        let name = format!(
-            "{}.{n}",
-            self.path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("run.log")
-        );
-        p.set_file_name(name);
-        p
     }
 }
 
