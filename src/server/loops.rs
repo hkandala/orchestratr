@@ -310,11 +310,14 @@ impl Server {
             let mut store = self.inner.store.lock().unwrap();
             let loop_row = store.loop_by_uuid(loop_uuid).ok().flatten();
             let claimed = match &loop_row {
-                Some(l) => store
+                // Only an `active` loop promotes queued runs: a `paused` loop holds its queue
+                // (fires + pending runs resume only on `loop resume`, §6.2), and an `ended`
+                // loop never starts new runs.
+                Some(l) if l.status == "active" => store
                     .claim_pending_run(loop_uuid, l.max_concurrency)
                     .ok()
                     .flatten(),
-                None => None,
+                _ => None,
             };
             (loop_row, claimed)
         };
@@ -377,11 +380,17 @@ impl Server {
     /// period, KILL if still alive, glob-kill the run's agents until clean, finalize, and
     /// promote the next pending run (spec §6.2, §11.3).
     fn finish_stop(&self, l: &LoopRow, run: &LoopRunRow, terminal_status: &str) {
-        // Signal the process group (start-time-guarded, never a reused pgid).
-        self.signal_run(run, libc::SIGTERM);
+        // Re-read the run's pid/pgid immediately before signaling: a stop can race the spawn
+        // window (allocate_run commits `running` with pgid=NULL, then `record_run_start` fills
+        // pid/pgid — even from the `stopping` barrier), so the struct captured by the caller may
+        // predate the recorded pgid. Signaling the fresh row (and re-reading again after the
+        // grace sleep) ensures a pgid recorded after the barrier is still TERM/KILLed (§11.3).
+        let fresh = self.reread_run(run);
+        self.signal_run(&fresh, libc::SIGTERM);
         std::thread::sleep(self.inner.config.timings.run_term_grace);
-        if self.run_leader_alive(run) {
-            self.signal_run(run, libc::SIGKILL);
+        let fresh = self.reread_run(run);
+        if self.run_leader_alive(&fresh) {
+            self.signal_run(&fresh, libc::SIGKILL);
         }
 
         // Barrier glob-kill of the run's agents until a final snapshot shows none.
@@ -418,6 +427,17 @@ impl Server {
                 Err(_) => break,
             }
         }
+    }
+
+    /// Re-read the current run row from the store, falling back to the caller's copy if the
+    /// row can't be fetched — used so a stop honors a pgid recorded after the barrier.
+    fn reread_run(&self, run: &LoopRunRow) -> LoopRunRow {
+        let store = self.inner.store.lock().unwrap();
+        store
+            .run_by_uuid(&run.uuid)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| run.clone())
     }
 
     /// Signal a run's process group, guarded by the recorded start time (spec §11.3: signal
@@ -457,12 +477,10 @@ impl Server {
         };
         for l in loops {
             // Close out dead running/stopping runs; keep alive orphans under a poll monitor.
+            // active_runs already filters to running/stopping — exactly the ones to verify.
             let active_runs = {
                 let store = self.inner.store.lock().unwrap();
-                let mut runs = store.active_runs(&l.uuid).unwrap_or_default();
-                // active_runs only covers running/stopping — exactly the ones to verify.
-                runs.retain(|r| matches!(r.status.as_str(), "running" | "stopping"));
-                runs
+                store.active_runs(&l.uuid).unwrap_or_default()
             };
             for run in active_runs {
                 if self.run_leader_alive(&run) {
@@ -512,32 +530,42 @@ impl Server {
             }
 
             // Recompute the schedule: any fire due while we were down is skipped-and-logged;
-            // never replayed (spec §6.2, §11.3).
-            if l.cadence_kind == "cron" {
-                if let Some(nf) = l.next_fire_at {
-                    if nf <= now {
+            // never replayed (spec §6.2, §11.3) — for cron AND once loops alike.
+            if let Some(nf) = l.next_fire_at {
+                if nf <= now {
+                    let ev = {
+                        let mut store = self.inner.store.lock().unwrap();
+                        store
+                            .append_event(
+                                "loop.skipped",
+                                Some(&l.uuid),
+                                &serde_json::json!({
+                                    "loop_uuid": l.uuid, "name": l.name,
+                                    "reason": "missed_while_down", "due_at": nf,
+                                }),
+                            )
+                            .unwrap_or(0)
+                    };
+                    self.publish(ev);
+                    if l.cadence_kind == "once" {
+                        // A once loop fires exactly once; a missed fire is skipped, so the
+                        // definition ends without ever running (spec §6.2 "fires once then ends").
                         let ev = {
                             let mut store = self.inner.store.lock().unwrap();
                             store
-                                .append_event(
-                                    "loop.skipped",
-                                    Some(&l.uuid),
-                                    &serde_json::json!({
-                                        "loop_uuid": l.uuid, "name": l.name,
-                                        "reason": "missed_while_down", "due_at": nf,
-                                    }),
-                                )
+                                .set_loop_status(&l.uuid, "ended", Some("fired"), "loop.ended")
                                 .unwrap_or(0)
                         };
                         self.publish(ev);
+                    } else {
                         let next = self.compute_next_fire(&l.cadence_value, &l.tz, now);
                         let mut store = self.inner.store.lock().unwrap();
                         let _ = store.set_next_fire(&l.uuid, next);
-                        self.log().info(format!(
-                            "recover: loop {} missed a fire while down — skipped",
-                            l.name
-                        ));
                     }
+                    self.log().info(format!(
+                        "recover: loop {} missed a fire while down — skipped",
+                        l.name
+                    ));
                 }
             }
 
