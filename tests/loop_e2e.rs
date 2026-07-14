@@ -198,6 +198,48 @@ fn e2e_once_at_fires_and_captures_output() {
         .unwrap_or(true));
 }
 
+/// Active-loop namespace protection (spec §5.1): while `nightly` is active, root/unrelated
+/// contexts cannot create `nightly/foo` nor `/nightly/foo`; after the loop ends it is free.
+#[test]
+fn e2e_namespace_protection() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    let ts = TestServer::start();
+    ts.create_loop(
+        "nightly",
+        json!({ "cron": "0 0 1 1 *" }),
+        &["sh", "-c", "sleep 1"],
+    );
+
+    // A root context (no caller) cannot create an agent under the active loop's name.
+    for target in ["nightly/foo", "/nightly/foo"] {
+        let e = ts
+            .request(
+                "agent.run",
+                json!({ "path": target, "agent": "mock", "prompt": "x" }),
+            )
+            .unwrap_err();
+        assert_eq!(
+            e.details["reason"], "reserved_name",
+            "creating {target} from root must be rejected"
+        );
+    }
+
+    // After the loop ends, the name is reusable by a root agent.
+    ts.request("loop.rm", json!({ "names": ["nightly"] }))
+        .unwrap();
+    let ok = ts.request(
+        "agent.run",
+        json!({ "path": "nightly/reused", "agent": "mock", "prompt": "x" }),
+    );
+    assert!(
+        ok.is_ok(),
+        "name should be reusable after the loop ends: {ok:?}"
+    );
+}
+
 /// Capacity + promotion: cap 1, two slow manual runs → one running + one pending; stopping the
 /// running one promotes the pending one.
 #[test]

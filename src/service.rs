@@ -253,9 +253,9 @@ mod tests {
     use tempfile::TempDir;
 
     fn test_home() -> (TempDir, Home) {
+        // Point a Home at a tempdir directly (no global env mutation → no cross-test races).
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("ORCR_HOME", tmp.path());
-        let home = Home::ensure().unwrap();
+        let home = Home::at(tmp.path());
         (tmp, home)
     }
 
