@@ -862,9 +862,11 @@ DSL.
 - **pause** — no new fires; a pending scheduled run is held, not started; active
   runs continue. **resume** — fires resume; a held pending run starts if due. **rm** —
   mark ended (`removed` / `removed_by_run` when called from inside a run:
-  `orcr loop rm "${ORCR_PATH%%/*}"`); no future fires; the active run and its agents
-  continue unless `--kill-active`. Confirms on a TTY (`-y` skips). Definition + run
-  history remain queryable.
+  `orcr loop rm "${ORCR_PATH%%/*}"`); no future fires (any still-`pending` run is
+  canceled); the active run and its agents continue unless `--kill-active`. Only the
+  destructive `--kill-active` confirms on a TTY (`-y` skips; plain `rm` is
+  non-destructive — the definition ends but running runs continue — so it does not
+  prompt). Definition + run history remain queryable.
 - **`loop logs`** — two interleaved sources, each line tagged with its run
   (`[nightly/r82c9s]`): the **command's** captured stdout/stderr, and **orcr's own
   actions** on the loop (fired, coalesced, skipped, paused-hold, timed out, stopped —
