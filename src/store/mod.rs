@@ -1655,6 +1655,43 @@ impl Store {
         Ok(rows)
     }
 
+    /// Read every event whose `ref_uuid` is in `refs`, oldest first. Uses the
+    /// `events(ref_uuid, seq)` index instead of a full-table scan — the targeted read `loop
+    /// logs` needs to interleave one loop's + its runs' scheduler lines (spec §6.2). Note:
+    /// events aged out by retention trimming are not returned (the retention-driven limit on
+    /// old orcr-source lines, documented for `loop logs --source orcr`).
+    pub fn events_for_refs(&self, refs: &[&str]) -> Result<Vec<EventRow>> {
+        if refs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = std::iter::repeat_n("?", refs.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT seq, ts, kind, ref_uuid, payload_json FROM events \
+                 WHERE ref_uuid IN ({placeholders}) ORDER BY seq ASC"
+            ))
+            .map_err(map_sqlite)?;
+        let params = rusqlite::params_from_iter(refs.iter());
+        let rows = stmt
+            .query_map(params, |r| {
+                let payload: String = r.get(4)?;
+                Ok(EventRow {
+                    seq: r.get(0)?,
+                    ts: r.get(1)?,
+                    kind: r.get(2)?,
+                    ref_uuid: r.get(3)?,
+                    payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+                })
+            })
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows)
+    }
+
     /// The highest event `seq` written so far (0 when the table is empty).
     pub fn latest_event_seq(&self) -> Result<i64> {
         self.conn
@@ -2007,6 +2044,10 @@ impl Store {
             }
 
             // Allocate a fresh run row (unique run_id per loop; retry on the rare collision).
+            // When a slot is free we reserve it atomically *inside this same txn* by inserting
+            // the row already `running` (start_now); at capacity it goes in `pending`. Because
+            // `BEGIN IMMEDIATE` serializes writers and `active` counts running/stopping rows,
+            // no concurrent allocation/promotion can hand the same slot out twice (spec §11.3).
             let uuid = uuid::Uuid::now_v7().to_string();
             let now = now_millis();
             let mut run_id = new_run_id();
@@ -2025,23 +2066,22 @@ impl Store {
                 }
                 run_id = new_run_id();
             }
+            let start_now = !at_capacity;
+            let status = if start_now { "running" } else { "pending" };
             tx.execute(
                 "INSERT INTO loop_runs (
                      uuid, loop_uuid, run_id, kind, due_at, status, created_at, updated_at
-                 ) VALUES (?1,?2,?3,?4,?5,'pending',?6,?6)",
-                rusqlite::params![uuid, loop_uuid, run_id, kind, due_at, now],
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
+                rusqlite::params![uuid, loop_uuid, run_id, kind, due_at, status, now],
             )
             .map_err(map_sqlite)?;
             let run = read_run_row_tx(tx, &uuid)?
                 .ok_or_else(|| OrcrError::server_error("loop", "allocated run vanished"))?;
-            let start_now = !at_capacity;
+            // Always `loop.fired` for a fresh allocation (`pending:true` when queued); the true
+            // fold path above is the only place that emits `loop.coalesced` (spec §11.3).
             let ev = append_event_tx(
                 tx,
-                if start_now {
-                    "loop.fired"
-                } else {
-                    "loop.coalesced"
-                },
+                "loop.fired",
                 Some(&loop_uuid),
                 &json!({
                     "loop_uuid": loop_uuid, "run_id": run.run_id, "kind": kind,
@@ -2052,8 +2092,12 @@ impl Store {
         })
     }
 
-    /// Mark a run `running` with its process identity (pid/pgid + start time — pgid alone is
-    /// not proof of identity, §11.3). Emits `loop_run.started`. Returns the event seq.
+    /// Record a started run's process identity (pid/pgid + OS start time — pgid alone is not
+    /// proof of identity, §11.3) and its optional timeout deadline. The slot was already
+    /// reserved (`running`) by [`Store::allocate_run`] / [`Store::claim_pending_run`], so this
+    /// only fills in the identity; it never re-creates the `running` state and leaves a
+    /// concurrently-entered `stopping` barrier intact. Emits `loop_run.started`; returns the
+    /// event seq (0 if the run is already terminal).
     pub fn record_run_start(
         &mut self,
         run_uuid: &str,
@@ -2065,12 +2109,17 @@ impl Store {
     ) -> Result<i64> {
         let run_uuid = run_uuid.to_string();
         self.with_immediate_tx(|tx| {
-            tx.execute(
-                "UPDATE loop_runs SET status='running', pid=?2, pgid=?3, pgid_start_time=?4, \
-                 started_at=?5, timeout_at=?6, updated_at=?5 WHERE uuid=?1",
-                rusqlite::params![run_uuid, pid, pgid, pgid_start_time, started_at, timeout_at],
-            )
-            .map_err(map_sqlite)?;
+            let n = tx
+                .execute(
+                    "UPDATE loop_runs SET pid=?2, pgid=?3, pgid_start_time=?4, started_at=?5, \
+                     timeout_at=?6, updated_at=?5 \
+                     WHERE uuid=?1 AND status IN ('running','stopping')",
+                    rusqlite::params![run_uuid, pid, pgid, pgid_start_time, started_at, timeout_at],
+                )
+                .map_err(map_sqlite)?;
+            if n == 0 {
+                return Ok(0);
+            }
             let run = read_run_row_tx(tx, &run_uuid)?;
             append_event_tx(
                 tx,
@@ -2082,6 +2131,59 @@ impl Store {
                     "pid": pid, "pgid": pgid,
                 }),
             )
+        })
+    }
+
+    /// Atomically reserve a free slot for the oldest pending run of a loop (spec §11.3). In one
+    /// `BEGIN IMMEDIATE` transaction: count active (running/stopping) runs and, only if below
+    /// `max_concurrency`, transition the oldest pending run pending→running and return it —
+    /// returning `None` otherwise. Because `BEGIN IMMEDIATE` serializes writers, two concurrent
+    /// callers can never claim the same slot (and thus never spawn the same run twice). The
+    /// process identity is filled in later by [`Store::record_run_start`].
+    pub fn claim_pending_run(
+        &mut self,
+        loop_uuid: &str,
+        max_concurrency: i64,
+    ) -> Result<Option<LoopRunRow>> {
+        let loop_uuid = loop_uuid.to_string();
+        self.with_immediate_tx(|tx| {
+            let active: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM loop_runs \
+                     WHERE loop_uuid=?1 AND status IN ('running','stopping')",
+                    [&loop_uuid],
+                    |r| r.get(0),
+                )
+                .map_err(map_sqlite)?;
+            if active >= max_concurrency {
+                return Ok(None);
+            }
+            let pending_uuid: Option<String> = tx
+                .query_row(
+                    "SELECT uuid FROM loop_runs \
+                     WHERE loop_uuid=?1 AND status='pending' \
+                     ORDER BY due_at ASC, created_at ASC LIMIT 1",
+                    [&loop_uuid],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(map_sqlite)?;
+            let Some(pending_uuid) = pending_uuid else {
+                return Ok(None);
+            };
+            // Guarded pending→running: the LIMIT-1 select + this update run in the same
+            // serialized txn, so exactly one caller flips the row.
+            let n = tx
+                .execute(
+                    "UPDATE loop_runs SET status='running', updated_at=?2 \
+                     WHERE uuid=?1 AND status='pending'",
+                    rusqlite::params![pending_uuid, now_millis()],
+                )
+                .map_err(map_sqlite)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            read_run_row_tx(tx, &pending_uuid)
         })
     }
 
@@ -3328,6 +3430,95 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn fresh_allocation_reserves_slot_and_emits_fired() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.create_loop(&new_loop("l1", "nightly", 1, "queue"))
+            .unwrap();
+        // A free-slot allocation reserves the slot *in the same txn* by inserting `running`,
+        // so it counts toward capacity immediately — before record_run_start runs.
+        let (a1, ev1) = s.allocate_run("l1", "scheduled", 1000, 1, "queue").unwrap();
+        let run1 = match a1 {
+            RunAllocation::Allocated { run, start_now } => {
+                assert!(start_now);
+                run
+            }
+            _ => panic!("expected Allocated"),
+        };
+        assert_eq!(
+            s.run_by_uuid(&run1.uuid).unwrap().unwrap().status,
+            "running"
+        );
+        assert_eq!(s.active_runs("l1").unwrap().len(), 1);
+        // A freshly-queued run emits loop.fired(pending:true), never loop.coalesced.
+        let fired = s.events_since(ev1 - 1, 10).unwrap();
+        let (a2, ev2) = s.allocate_run("l1", "manual", 2000, 1, "queue").unwrap();
+        assert!(matches!(
+            a2,
+            RunAllocation::Allocated {
+                start_now: false,
+                ..
+            }
+        ));
+        assert!(fired.iter().any(|e| e.kind == "loop.fired"));
+        let queued = s.events_since(ev2 - 1, 10).unwrap();
+        let qev = queued.iter().find(|e| e.seq == ev2).unwrap();
+        assert_eq!(qev.kind, "loop.fired");
+        assert_eq!(qev.payload["pending"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn claim_pending_run_never_exceeds_capacity() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.create_loop(&new_loop("l1", "nightly", 2, "queue"))
+            .unwrap();
+        // Fill both slots (fresh allocations reserve them as running).
+        let r1 = match s.allocate_run("l1", "manual", 1, 2, "queue").unwrap().0 {
+            RunAllocation::Allocated { run, .. } => run,
+            _ => panic!(),
+        };
+        s.allocate_run("l1", "manual", 2, 2, "queue").unwrap();
+        // Two queued runs behind them.
+        s.allocate_run("l1", "manual", 3, 2, "queue").unwrap();
+        s.allocate_run("l1", "manual", 4, 2, "queue").unwrap();
+        assert_eq!(s.active_runs("l1").unwrap().len(), 2);
+        // At capacity → claim reserves nothing.
+        assert!(s.claim_pending_run("l1", 2).unwrap().is_none());
+        // Free one slot → exactly one claim succeeds, then no more.
+        s.finish_run(&r1.uuid, "ok", Some(0), None).unwrap();
+        let claimed = s.claim_pending_run("l1", 2).unwrap();
+        assert!(claimed.is_some());
+        assert_eq!(
+            s.run_by_uuid(&claimed.unwrap().uuid)
+                .unwrap()
+                .unwrap()
+                .status,
+            "running"
+        );
+        assert_eq!(s.active_runs("l1").unwrap().len(), 2);
+        assert!(s.claim_pending_run("l1", 2).unwrap().is_none());
+    }
+
+    #[test]
+    fn record_run_start_preserves_stopping_barrier() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.create_loop(&new_loop("l1", "nightly", 1, "queue"))
+            .unwrap();
+        let run = match s.allocate_run("l1", "manual", 1, 1, "queue").unwrap().0 {
+            RunAllocation::Allocated { run, .. } => run,
+            _ => panic!(),
+        };
+        // A stop lands during the spawn window (before record_run_start).
+        s.set_run_stopping(&run.uuid).unwrap();
+        // record_run_start fills the pid so the killer can find the pgid, but must NOT flip the
+        // run back to `running` and clobber the stopping barrier.
+        s.record_run_start(&run.uuid, 42, 42, 9, now_millis(), None)
+            .unwrap();
+        let cur = s.run_by_uuid(&run.uuid).unwrap().unwrap();
+        assert_eq!(cur.status, "stopping");
+        assert_eq!(cur.pid, Some(42));
     }
 
     #[test]
