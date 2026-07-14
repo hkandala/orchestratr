@@ -93,7 +93,8 @@ Current state: **through M2 (agent core).**
   - `mod.rs` — the typed data-access layer; **all writes go through `BEGIN IMMEDIATE`
     transaction helpers**. M1 events layer: `append_event`/`append_event_tx`, `events_since`,
     `latest/oldest_event_seq`, `trim_events`. **M2 agent DAL**: `enqueue_agent` (durable row +
-    `queue_seq` + `agent.created`, path-in-use → `state_conflict`), `promote_queued` (FIFO
+    `queue_seq` + `deadline_at` from `--timeout` + `agent.created`, path-in-use →
+    `state_conflict`), `promote_queued` (FIFO
     global+per-provider promotion in one txn), `agent_full`/`AgentFull`, resolution
     (`find_by_path` → `Resolution` active-first-else-latest-ended; `find_by_uuid_or_prefix` →
     `UuidLookup`), `record_location`/`record_agent_session`, `transition_status`,

@@ -78,5 +78,3 @@ Ships: identity (uuid+path), queue, spawn pipeline, claude+codex integrations, r
   attach (M4), unmanaged discovery (M4), loops (M5)
 - active-loop-name reservation (M5): level-1 reserved set is `idle`+`unmanaged` for now
 - real-provider e2e is best-effort (mock is the automated gate, per master-prompt §6)
-</content>
-</invoke>

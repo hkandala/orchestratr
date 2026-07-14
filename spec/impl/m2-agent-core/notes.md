@@ -73,4 +73,22 @@ Capture *decisions and deviations*, not a play-by-play.
   `ORCR_E2E=1 cargo test --test agent_e2e` (9/9 against live herdr 0.7.2). Post-run
   `herdr session list` shows only the untouched `default` session; no `--foreground`
   orphans.
-</content>
+- **Verify — round 1: FAIL → fixed → PASS.** The verifier found one concrete
+  spec-adherence gap: `--timeout` (§5.4/§6) was accepted but not validated at `run` and
+  the resulting kill deadline was never persisted, so a durable `deadline_at` was missing
+  from the agent row (§12). Resolved in commit `504e644`: `--timeout` is parsed up front
+  (units required → `invalid_request` on a bad value) and `deadline_at = created_at +
+  timeout` is written into the durable row (the deadline *enforcement* sweep stays out of
+  scope here — the reaper lands with the completion/GC work). Re-verify: full suite green.
+- **Review: PASS.** Code-review pass over the M2 surface (path grammar/scope/patterns,
+  agent DAL incl. FIFO promotion + partial-unique path allocation, spawn pipeline +
+  cancel interlock, start-up reconciler, integrations/both-layers enforcement, the four
+  verbs + CLI) found no blocking correctness/robustness/spec-adherence issues; the
+  `deadline_at` gap above was the substantive item and was already resolved.
+- **Scribe — final green check** (2026-07-13, on `main`, clean tree): `cargo build` ok;
+  `cargo fmt --check` ok; `cargo clippy --all-targets -- -D warnings` clean; `cargo test`
+  green (100 lib unit + `handshake` 2 + `home_config` 2 + `server_protocol` 6 + `e2e`
+  skip-path 5); `ORCR_E2E=1 cargo test --test agent_e2e -- --test-threads=1` 9/9,
+  `--test e2e` 5/5, `--test conformance_live` 1/1 — all against live herdr 0.7.2. Post-run
+  `herdr session list` shows only the untouched `default` session; no `--foreground`
+  orphans. **M2 green.**
