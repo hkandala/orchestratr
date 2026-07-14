@@ -212,6 +212,21 @@ impl Server {
                 .record_run_start(&run.uuid, pid, pid, start_time, now_millis(), timeout_at)
                 .unwrap_or(0)
         };
+        // record_run_start only fills pid/pgid `WHERE status IN ('running','stopping')`; a 0
+        // return means the row was already terminal (a stop/rm — e.g. `loop rm --kill-active`
+        // — raced the spawn while pgid was still NULL, so the stop couldn't signal us). The
+        // child would otherwise run unmanaged forever, so kill its process group and bail.
+        if ev == 0 {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+            let _ = child.wait();
+            self.log().warn(format!(
+                "loop {}: run {} raced a stop during spawn — killed orphan pgid {pid}",
+                l.name, run.run_id
+            ));
+            return;
+        }
         self.publish(ev);
         self.log().info(format!(
             "loop {}: run {} started pid={pid}",
@@ -451,12 +466,29 @@ impl Server {
             };
             for run in active_runs {
                 if self.run_leader_alive(&run) {
-                    // Survived the restart (orphaned): keep it and poll for its exit.
-                    self.spawn_poll_monitor(&run, &l.uuid);
-                    self.log().info(format!(
-                        "recover: loop {} run {} still alive — monitoring",
-                        l.name, run.run_id
-                    ));
+                    if run.status == "stopping" {
+                        // Mid-stop when the server crashed (barrier already `stopping`, but
+                        // `finish_stop` was interrupted before `finish_run`). Re-drive the stop
+                        // on a thread so the run reaches a terminal state instead of being left
+                        // `stopping` forever (spec §11.3).
+                        let server = self.clone();
+                        let l2 = l.clone();
+                        let run2 = run.clone();
+                        std::thread::spawn(move || {
+                            server.finish_stop(&l2, &run2, "stopped");
+                        });
+                        self.log().info(format!(
+                            "recover: loop {} run {} was mid-stop — re-driving stop",
+                            l.name, run.run_id
+                        ));
+                    } else {
+                        // Survived the restart (orphaned): keep it and poll for its exit.
+                        self.spawn_poll_monitor(&run, &l.uuid);
+                        self.log().info(format!(
+                            "recover: loop {} run {} still alive — monitoring",
+                            l.name, run.run_id
+                        ));
+                    }
                 } else {
                     // Dead → close out and glob-kill its agents (spec §11.3).
                     let ev = {
@@ -530,12 +562,18 @@ impl Server {
                         store.run_by_uuid(&run.uuid).ok().flatten()
                     };
                     if let Some(cur) = cur {
-                        if cur.status == "running" {
+                        // Finalize whether the orphan was `running` (unknown exit → failed) or
+                        // `stopping` (a stop was in flight → stopped) so it can never be left
+                        // un-finalized (spec §11.3).
+                        let terminal = match cur.status.as_str() {
+                            "running" => Some("failed"),
+                            "stopping" => Some("stopped"),
+                            _ => None,
+                        };
+                        if let Some(ts) = terminal {
                             let ev = {
                                 let mut store = server.inner.store.lock().unwrap();
-                                store
-                                    .finish_run(&run.uuid, "failed", None, None)
-                                    .unwrap_or(0)
+                                store.finish_run(&run.uuid, ts, None, None).unwrap_or(0)
                             };
                             server.publish(ev);
                         }
@@ -894,22 +932,18 @@ impl Server {
         let mut skipped = Vec::new();
         for run in targets {
             match run.status.as_str() {
-                "running" | "stopping" => {
-                    self.stop_run_process(&l, &run, "stopped");
-                    stopped.push(json!({
-                        "run_id": run.run_id, "path": format!("{}/{}", l.name, run.run_id),
-                        "status": "stopped",
-                    }));
-                }
-                "pending" => {
-                    let ev = {
-                        let mut store = self.inner.store.lock().unwrap();
-                        store.cancel_pending_run(&run.uuid).unwrap_or(0)
+                "running" | "stopping" | "pending" => {
+                    // Same dispatch as `loop rm --kill-active` (stop active / cancel pending);
+                    // the handler adds the terminal row (`canceled` for a pending run).
+                    let row_status = if run.status == "pending" {
+                        "canceled"
+                    } else {
+                        "stopped"
                     };
-                    self.publish(ev);
+                    self.stop_or_cancel_run(&l, &run, "stopped");
                     stopped.push(json!({
                         "run_id": run.run_id, "path": format!("{}/{}", l.name, run.run_id),
-                        "status": "canceled",
+                        "status": row_status,
                     }));
                 }
                 other => {
