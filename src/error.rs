@@ -123,6 +123,12 @@ impl OrcrError {
         OrcrError::new(ErrorCode::NotFound, message)
     }
 
+    /// A `not_found` carrying the §13 `details.target` (the selector that failed to resolve) so
+    /// machine clients can read `error.details.target` on the common path/uuid-not-found cases.
+    pub fn not_found_target(message: impl Into<String>, target: impl Into<Value>) -> Self {
+        OrcrError::not_found(message).with_details(json!({ "target": target.into() }))
+    }
+
     pub fn invalid_request(message: impl Into<String>, reason: &str) -> Self {
         OrcrError::new(ErrorCode::InvalidRequest, message).with_details(json!({ "reason": reason }))
     }

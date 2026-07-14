@@ -693,10 +693,10 @@ impl Server {
         let scope = self.caller_scope_full(params);
         let mut row = self.resolve_singleton(&scope, &target)?;
         if row.status == "ended" || row.status == "lost" {
-            return Err(OrcrError::not_found(format!(
-                "agent `{target}` is not active (status {})",
-                row.status
-            )));
+            return Err(OrcrError::not_found_target(
+                format!("agent `{target}` is not active (status {})", row.status),
+                target.clone(),
+            ));
         }
 
         // Route to the herdr session the pane actually lives in: an unmanaged agent's pane is
@@ -717,15 +717,18 @@ impl Server {
         if move_lock.is_some() {
             row = {
                 let store = self.inner.store.lock().unwrap();
-                store
-                    .agent_full(&row.uuid)?
-                    .ok_or_else(|| OrcrError::not_found(format!("agent `{target}` vanished")))?
+                store.agent_full(&row.uuid)?.ok_or_else(|| {
+                    OrcrError::not_found_target(
+                        format!("agent `{target}` vanished"),
+                        target.clone(),
+                    )
+                })?
             };
             if row.status == "ended" || row.status == "lost" {
-                return Err(OrcrError::not_found(format!(
-                    "agent `{target}` is not active (status {})",
-                    row.status
-                )));
+                return Err(OrcrError::not_found_target(
+                    format!("agent `{target}` is not active (status {})", row.status),
+                    target.clone(),
+                ));
             }
         }
 
@@ -792,9 +795,10 @@ impl Server {
 
         let matched = self.resolve_targets(&scope, &targets)?;
         if matched.is_empty() {
-            return Err(OrcrError::not_found(format!(
-                "no active agents matched {targets:?}"
-            )));
+            return Err(OrcrError::not_found_target(
+                format!("no active agents matched {targets:?}"),
+                json!(targets),
+            ));
         }
 
         if preview {
@@ -888,7 +892,7 @@ impl Server {
         if let Some(r) = &raw {
             let store = self.inner.store.lock().unwrap();
             let is_uuidish = r.contains('-')
-                || (is_uuid_prefix(r)
+                || (path::looks_like_uuid_selector(r)
                     && store
                         .find_by_path(&path::resolve_selector(scope.as_deref(), r)?)?
                         .is_none());
@@ -952,9 +956,10 @@ impl Server {
         // Snapshot membership: the active agents matching any target at invocation.
         let members = self.resolve_targets(&scope, &targets)?;
         if members.is_empty() {
-            return Err(OrcrError::not_found(format!(
-                "no active agents matched {targets:?}"
-            )));
+            return Err(OrcrError::not_found_target(
+                format!("no active agents matched {targets:?}"),
+                json!(targets),
+            ));
         }
         let member_uuids: Vec<String> = members.iter().map(|a| a.uuid.clone()).collect();
 
@@ -1025,6 +1030,16 @@ impl Server {
                     .with_details(json!({ "blocked_kind": kind, "uuid": uuid, "path": path })),
             );
         }
+        // The agent's OWN `--timeout` expiring (ended with exit_reason=timeout) → exit 3 (§6/§13:
+        // the `timeout` code is reserved for an agent's/run's own deadline). This can win the race
+        // against the wait's own timer when the agent's deadline kills it first — settle_of then
+        // reports reason "timeout" with timed_out=false, so we must map it here explicitly.
+        if reason == "timeout" {
+            return Err(
+                OrcrError::new(crate::error::ErrorCode::Timeout, "agent timed out")
+                    .with_details(json!({ "uuid": uuid, "path": path })),
+            );
+        }
         if waited["timed_out"].as_bool() == Some(true) {
             return Err(OrcrError::new(
                 crate::error::ErrorCode::Timeout,
@@ -1036,9 +1051,9 @@ impl Server {
         // Read the last response from the native transcript (fails loudly, §6.1).
         let text = {
             let store = self.inner.store.lock().unwrap();
-            let a = store
-                .agent_full(&uuid)?
-                .ok_or_else(|| OrcrError::not_found(format!("agent {uuid} vanished")))?;
+            let a = store.agent_full(&uuid)?.ok_or_else(|| {
+                OrcrError::not_found_target(format!("agent {uuid} vanished"), uuid.clone())
+            })?;
             drop(store);
             let loc = self.agent_transcript(&a)?;
             self.last_response_fresh(&a, &loc)?
@@ -1214,12 +1229,15 @@ impl Server {
             let tag = res.tag();
             return Ok((res.row().clone(), tag));
         }
-        if is_uuid_prefix(raw) {
+        if path::looks_like_uuid_selector(raw) {
             let a = uuid_lookup(store.find_by_uuid_or_prefix(raw)?, raw)?;
             let tag = tag_of(&a);
             return Ok((a, tag));
         }
-        Err(OrcrError::not_found(format!("no agent matched `{raw}`")))
+        Err(OrcrError::not_found_target(
+            format!("no agent matched `{raw}`"),
+            raw,
+        ))
     }
 
     /// Resolve bulk kill targets (§5.1): each target may be a pattern, a path, or a uuid.
@@ -1255,7 +1273,7 @@ impl Server {
                     if a.status != "ended" && seen.insert(a.uuid.clone()) {
                         out.push(a);
                     }
-                } else if is_uuid_prefix(raw) {
+                } else if path::looks_like_uuid_selector(raw) {
                     if let UuidLookup::Found(a) = store.find_by_uuid_or_prefix(raw)? {
                         if a.status != "ended" && seen.insert(a.uuid.clone()) {
                             out.push(*a);
@@ -1533,11 +1551,6 @@ pub(super) struct CallerContext {
     pub parent_path: Option<String>,
 }
 
-/// A uuid prefix candidate: ≥ 8 chars, all hex (§5.1).
-fn is_uuid_prefix(s: &str) -> bool {
-    s.len() >= 8 && s.chars().all(|c| c.is_ascii_hexdigit())
-}
-
 /// The shortest git-style prefix (≥ 8 chars) of `u` that no *other* candidate shares (§5.1).
 /// UUIDv7 values created in the same millisecond share their first ~12 characters, so a fixed
 /// slice would report identical, non-disambiguating prefixes; this grows the prefix until it is
@@ -1569,7 +1582,10 @@ fn uuid_lookup(lookup: UuidLookup, raw: &str) -> Result<AgentFull> {
                     .with_details(json!({ "target": raw, "candidates": prefixes })),
             )
         }
-        UuidLookup::NotFound => Err(OrcrError::not_found(format!("no agent matched `{raw}`"))),
+        UuidLookup::NotFound => Err(OrcrError::not_found_target(
+            format!("no agent matched `{raw}`"),
+            raw,
+        )),
     }
 }
 
