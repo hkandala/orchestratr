@@ -39,6 +39,8 @@ const DEFAULT_EVENT_RETENTION: i64 = 10_000;
 const ACCEPT_POLL: Duration = Duration::from_millis(50);
 /// How often a subscription pump wakes to re-check its stop flag when idle.
 const SUB_POLL: Duration = Duration::from_millis(500);
+/// Grace window on graceful stop for subscription pumps to flush `server_stopping`.
+const SUB_FLUSH_GRACE: Duration = Duration::from_millis(150);
 
 /// A shared, lockable writer over one connection's socket (responses + interleaved events).
 type SharedWriter = Arc<Mutex<UnixStream>>;
@@ -208,8 +210,10 @@ impl Server {
                 }
             }
         }
-        // Wake every subscription so each emits `server_stopping` and exits.
+        // Wake every subscription so each emits `server_stopping` and exits, then give the
+        // pump threads a brief grace window to flush that final frame before we exit.
         self.inner.bus.shutdown();
+        std::thread::sleep(SUB_FLUSH_GRACE);
     }
 
     /// Handle one client connection: read requests, dispatch, write responses; subscriptions

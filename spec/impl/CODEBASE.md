@@ -10,19 +10,25 @@ to reflect what that milestone added/changed.
 > *why* behind decisions, read the per-milestone `notes.md` files (especially the herdr
 > facts in `m0-foundations/notes.md`, which are load-bearing for the driver).
 
-Current state: **through M0 (foundations).**
+Current state: **through M1 (server & protocol).**
 
 ## Crate & binaries
 
 - Crate `orchestratr` (lib at `src/lib.rs`), edition 2021, rust 1.89, `default-run = "orcr"`.
 - Binaries: `orcr` (`src/bin/orcr.rs`) and `orcr-mock-agent` (`src/bin/orcr-mock-agent.rs`).
-- `orcr` currently exposes a hidden `__m0-selfcheck` subcommand used by the harness (no
-  user-facing verbs yet — those start in M1/M2). CLI arg parsing is minimal/hand-rolled
-  so far; `clap` will likely come in with the real verb surface (M1/M2) — add it then.
-- Deps in use (M0): `anyhow`, `thiserror` (v1), `serde`/`serde_json`, `rusqlite`
-  (bundled, WAL), `uuid` (v4 + v7), `dirs`, `libc`, `chrono` (clock+std). dev: `tempfile`.
-  Add new deps as milestones need them (tokio/socket server in M1, clap for CLI, cron/
-  chrono-tz for loops in M5, ratatui/crossterm for top in M6, etc.).
+- `orcr` runs a **clap** CLI (`src/cli.rs`): M1 wires the `server` and `api` nouns; the
+  hidden `__m0-selfcheck` subcommand is still routed before clap in `src/bin/orcr.rs`.
+  agent/loop/top nouns land in later milestones (their socket methods are already
+  registered in `src/api.rs`).
+- Deps in use (through M1): `anyhow`, `thiserror` (v1), `serde`/`serde_json`, `rusqlite`
+  (bundled, WAL), `uuid` (v4 + v7), `dirs`, `libc`, `chrono` (clock+std), `clap` (derive),
+  `signal-hook`. dev: `tempfile`, `jsonschema` (schema validity test), `assert_cmd`,
+  `predicates`. Add new deps as milestones need them (cron/chrono-tz for loops in M5,
+  ratatui/crossterm for top in M6, etc.).
+- **Server runtime is threaded/blocking, not tokio** (decided in M1 — see
+  `m1-server-protocol/notes.md`): `Mutex<Store>` single writer + one thread per connection
+  + one pump thread per subscription. orcr's own socket protocol version is
+  `wire::ORCR_PROTOCOL` (currently 1), distinct from herdr's protocol 16.
 
 ## Modules (`src/`)
 
@@ -37,13 +43,42 @@ Current state: **through M0 (foundations).**
   with a nearest-name suggestion (Levenshtein), durations require units & must be
   positive, `concurrency.max ≥ 1`, per-provider caps clamped. Defaults built in.
 - `duration.rs` — human duration parsing/formatting (`45s`, `20m`, `3h`); units required.
+- `wire.rs` — **orcr's own** socket wire protocol (§11.6): request/response/event envelopes,
+  newline-delimited JSON framing (`read_frame`/`write_frame`, `MAX_FRAME` enforced),
+  `ORCR_PROTOCOL`, `unsupported_version`. Transport-agnostic (server, client, tests share it).
+- `api.rs` — the **method registry** (single source of the socket API): `methods()` lists
+  every method (name, summary, params/result JSON-Schema fragments, `implemented`,
+  `streaming`); `schema_document()` generates the versioned `api schema`. Live in M1:
+  server.handshake/status/stop, api.schema/snapshot, events.subscribe, watch.open. All
+  agent.*/loop.* registered as stubs. Also `EVENT_KINDS`, `ERROR_CODES`.
+- `events.rs` — `EventBus` (mutex+condvar): wakeups for subscriber pumps + retention
+  bookkeeping (`oldest_retained_seq` → `cursor_expired`, `is_expired`). The durable cursor
+  is the `events` table; the bus is just the in-memory coordination layer.
+- `lock.rs` — `InstanceLock`: exclusive `flock` guard on `orcr.lock` (single-instance;
+  released on process exit, incl. `kill -9`).
+- `cli.rs` — the clap CLI: `server {start[--foreground]|stop|status|logs}`,
+  `api {schema|snapshot}`, the `--json` envelope, §13 error→exit-code mapping, TTY
+  detection (`stdout_is_tty`), log tail/follow.
+- `server/` — the single-writer server process (§4, §11.6).
+  - `mod.rs` — `run_foreground` (lock race → bind socket umask-077/lstat-validated → open
+    store → serve), the threaded accept/dispatch loop, per-connection handling,
+    subscription pumps (`events.subscribe`/`watch.open`), `server.status`/`api.snapshot`
+    builders, graceful stop (SIGTERM/SIGINT + `server.stop` → `server_stopping` frames),
+    `emit_event` (append + publish + trim). **Live handlers live here; add new method
+    handlers in `handle_request`.**
+  - `client.rs` — `Client`: connect+handshake (version-checked), one-shot `request`,
+    `open_stream`+`Subscription` for event streams, and `ensure_running` (auto-start: spawn
+    a detached `server start --foreground`, wait for readiness). `StartOutcome`.
+  - `log.rs` — `ServerLog`: JSON-per-line, size-capped rotation to `server.log.N`.
 - `store/` — sqlite (WAL), single-writer.
   - `schema.rs` — the full §12 schema (`agents`, `turns`, `attaches`, `loops`,
     `loop_runs`, `events` + all indexes incl. the partial unique path index) and a `meta`
     table stamping `schema_version` (mismatch → `store_version_mismatch` refusal).
   - `mod.rs` — the typed data-access layer; **all writes go through `BEGIN IMMEDIATE`
-    transaction helpers**. Extend this with typed row structs + query/insert/update fns
-    as milestones add behavior (agents in M2, turns in M3, loops in M5, events in M1…).
+    transaction helpers**. M1 added the events layer: `append_event`/`append_event_tx`
+    (same-txn writes for producers), `events_since`, `latest_event_seq`,
+    `oldest_event_seq`, `trim_events`, `EventRow`. Extend with typed row structs +
+    query/insert/update fns as milestones add behavior (agents in M2, turns in M3, loops in M5).
 - `driver/` — the herdr socket driver (see `m0-foundations/notes.md` for the verified
   wire facts; **the driver is the riskiest surface — trust the notes**).
   - `protocol.rs` — wire envelopes: request `{protocol,id,method,params}`; success
@@ -72,7 +107,7 @@ Current state: **through M0 (foundations).**
 
 ## Binaries
 
-- `src/bin/orcr.rs` — the CLI entrypoint (hidden `__m0-selfcheck` for now).
+- `src/bin/orcr.rs` — the entrypoint: routes `__m0-selfcheck` (hidden) else `cli::run()`.
 - `src/bin/orcr-mock-agent.rs` — the **mock provider**: a scriptable fake agent TUI that
   self-discovers its herdr pane from injected env (`HERDR_SOCKET_PATH`, `HERDR_PANE_ID`)
   and reports its own state to herdr via `pane.report_agent` (state = idle|working|
@@ -83,10 +118,14 @@ Current state: **through M0 (foundations).**
 ## Tests & the e2e harness
 
 - Unit + lightweight tests run by default (fast): `handshake.rs`, `home_config.rs`,
-  in-crate `#[cfg(test)]` modules.
+  `server_protocol.rs` (M1 acceptance — no herdr needed), in-crate `#[cfg(test)]` modules.
+- `tests/server_protocol.rs` spawns the real `orcr` binary over a throwaway `ORCR_HOME` to
+  prove: the auto-start race → one server; `kill -9` → clean restart + intact store;
+  `api schema` is valid JSON Schema with 100% method coverage; subscription replay/live has
+  no gaps/dups and `cursor_expired` → re-snapshot; `server logs --follow` streams live.
 - **e2e tests are gated behind `ORCR_E2E=1`** (so `cargo test` stays fast). Run them
   with `ORCR_E2E=1 cargo test --test e2e`. They exercise real behavior against **live
-  herdr** using the mock provider.
+  herdr** using the mock provider (incl. M1's `server.status` herdr-reachability check).
 - `tests/conformance_live.rs` diffs the pinned driver contract against live
   `herdr api schema` (guards herdr version drift).
 - **e2e safety pattern (MANDATORY, reuse it):** each e2e test creates a throwaway
@@ -116,4 +155,10 @@ Current state: **through M0 (foundations).**
 - New herdr op → add typed params/result in `driver/protocol.rs`, a method in
   `driver/mod.rs`, and pin it in `driver/contract.rs` + the conformance fixture.
 - New provider integration → `driver/integration.rs` (both-layers-required per §11.4).
+- New socket method → register it in `src/api.rs` `methods()` (params/result schema,
+  `implemented`) and add its live handler in `server/mod.rs` `handle_request` (flip the
+  stub). The CLI verb in `src/cli.rs` calls it via `Client::request`/`open_stream`.
+- New event kind → add to `EVENT_KINDS` in `src/api.rs`; producers write it with
+  `store::append_event_tx` in the same txn as the change, then `Server::emit_event`
+  publishes + trims (or call `emit_event` directly for out-of-txn cases).
 - New e2e → copy the disposable-home + disposable-session harness in `tests/`.

@@ -263,6 +263,35 @@ fn subscription_replay_live_and_cursor_expired() {
     th.stop_server();
 }
 
+// --- Graceful stop closes open subscriptions with a server_stopping frame ---
+
+#[test]
+fn graceful_stop_sends_server_stopping_to_subscribers() {
+    let th = TestHome::new();
+    th.start_server(&[]);
+    let client = th.client();
+
+    let (_init, mut sub) = client
+        .open_stream("watch.open", json!({}))
+        .expect("watch.open");
+    sub.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+
+    // Stop the server on another connection; the subscriber should get server_stopping.
+    let _ = client.request("server.stop", json!({}));
+
+    let mut saw_stopping = false;
+    while let Ok(Some(ev)) = sub.next_event() {
+        if ev["event"]["kind"] == "server_stopping" {
+            saw_stopping = true;
+            break;
+        }
+    }
+    assert!(
+        saw_stopping,
+        "subscription should receive server_stopping on graceful stop"
+    );
+}
+
 // --- Acceptance: server logs --follow streams live writes ---
 
 #[test]
