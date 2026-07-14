@@ -3114,6 +3114,67 @@ mod tests {
     }
 
     #[test]
+    fn settle_primed_idle_is_guarded_on_starting() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.enqueue_agent(&NewAgent::queued("u1", "w/a", "mock"))
+            .unwrap();
+        s.promote_queued(10, &caps(10), now_millis()).unwrap(); // → starting
+        assert_eq!(s.agent_full("u1").unwrap().unwrap().status, "starting");
+        // From `starting`, settle succeeds and stamps the idle clock.
+        assert!(s.settle_primed_idle("u1", now_millis()).unwrap().is_some());
+        let a = s.agent_full("u1").unwrap().unwrap();
+        assert_eq!(a.status, "idle");
+        assert!(a.idle_since.is_some());
+        // Not `starting` any more → a second settle is a no-op (returns None).
+        assert!(s.settle_primed_idle("u1", now_millis()).unwrap().is_none());
+        // A concurrently-ended row is never revived to `idle` by the spawn pipeline's settle.
+        s.enqueue_agent(&NewAgent::queued("u2", "w/b", "mock"))
+            .unwrap();
+        s.promote_queued(10, &caps(10), now_millis()).unwrap();
+        s.transition_status("u2", "ended", Some("canceled"))
+            .unwrap();
+        assert!(s.settle_primed_idle("u2", now_millis()).unwrap().is_none());
+        assert_eq!(s.agent_full("u2").unwrap().unwrap().status, "ended");
+    }
+
+    #[test]
+    fn status_counts_reports_managed_and_unmanaged() {
+        let mut s = Store::open_in_memory().unwrap();
+        // Two managed: one queued, one working.
+        s.enqueue_agent(&NewAgent::queued("m1", "w/q", "mock"))
+            .unwrap();
+        s.enqueue_agent(&NewAgent::queued("m2", "w/w", "mock"))
+            .unwrap();
+        s.record_location("m2", "orcr", "t2", "w1:p2").unwrap();
+        s.deliver_input("m2", "orcr", now_millis())
+            .unwrap()
+            .unwrap(); // → working
+                       // One unmanaged active + one ended (excluded from every count).
+        s.insert_unmanaged(
+            "un1",
+            "unmanaged/x/y",
+            "default",
+            "termu",
+            "wU:pU",
+            Some("claude"),
+            "idle",
+            None,
+        )
+        .unwrap();
+        s.enqueue_agent(&NewAgent::queued("m3", "w/e", "mock"))
+            .unwrap();
+        s.transition_status("m3", "ended", Some("completed"))
+            .unwrap();
+        let c = s.status_counts().unwrap();
+        assert_eq!(
+            c.live, 2,
+            "m1(queued)+m2(working) are managed-live; m3 ended excluded"
+        );
+        assert_eq!(c.queued, 1, "only m1");
+        assert_eq!(c.unmanaged, 1, "un1 active; ended excluded");
+    }
+
+    #[test]
     fn stuck_starting_only_targets_paneless() {
         let mut s = Store::open_in_memory().unwrap();
         s.enqueue_agent(&NewAgent::queued("u1", "w/a", "claude"))
