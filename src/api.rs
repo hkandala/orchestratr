@@ -6,6 +6,7 @@
 //! from this registry — never hand-written — so the CLI, the TS SDK, and any other client
 //! derive from one source and cannot drift.
 
+use crate::error::ErrorCode;
 use crate::wire::ORCR_PROTOCOL;
 use serde_json::{json, Value};
 
@@ -36,7 +37,8 @@ pub const EVENT_KINDS: &[&str] = &[
     "agent.response_captured",
     "agent.location_changed",
     "agent.ended",
-    "queue.changed",
+    // Queue membership is derived by subscribers from agent.created / agent.ended /
+    // queue.promoted — there is no separate queue.changed event.
     "queue.promoted",
     "attach.started",
     "attach.ended",
@@ -55,18 +57,14 @@ pub const EVENT_KINDS: &[&str] = &[
     "server_stopping",
 ];
 
-/// The stable error codes (spec §13) with their process exit codes, for the schema.
-pub const ERROR_CODES: &[(&str, i32)] = &[
-    ("not_found", 6),
-    ("invalid_request", 1),
-    ("state_conflict", 7),
-    ("blocked", 4),
-    ("timeout", 3),
-    ("integration_missing", 2),
-    ("transcript_unavailable", 1),
-    ("environment_error", 2),
-    ("server_error", 1),
-];
+/// The stable error codes (spec §13) with their process exit codes, for the schema. Derived
+/// from [`ErrorCode`] so the wire strings and exit codes have a single source of truth.
+pub fn error_codes() -> Vec<(&'static str, i32)> {
+    ErrorCode::ALL
+        .iter()
+        .map(|c| (c.as_str(), c.exit_code()))
+        .collect()
+}
 
 /// A permissive object schema (any properties allowed) — used where a shape is not yet
 /// nailed down (stub methods land their real schemas with their handlers).
@@ -446,7 +444,7 @@ pub fn schema_document() -> Value {
         );
     }
 
-    let error_codes: Vec<Value> = ERROR_CODES
+    let error_codes: Vec<Value> = error_codes()
         .iter()
         .map(|(code, exit)| json!({ "code": code, "exit": exit }))
         .collect();
@@ -552,7 +550,20 @@ mod tests {
         assert_eq!(doc["events"].as_object().unwrap().len(), EVENT_KINDS.len());
         assert_eq!(
             doc["errorCodes"].as_array().unwrap().len(),
-            ERROR_CODES.len()
+            error_codes().len()
         );
+    }
+
+    #[test]
+    fn error_codes_match_error_module() {
+        // The schema table is derived from ErrorCode, so every entry must agree with the
+        // canonical exit_code() mapping in error.rs.
+        for (code, exit) in error_codes() {
+            let ec = ErrorCode::ALL
+                .iter()
+                .find(|c| c.as_str() == code)
+                .unwrap_or_else(|| panic!("{code} not in ErrorCode::ALL"));
+            assert_eq!(ec.exit_code(), exit, "exit code mismatch for {code}");
+        }
     }
 }

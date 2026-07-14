@@ -61,7 +61,6 @@ export const EVENT_KINDS = [
   "loop_run.ended",
   "loop_run.started",
   "loop_run.stopping",
-  "queue.changed",
   "queue.promoted",
   "server_stopping"
 ] as const;
