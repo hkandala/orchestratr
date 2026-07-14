@@ -81,7 +81,9 @@ Current state: **through M3 (completion & logs).**
     polls the owned session's herdr `agent.list` and drives each monitorable agent's turn
     state machine — verified idle (working-after-delivery or fast-turn grace → stable idle →
     transcript settled → `working→idle`), external-turn detection (herdr `working` with no
-    open turn → synthetic `source=external` turn), blocked tracking, transcript capture, and
+    open turn → synthetic `source=external` turn), blocked tracking (a stale `blocked` from a
+    prior turn never re-blocks a freshly re-armed turn — same working-seen/grace guard as idle),
+    transcript capture, and
     `gc immediate` teardown (`working→ended(completed)` with no transient public idle). Also
     `agent_transcript` (locate via the provider adapter). Reads tuning from `driver::tuning_for`.
   - `engine.rs` — **the M2 agent engine + M3 wait/ask/logs**: the owned-session driver (`owned_driver`,

@@ -88,6 +88,14 @@ and deviations*, not a play-by-play.
 - **`blocked_kind` classification is coarse best-effort** (from any pane title/name text →
   login|limit|question|unknown); herdr exposes no structured reason (§5.6, detailed
   per-provider parsing is future work §17). The mock's blocked turns classify as `unknown`.
+- **A stale `blocked` report never re-blocks a freshly re-armed turn.** The completion
+  monitor's Blocked branch only records `blocked` for an open turn once that turn is
+  genuinely active — `working_seen_at` is set OR the fast-turn grace window has elapsed
+  since delivery. Immediately after `send`, herdr still reports the pane as `blocked` from
+  the previous turn (the provider hasn't read the new input yet); acting on it would
+  re-block the just-re-armed turn and, if the new (fast) turn's `working` transition fell
+  between monitor ticks, leave the agent stuck at `blocked`. This mirrors the idle branch's
+  guard against a stale idle satisfying a newer send (§5.6). (Scribe-round fix.)
 
 ## Discovered facts / gotchas
 
@@ -131,3 +139,19 @@ and deviations*, not a play-by-play.
   `e2e_two_sends_no_stale_idle` is now deterministically green (5/5 focused runs + a full
   suite run, all under load). A leaked `orcr_test_*` session from an earlier interrupted run
   was stopped+deleted; the user's `default` session was never touched.
+- **Scribe — finalization + final green check** (2026-07-13, on `main`, clean tree). During
+  the final live-e2e gate `e2e_blocked_then_send_clears` failed intermittently (~1-in-2:
+  agent stuck at `blocked:unknown` instead of `turn_complete` after `send`). Root cause: the
+  completion monitor's Blocked branch acted on a **stale** herdr `blocked` report belonging to
+  the *previous* turn right after `send` re-armed to `working` — the provider hadn't yet read
+  the new input. If the fast (`@turn_ms=0`) re-armed turn's `working` transition then fell
+  between 200 ms monitor ticks, the agent stayed stuck at `blocked` and `wait` settled on it.
+  Fixed in `7af3376`: the Blocked branch now suppresses a report on an open turn until the
+  turn is genuinely active (`working_seen_at` set OR fast-turn grace elapsed since delivery),
+  mirroring the idle branch's stale-idle guard. Verified: `e2e_blocked_then_send_clears` 5/5
+  focused runs green, full `completion_e2e` 8/8, `agent_e2e` 9/9, `conformance_live` 1/1,
+  `e2e` 5/5 — all against live herdr 0.7.2 with the mock provider. Final gates: `cargo build`
+  ok; `cargo fmt --check` ok; `cargo clippy --all-targets -- -D warnings` clean (0 warnings);
+  `cargo test` green (111 lib unit + `handshake` 2 + `home_config` 2 + `server_protocol` 6 +
+  the e2e suites' skip paths). Post-run `herdr session list` shows only the untouched
+  `default` session; no `--foreground` orphans. **M3 green.**
