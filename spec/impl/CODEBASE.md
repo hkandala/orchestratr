@@ -10,7 +10,8 @@ to reflect what that milestone added/changed.
 > *why* behind decisions, read the per-milestone `notes.md` files (especially the herdr
 > facts in `m0-foundations/notes.md`, which are load-bearing for the driver).
 
-Current state: **through M7 (SDK & skill).**
+Current state: **through M7 (SDK & skill)** + the comprehensive spec-vs-impl review phase
+(consolidating-verifier changes are logged in `spec/impl/review-phase-notes.md`).
 
 ## Crate & binaries
 
@@ -182,7 +183,9 @@ Current state: **through M7 (SDK & skill).**
     table stamping `schema_version` (mismatch → `store_version_mismatch` refusal).
   - `mod.rs` — the typed data-access layer; **all writes go through `BEGIN IMMEDIATE`
     transaction helpers**. M1 events layer: `append_event`/`append_event_tx`, `events_since`,
-    `latest/oldest_event_seq`, `trim_events`. **M2 agent DAL**: `enqueue_agent` (durable row +
+    `latest/oldest_event_seq`, `trim_events`. Also `status_counts()`→`StatusCounts` (typed fleet
+    counts for `server status`; the public raw-`conn()` accessor was removed in the review phase
+    so nothing bypasses the DAL). **M2 agent DAL**: `enqueue_agent` (durable row +
     `queue_seq` + `deadline_at` from `--timeout` + `agent.created`, path-in-use →
     `state_conflict`), `promote_queued` (FIFO
     global+per-provider promotion in one txn), `agent_full`/`AgentFull`, resolution
@@ -191,7 +194,9 @@ Current state: **through M7 (SDK & skill).**
     `request_cancel`/`is_cancel_requested`, `list_agents`
     (`AgentFilter`; glob applied in Rust, never SQL LIKE), `queue_position`, `stuck_starting`,
     `active_managed_agents`. **M3 turn/completion DAL**: `latest_turn`/`TurnRow`, `deliver_input`
-    (bump input_seq + open turn + re-arm working), `open_external_turn`, `set_working_seen`,
+    (bump input_seq + open turn + re-arm working; **guarded `status NOT IN ('ended','lost')` →
+    returns `Option` so a concurrent kill can't revive an ended row, §5.6**), `settle_primed_idle`
+    (guarded `starting`→idle for the no-prompt spawn branch), `open_external_turn`, `set_working_seen`,
     `set_idle_since`, `complete_turn` (→idle) / `complete_turn_row` (gc-immediate, no status flip),
     `mark_blocked`/`mark_working`, `record_capture`, `monitorable_agents`; `AgentFull` gained
     `idle_since`. **M4 GC/attach/reconcile/unmanaged DAL**: `park_candidates`/`reap_candidates`/
