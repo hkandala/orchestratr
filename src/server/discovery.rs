@@ -23,8 +23,13 @@ use std::time::Duration;
 const DISCOVERY_TICK: Duration = Duration::from_secs(3);
 
 impl Server {
-    /// Start the unmanaged-discovery poller (spec §5.7).
+    /// Start the unmanaged-discovery poller (spec §5.7). `ORCR_DISABLE_DISCOVERY=1` suppresses
+    /// it — used by tests that assert an exact event stream and must not pull in the developer's
+    /// real, non-owned herdr sessions.
     pub(super) fn start_unmanaged_discovery(&self) {
+        if std::env::var("ORCR_DISABLE_DISCOVERY").as_deref() == Ok("1") {
+            return;
+        }
         let server = self.clone();
         std::thread::spawn(move || {
             while !server.inner.shutdown.load(Ordering::SeqCst) {

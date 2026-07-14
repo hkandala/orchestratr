@@ -39,6 +39,9 @@ impl TestHome {
         let mut cmd = Command::new(orcr_bin());
         cmd.args(args)
             .env("ORCR_HOME", self.dir.path())
+            // These protocol tests assert an exact event stream; keep unmanaged discovery from
+            // pulling the developer's real (non-owned) herdr sessions into the store.
+            .env("ORCR_DISABLE_DISCOVERY", "1")
             .stdin(Stdio::null());
         for (k, v) in env {
             cmd.env(k, v);

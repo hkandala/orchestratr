@@ -319,11 +319,12 @@ impl Server {
     /// that belong to an in-flight spawn (by tab label in the home workspace) are closed so
     /// no duplicate survives; rows whose pane vanished are failed/lost.
     pub(super) fn reconcile_on_start(&self) {
-        // Conservative re-arm: forget any pre-crash idle streak so completion re-measures
-        // stable idle from a fresh transition (§5.6 restart safety).
+        // Conservative re-arm: forget any pre-crash idle streak for mid-turn agents so
+        // completion re-measures from a fresh transition, and restart the park clock for
+        // already-idle agents so GC still parks them after a restart (§5.6, §5.4).
         {
             let mut store = self.inner.store.lock().unwrap();
-            let _ = store.clear_active_idle_since();
+            let _ = store.rearm_idle_clocks_on_restart();
         }
         let agents = {
             let store = self.inner.store.lock().unwrap();
@@ -343,6 +344,11 @@ impl Server {
         };
         let panes = driver.pane_list(None).unwrap_or_default();
         for a in agents {
+            // Agents with a move in flight are settled by terminal_id in move recovery below —
+            // the pane-id confirm pass would wrongly see a just-moved pane as vanished (§11.5).
+            if a.move_state != "none" {
+                continue;
+            }
             self.reconcile_agent(&driver, &panes, &a);
         }
         // Recover any half-done park/un-park moves + refresh drift (spec §11.5). Lost

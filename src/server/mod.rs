@@ -410,6 +410,22 @@ impl Server {
                 self.start_subscription(&req, writer, sub_stops, true);
                 false
             }
+            "__debug.delete_agent" if self.inner.debug_methods => {
+                let uuid = req
+                    .params
+                    .get("uuid")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let out = {
+                    let mut store = self.inner.store.lock().unwrap();
+                    store.debug_delete_agent(uuid)
+                };
+                let _ = write_to(
+                    writer,
+                    &respond(&req.id, out.map(|_| json!({ "deleted": true }))),
+                );
+                false
+            }
             "__debug.emit_event" if self.inner.debug_methods => {
                 let kind = req
                     .params

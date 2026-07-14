@@ -74,6 +74,7 @@ impl TestServer {
             .args(["server", "start"])
             .env("ORCR_HOME", self.home.path())
             .env("ORCR_ALLOW_MOCK_PROVIDER", "1")
+            .env("ORCR_DISABLE_DISCOVERY", "1")
             .env("ORCR_MOCK_AGENT_BIN", mock_agent_bin())
             .stdin(Stdio::null())
             .output()

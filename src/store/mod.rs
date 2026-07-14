@@ -981,15 +981,24 @@ impl Store {
         Ok(rows)
     }
 
-    /// Conservative restart re-arm (spec §5.6): clear `idle_since` for all active managed
-    /// agents so the stable-idle completion timer is re-measured from a **fresh** herdr
-    /// transition after a restart, never trusting a pre-crash idle streak.
-    pub fn clear_active_idle_since(&mut self) -> Result<()> {
+    /// Conservative restart re-arm (spec §5.6, §5.4): for agents mid-turn (`working`/`blocked`)
+    /// clear `idle_since` so the stable-idle completion timer re-measures from a **fresh** herdr
+    /// transition, never trusting a pre-crash idle streak. For already-`idle` (turn-complete)
+    /// agents, **restart the park clock** from now — otherwise a turn-complete agent that
+    /// survived a restart would never become a park candidate again (its idle streak has no open
+    /// turn for the monitor to re-set). `parked` agents keep their `parked_at` reap clock.
+    pub fn rearm_idle_clocks_on_restart(&mut self) -> Result<()> {
+        let now = now_millis();
         self.with_immediate_tx(|tx| {
             tx.execute(
                 "UPDATE agents SET idle_since=NULL WHERE managed=1 \
-                 AND status IN ('working','idle','blocked','parked')",
+                 AND status IN ('working','blocked')",
                 [],
+            )
+            .map_err(map_sqlite)?;
+            tx.execute(
+                "UPDATE agents SET idle_since=?1 WHERE managed=1 AND status='idle'",
+                [now],
             )
             .map_err(map_sqlite)?;
             Ok(())
@@ -1637,6 +1646,22 @@ impl Store {
     /// Direct read access for later milestones / tests.
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Delete an agent row and its turn/attach bookkeeping (test-only, behind the debug
+    /// method gate). Simulates the store being reset under a live pane — the
+    /// unknown-marked-pane reconciliation drill (spec §11.5).
+    pub fn debug_delete_agent(&mut self, uuid: &str) -> Result<()> {
+        let uuid = uuid.to_string();
+        self.with_immediate_tx(|tx| {
+            tx.execute("DELETE FROM turns WHERE agent_uuid=?1", [&uuid])
+                .map_err(map_sqlite)?;
+            tx.execute("DELETE FROM attaches WHERE agent_uuid=?1", [&uuid])
+                .map_err(map_sqlite)?;
+            tx.execute("DELETE FROM agents WHERE uuid=?1", [&uuid])
+                .map_err(map_sqlite)?;
+            Ok(())
+        })
     }
 }
 
