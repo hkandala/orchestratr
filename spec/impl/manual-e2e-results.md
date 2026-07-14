@@ -31,7 +31,7 @@ check result too.
 | id | title | provider | priority | result | exit | notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | E01 | `agent ask` real claude (known-issue #2 repro→fix) | claude | critical | **FIXED** (orcr root causes) | — | Two orcr root causes found + fixed: (1) premature gc-immediate teardown (`transcript_unavailable`), (2) dropped submitting Enter (prompt never submitted). Both verified against real claude. Residual `ask` blocker on THIS box is environmental (enterprise claude writes no locatable native transcript for herdr panes), not an orcr bug. See fixer note below. |
-| E02 | `agent ask` real codex | codex | critical | _pending_ | | |
+| E02 | `agent ask` real codex | codex | critical | **FAIL** (env-driven; not an orcr logic bug) | 3 (`timeout`) | Both runs timed out at 3m → killed (`exit_reason: timeout`). Root cause: on this enterprise box codex writes a rollout and emits `task_complete` but with `last_agent_message: null` and **no** assistant `output_text` — an empty-response turn. orcr located the rollout via the identity gate (session captured, `idle_since` set), but the gc-immediate readable-response gate (known-issue #2 fix) correctly refuses to complete/teardown a turn with no readable final response, so `ask` hangs to `--timeout`. `--json`: `{"error":{"code":"timeout","details":{"path,uuid}}}`. See detailed finding below. |
 | E03 | claude lifecycle run→wait→logs→send→wait | claude | high | _pending_ | | |
 | E04 | codex lifecycle run→send→logs→kill | codex | high | _pending_ | | |
 | E05 | claude logs --tail/--follow/--last-response freshness | claude | high | _pending_ | | |
@@ -130,6 +130,57 @@ causes** behind the reported `transcript_unavailable`, plus one **environment** 
 
 Suites kept green with the mock against live herdr: `completion_e2e` (10), `agent_e2e` (10),
 `recipe_e2e` (8); `cargo test --lib` (164); `cargo clippy -D warnings` + `cargo fmt` clean.
+
+### E02 — `agent ask` against a REAL codex — **FAIL** (severity: CRITICAL; env-driven, not an orcr logic bug)
+
+Executed 2026-07-14 on darwin (Darwin 25.5.0), git `main` @ `7176491`, live herdr, real codex
+(`/usr/local/bin/codex`). Throwaway `ORCR_HOME=/tmp/orcr_e2e.QSWDjq`, disposable session
+`orcr_e2e_e9bc4182`. Leak check: **no leak** (session stopped + deleted; server stopped).
+
+**Observed vs expected**
+
+- **Expected:** stdout prints codex's final response (contains `PONG`); exit 0; `--json` →
+  `{"ok":true,"result":{uuid,path,response:{text,final}}}`; ended `exit_reason: completed`; the
+  codex adapter locates `~/.codex/sessions/**/rollout-*-<session_id>.jsonl` via the identity gate.
+- **Actual (both the plain and `--json` run):** `ask` timed out after ~180s and orcr killed the
+  agent.
+  - Step 2 (plain): `error: timeout: ask timed out waiting for completion ({"path":"quick_check","uuid":"019f628b-…"})`, **exit 3**, elapsed 181s.
+  - Step 3 (`--json`): `{"error":{"code":"timeout","details":{"path":"quick_check2","uuid":"019f628f-…"},"message":"ask timed out waiting for completion"},"ok":false}`, **exit 3**, elapsed 180s.
+  - `agent ls --all --json`: both rows ended with `exit_reason: "timeout"` (NOT `completed`);
+    `idle_since` was set ~12s after `created_at` (herdr *did* report idle).
+  - `server logs`: `agent quick_check working (pane w2:p2)` → `--timeout expired for quick_check — killing`. No `turn … complete` line was ever logged.
+
+**Root cause (env-driven).** The codex rollout files were located and inspected:
+`~/.codex/sessions/2026/07/14/rollout-2026-07-14T14-32-14-019f628b-745f-….jsonl` (and the step-3
+twin). Both contain `session_meta`, the delivered user prompt, and an `event_msg` `task_complete`
+— i.e. codex *did* run and finish the turn — but with **`last_agent_message: null`** and **no
+`response_item` message with an assistant `output_text` block** (verified by parsing both files:
+`has_assistant_msg = False`). This enterprise codex produced an **empty-response turn**.
+
+orcr's transcript adapter located the rollout via the identity gate (session captured, not
+cwd-mtime; `idle_since` progressed). But completion under `gc immediate` is gated on the final
+response being **verifiably readable** from the native transcript (`completion.rs::complete` →
+`last_response`, the known-issue #2 fix): `last_response` requires a non-empty assistant text
+entry and returns `transcript_unavailable{cause:"no_final_response"}` when there is none. With no
+assistant message, the readable gate is never satisfied, the turn is never marked complete, the
+public status stays `working`, and `ask` blocks until `--timeout` (3m) → orcr kills the agent
+(`exit_reason: timeout`, exit 3).
+
+**Assessment.** Not a newly-discovered orcr logic defect for this input — given a transcript with
+no assistant response, refusing to complete/teardown is the spec-correct known-issue #2 behavior,
+and the `--timeout` → loud `timeout` (exit 3) is the intended failure surface. This is the codex
+analogue of E01/ENV-1: the enterprise provider does not yield a usable final response on this box
+(claude persists no transcript at all; codex persists a transcript but with an empty response).
+Confirmed by the E01 note ("codex may differ") — codex *does* differ (it writes a locatable
+rollout), yet the end-to-end outcome is the same FAIL: `ask` cannot return text.
+
+**Latent design gap worth a follow-up (not fixed here).** An *empty-response* turn — herdr idle +
+codex `task_complete` + settled transcript but zero assistant text — never settles in orcr and can
+only ever surface as `--timeout`, under **any** gc mode (non-immediate would likewise have no
+response to report and the turn would sit `working`). If empty final responses are a legitimate
+provider outcome (vs. purely an enterprise-wrapper artifact), consider a spec/design path for
+"turn completed with empty response" so `ask`/`wait` settle deterministically instead of hanging.
+Recorded as an observation; per this phase's scope no code was changed for E02.
 
 ## Issues filed
 
