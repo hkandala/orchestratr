@@ -172,6 +172,31 @@ spec/
   the server (§11.6) — choose `tokio` or a threaded blocking model; record the choice
   in m1 notes.
 
+## 7.6 · Comprehensive spec-vs-impl review (after M7, before manual e2e)
+
+Once all milestones M0–M7 pass, run one whole-repo review pass before the manual-e2e
+phase:
+
+- **≥5 parallel dimension reviewers**, each reading the FULL spec and reviewing a
+  distinct aspect against the implementation. Dimensions: (1) **simplicity & anti-slop**
+  — minimal, tidy code; remove unnecessary complexity/abstraction/dead code/duplication
+  (a first-class focus); (2) CLI + `--json` shapes + error enum + exit codes (§6, §13);
+  (3) core semantics (§5 — identity/paths/globs, queue/concurrency, status &
+  completion, GC, managed vs unmanaged); (4) execution/store/protocol/loops (§11, §12);
+  (5) correctness, concurrency, transaction/crash-safety, edge cases (§15); (6)
+  SDK/skill/scaffold/recipes alignment + test quality (§8, §10, §6.6, §9). Reviewers
+  work statically (read code + spec; they do NOT run cargo, to avoid build-dir
+  contention) and report findings.
+- **Review→revise loop repeats until every dimension is clean** (all findings from a
+  round are fixed by a reviser before the next round of parallel reviews; loop until a
+  round surfaces nothing, or a bounded cap).
+- Then **one consolidating verifier** runs the entire suite (unit + e2e against live
+  herdr + mock), `clippy`, `fmt`, compares the full spec against the impl, **adds any
+  missing unit/e2e tests**, fixes anything the new tests expose, and gives a final PASS
+  only when everything is green and coverage looks complete.
+
+Only after that PASS does the manual-e2e phase begin.
+
 ## 8 · Final phase — manual end-to-end testing
 
 After M7 passes, a dedicated subagent:
