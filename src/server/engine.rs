@@ -9,7 +9,10 @@
 
 use super::params::{str_array_param, str_param};
 use super::{agent_row_json, Server};
-use crate::driver::{ensure_supported, launch_plan, AgentStartParams, HerdrBinary, HerdrDriver};
+use crate::driver::{
+    ensure_supported, launch_plan, tuning_for, AgentStartParams, AgentStatus, HerdrBinary,
+    HerdrDriver,
+};
 use crate::error::{OrcrError, Result};
 use crate::path::{self, NameOrPath};
 use crate::store::{now_millis, AgentFilter, AgentFull, NewAgent, Store, UuidLookup};
@@ -24,6 +27,8 @@ use std::time::Duration;
 const QUEUE_TICK: Duration = Duration::from_millis(200);
 /// Delay between `send_text` and the submitting `Enter` (the two-call rule, §5.6).
 const ENTER_DELAY: Duration = Duration::from_millis(1000);
+/// Interval between submit-confirmation polls / Enter re-sends (§5.6, known-issues #2).
+const SUBMIT_POLL: Duration = Duration::from_millis(400);
 /// How long to poll for herdr to report the `agent_session` transcript pointer (§11.1).
 const SESSION_POLL: Duration = Duration::from_millis(3000);
 
@@ -313,6 +318,8 @@ impl Server {
             driver.pane_send_text(&info.pane_id, prompt)?;
             std::thread::sleep(ENTER_DELAY);
             driver.pane_send_keys(&info.pane_id, &["Enter"])?;
+            // Confirm the first prompt actually submitted (real-provider boot race, §5.6).
+            self.confirm_submit(&driver, &info.pane_id, &payload.provider);
             "working"
         } else {
             // No prompt: the agent is primed and waiting for input, not processing. Settle it to
@@ -378,6 +385,56 @@ impl Server {
             }
             std::thread::sleep(Duration::from_millis(150));
         }
+    }
+
+    /// Confirm a just-delivered prompt was actually submitted, re-sending the `Enter` until the
+    /// pane's herdr agent leaves `idle` (a turn is underway) or `submit_confirm_ms` elapses (spec
+    /// §5.6, known-issues #2).
+    ///
+    /// Real-provider TUIs (claude) can silently drop the submitting `Enter` when it lands before
+    /// the TUI is fully interactive (the boot race behind the manual-e2e `agent ask` failure): the
+    /// prompt then sits unsubmitted in the input box, the agent never works, and `wait`/`ask` hang
+    /// or (pre-fix) tear down into `transcript_unavailable`. A redundant `Enter` on an already
+    /// -submitted (working) or empty box is a verified no-op, so re-sending never double-delivers.
+    /// Providers with reliable line-based delivery (the mock, `submit_confirm_ms == 0`) skip this.
+    fn confirm_submit(&self, driver: &HerdrDriver, pane_id: &str, provider: &str) {
+        let tuning = tuning_for(provider, &self.inner.config.integrations);
+        if tuning.submit_confirm_ms == 0 {
+            return;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_millis(tuning.submit_confirm_ms);
+        loop {
+            std::thread::sleep(SUBMIT_POLL);
+            if self.pane_submitted(driver, pane_id) {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                self.log().warn(format!(
+                    "submit-confirm: pane {pane_id} still idle after {}ms — prompt may not have \
+                     been accepted by the provider TUI",
+                    tuning.submit_confirm_ms
+                ));
+                return;
+            }
+            let _ = driver.pane_send_keys(pane_id, &["Enter"]);
+        }
+    }
+
+    /// True once the pane's herdr agent reports a non-idle state (working/blocked/done) — the
+    /// prompt was accepted and a turn is (or was) underway. `idle`/`unknown` (or an unreadable
+    /// pane) means not-yet-submitted.
+    fn pane_submitted(&self, driver: &HerdrDriver, pane_id: &str) -> bool {
+        driver
+            .agent_list()
+            .ok()
+            .and_then(|list| list.into_iter().find(|a| a.pane_id == pane_id))
+            .map(|a| {
+                matches!(
+                    a.agent_status,
+                    AgentStatus::Working | AgentStatus::Blocked | AgentStatus::Done
+                )
+            })
+            .unwrap_or(false)
     }
 
     /// Bail out of the pipeline if cancellation was requested; close the pane first when one
@@ -800,6 +857,12 @@ impl Server {
         driver.pane_send_text(&pane_id, &prompt)?;
         std::thread::sleep(ENTER_DELAY);
         driver.pane_send_keys(&pane_id, &["Enter"])?;
+        // Confirm the send actually submitted for a managed real-provider agent (§5.6,
+        // known-issues #2). Unmanaged agents live in a foreign session and orcr doesn't drive
+        // their input epochs, so it doesn't re-send into them.
+        if row.managed {
+            self.confirm_submit(&driver, &pane_id, row.agent.as_deref().unwrap_or_default());
+        }
         Ok(json!({
             "uuid": row.uuid,
             "path": row.path,

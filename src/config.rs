@@ -36,6 +36,7 @@ pub struct IntegrationTuning {
     pub transcript_settle_ms: Option<u64>,
     pub transcript_freshness_timeout_ms: Option<u64>,
     pub shutdown_grace_ms: Option<u64>,
+    pub submit_confirm_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -363,6 +364,7 @@ fn parse_integrations(
         "transcript_settle_ms",
         "transcript_freshness_timeout_ms",
         "shutdown_grace_ms",
+        "submit_confirm_ms",
     ];
     for (provider, pv) in obj {
         let pobj = section_obj(pv, &format!("integrations.{provider}"))?;
@@ -381,6 +383,7 @@ fn parse_integrations(
                 transcript_settle_ms: ms("transcript_settle_ms")?,
                 transcript_freshness_timeout_ms: ms("transcript_freshness_timeout_ms")?,
                 shutdown_grace_ms: ms("shutdown_grace_ms")?,
+                submit_confirm_ms: ms("submit_confirm_ms")?,
             },
         );
     }

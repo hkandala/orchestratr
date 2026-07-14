@@ -28,6 +28,12 @@ pub struct TuningParams {
     pub transcript_freshness_timeout_ms: u64,
     /// Grace after the graceful-shutdown recipe before the pane is force-closed.
     pub shutdown_grace_ms: u64,
+    /// After the two-call delivery, keep re-sending the submitting Enter for up to this long
+    /// until the pane leaves `idle` (submitted). Real-provider TUIs (claude) can drop the first
+    /// Enter if it lands before the TUI is interactive (boot race), leaving the prompt
+    /// unsubmitted so the agent never works (known-issues #2). `0` disables it (the mock, whose
+    /// line-based stdin accepts the first Enter reliably).
+    pub submit_confirm_ms: u64,
 }
 
 impl TuningParams {
@@ -42,6 +48,7 @@ impl TuningParams {
                 transcript_settle_ms: 0,
                 transcript_freshness_timeout_ms: 3000,
                 shutdown_grace_ms: 400,
+                submit_confirm_ms: 0,
             },
             _ => TuningParams {
                 fast_turn_grace_ms: 2500,
@@ -49,6 +56,7 @@ impl TuningParams {
                 transcript_settle_ms: 1500,
                 transcript_freshness_timeout_ms: 15000,
                 shutdown_grace_ms: 5000,
+                submit_confirm_ms: 8000,
             },
         }
     }
@@ -68,6 +76,9 @@ impl TuningParams {
         }
         if let Some(v) = o.shutdown_grace_ms {
             self.shutdown_grace_ms = v;
+        }
+        if let Some(v) = o.submit_confirm_ms {
+            self.submit_confirm_ms = v;
         }
     }
 }
