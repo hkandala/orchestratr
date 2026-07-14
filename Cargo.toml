@@ -29,6 +29,8 @@ uuid = { version = "1", features = ["v4", "v7"] }
 dirs = "5"
 libc = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.9"
+iana-time-zone = "0.1"
 clap = { version = "4", features = ["derive"] }
 signal-hook = "0.3"
 

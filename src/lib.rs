@@ -9,6 +9,7 @@
 pub mod api;
 pub mod cli;
 pub mod config;
+pub mod cron;
 pub mod driver;
 pub mod duration;
 pub mod error;
