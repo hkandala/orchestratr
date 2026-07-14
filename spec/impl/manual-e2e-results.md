@@ -361,3 +361,45 @@ work of the manual-e2e phase.
 - The only failing steps (`logs --last-response` on both turns) are downstream of the provider emitting an API error instead of text AND writing no native transcript — both outside orcr's control. On a codex that answers and persists a rollout, steps 3/4 logs are expected to pass, and the rest already pass here.
 - Contrast with E03/known-issue #2 (claude): there `wait` hung on the missing transcript; here codex `wait` settles fine — so completion detection for codex works on this box; only response extraction is blocked (by the provider error + missing transcript).
 - No orcr code changed (this executor observes only). No session leaked (`no leak`).
+
+---
+
+## E05 — `logs` variants on REAL claude: `--tail`, `--follow`, `--last-response` freshness
+
+- **provider:** claude (REAL, enterprise box)
+- **verdict:** FAIL (env-caused — no orcr bug; the transcript-dependent `logs` variants cannot function because enterprise claude persists no locatable native transcript)
+- **severity:** low for orcr (env limitation, same root as E01/E03/known-issue #2); all non-transcript plumbing (run, send delivery+re-arm, kill, workspace teardown) works
+- **date:** 2026-07-14
+- **ORCR_HOME:** /tmp/orcr_e2e.snK84Y (disposable) · **session:** orcr_e2e_81a8760a (disposable) · leak check: `no leak`
+- **git commit:** 4cc493c
+
+### Observed vs expected (step by step)
+
+| step | command | expected | observed | verdict |
+|---|---|---|---|---|
+| 2 | `agent run --name talker -a claude --gc never -p "List three fruits, one per line." --timeout 10m` | prints `<path> <uuid>`, exit 0 | `talker 019f629f-2cd4-7fd1-94f4-e31c36979ab1`, exit 0 | PASS |
+| 2 | `agent wait talker` | `turn_complete`, exit 0 | **timed out** (bounded 240s → exit 124); orcr stuck `status:"working"` though pane `agent_status:"done"` and `idle_since` ~39s after create — same non-settling-transcript condition as E03 | FAIL (env-caused) |
+| 3 | `agent logs talker --tail 5` | last 5 transcript entries (structured turns/roles) | `error: transcript_unavailable: no transcript file found for session '2609eb96-…' (rotated or deleted)` `{"cause":"not_found","status":"working",…}`, exit 1 (same for `--json`) | FAIL (env-caused) |
+| 4 | `agent logs talker --tail 2 --follow` (leave running) | prints the tail, then streams new entries live (docker/kubectl semantics) | errors out immediately (does NOT stream): `transcript_unavailable … {"cause":"not_found",…}`, exit 1 within <1s (bounded 15s) — no transcript to tail-then-follow | FAIL (env-caused) |
+| 4 | (other shell) `agent send talker "Now list two vegetables."` | delivers; follow stream shows the new turn live | `{"ok":true,"result":{"delivered_while":"working","input_seq":2,"path":"talker","uuid":"…"}}`, exit 0; `herdr pane read w2:p2` confirms the prompt was delivered AND claude answered (`⏺ Carrot / Broccoli`) | PASS (delivery/re-arm); follow-stream visibility BLOCKED (no transcript) |
+| 5 | `agent logs talker --last-response` (after send+wait) | the *vegetables* answer (freshness gate; never the stale fruits) | `{"error":{"code":"transcript_unavailable","details":{"cause":"not_found","status":"working","uuid":"…"},"message":"no transcript file found for session '2609eb96-…' (rotated or deleted)"},"ok":false}`, exit 1 | FAIL (env-caused) |
+| 6 | `[TEARDOWN]` | no leak | killed talker, server stopped, session stopped+deleted; `herdr session list` → `no leak` | PASS |
+
+### Root cause / evidence
+
+- **claude worked correctly and BOTH turns were delivered + submitted.** `herdr pane read w2:p2` showed the full exchange in the pane:
+  - turn 1: `❯ List three fruits, one per line.` → `⏺ Apple / Banana / Cherry` (`✻ Crunched for 2s`)
+  - turn 2 (after `send`): `❯ Now list two vegetables.` → `⏺ Carrot / Broccoli` (`✻ Crunched for 3s`)
+  The M-e2e #2 submit-confirm fix is visibly working (server log: `submit-confirm: pane w2:p2 still idle after 8000ms …` then `agent talker working`).
+- **No locatable native transcript is written for herdr-launched claude panes on this enterprise box.** `find ~/.claude/projects -name '*.jsonl' -newermt '-15 minutes'` returned nothing for this agent, and no file matches the agent's herdr session id `2609eb96-7f6b-42b4-8938-e11daa8f3bfc` (only `~/.claude/session-env/…` and `…/meta/rules/session_modes_…json` exist — not a transcript). This is exactly the documented "Environment limitation (not orcr)" from known-issue #2 and matches E03.
+- **Consequence for E05 specifically:** every variant `logs` reads from the native transcript, so with none locatable:
+  - `--tail N` → `transcript_unavailable`/`not_found` (cannot bound history);
+  - `--tail N --follow` → same error immediately; it never reaches the tail-then-stream phase, so the "new entries appear live" behavior cannot be observed;
+  - `--last-response` → `transcript_unavailable`/`not_found`, so the freshness gate (must not return stale fruits after the vegetables turn) also cannot be exercised.
+  These are the correct, honest failure modes given no transcript exists — orcr does not fabricate output.
+
+### Notes
+
+- Steps that do NOT depend on the transcript all PASS: `run` (spawn, exit 0), `send` (delivered, re-armed to a fresh `input_seq:2`, prompt reached the pane and was answered), and `[TEARDOWN]` (pane closed, session stopped+deleted, `no leak`).
+- The E05-specific behaviors the test set out to verify — `--tail` bounding, `--tail N --follow` docker/kubectl tail-then-stream semantics, and `--last-response` freshness — could NOT be observed on this box because there is no native claude transcript to read; they are effectively **BLOCKED by the environment** and rolled up as FAIL here. On a standard claude that persists native transcripts, these are expected to pass (as designed/covered by the mock e2e).
+- No orcr code changed (this executor observes only). No session leaked (`no leak`).
