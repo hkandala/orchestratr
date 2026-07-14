@@ -306,6 +306,36 @@ fn unmanaged_only_hides_loops_and_managed() {
     assert!(tree.roots.contains_key("unmanaged"));
 }
 
+// --- Scale: a 100-agent tree builds + flattens well under the frame budget -----------------
+
+#[test]
+fn hundred_agent_tree_builds_under_frame_budget() {
+    // A realistic deep/wide storm: 10 top scopes × 10 leaves = 100 agents.
+    let mut agents = Vec::new();
+    for i in 0..10 {
+        for j in 0..10 {
+            let status = ["working", "idle", "blocked", "parked"][(i + j) % 4];
+            agents.push(agent(
+                &format!("scope_{i}/phase/file_{j}"),
+                status,
+                "claude",
+            ));
+        }
+    }
+    let s = snap(agents, vec![]);
+    let start = std::time::Instant::now();
+    let tree = build_tree(&s, &TopFilter::default());
+    let rows = tree.flatten(&BTreeSet::new(), 5000);
+    let elapsed = start.elapsed();
+    assert_eq!(tree.agent_uuids().len(), 100, "all 100 agents are nodes");
+    assert!(!rows.is_empty());
+    // The frame budget is 100ms; a build+flatten must be a small fraction of that.
+    assert!(
+        elapsed < std::time::Duration::from_millis(50),
+        "build+flatten took {elapsed:?}, over budget"
+    );
+}
+
 // --- Rendering helpers ---------------------------------------------------------------------
 
 #[test]

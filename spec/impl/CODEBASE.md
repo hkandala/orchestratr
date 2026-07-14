@@ -10,7 +10,7 @@ to reflect what that milestone added/changed.
 > *why* behind decisions, read the per-milestone `notes.md` files (especially the herdr
 > facts in `m0-foundations/notes.md`, which are load-bearing for the driver).
 
-Current state: **through M5 (loops).**
+Current state: **through M6 (top).**
 
 ## Crate & binaries
 
@@ -207,6 +207,30 @@ Current state: **through M5 (loops).**
     `timed_out_runs` (`LoopRow`/`LoopRunRow`). Also `events_for_refs(&refs)` (index-scoped event
     fetch for `loop logs`, not a full `events` scan).
     Store methods that write events append them in-txn and return the seq; the server calls `publish(seq)`.
+- `top/` — **the M6 monitoring TUI** (`orcr top`, §6.3, §7). A view-only dashboard; all
+  acting stays in the CLI.
+  - `model.rs` — the **pure, unit-tested core**: `Snapshot::from_json` parses an
+    `api.snapshot`/`watch.open` doc into typed `SnapAgent`/`SnapLoop`/`SnapRun`; `TopFilter`
+    (pattern/provider/status/managed/loops_only) whose `agent_matches` mirrors the `agent ls`
+    store filter **byte-for-byte** (so the tree's agent node set == the equivalent `ls`);
+    `build_tree` builds the §5.1 **path tree** (level-1 segments as top nodes, loops+active
+    runs as subtrees, parked→synthetic `Idle` node, unmanaged grouped by session via their
+    `unmanaged/<session>/<pane>` path) with cross-scope **lineage** shown as a `↖ <parent>`
+    annotation (never a second placement/re-root — a parent that is a proper ancestor gets no
+    annotation). `structure_lines` = deterministic time-independent render (golden diffs);
+    `flatten(collapsed, now)` = UI rows (blocked floats upward, age column, glyphs). Helpers:
+    `glyph_for_status`, `format_age`.
+  - `app.rs` — the **ratatui/crossterm app** (`run_top`): `watch.open` → seed snapshot →
+    background reader thread turns the event stream into a coalesced `Dirty`/`Disconnected`
+    signal → render loop re-reads a fresh consistent `api.snapshot` **per frame** (event-driven,
+    100ms budget, a burst = one redraw; by construction can't miss/double-apply). Reconnect +
+    re-snapshot on `server_stopping`/EOF/`cursor_expired`. Keys: `/` filter (§5.1 grammar,
+    resolved against the caller's `ORCR_PATH` scope), arrows collapse/expand + move, `q` quit.
+  - `mod.rs` — re-exports (`run_top`, `build_tree`, `Snapshot`, `TopFilter`, `Tree`).
+  - **Snapshot enrichment**: `server/mod.rs::agent_row_json` now also carries `model`,
+    `move_state`, `herdr_session`, `last_status_change_at`, `starting_at`/`idle_since`/
+    `parked_at`; `build_snapshot` adds each loop's active `runs` (run_id/uuid/status/due_at/
+    started_at). Additive only — `ls`/`api snapshot`/`watch.open` shapes stay compatible.
 - `driver/` — the herdr socket driver (see `m0-foundations/notes.md` for the verified
   wire facts; **the driver is the riskiest surface — trust the notes**).
   - `protocol.rs` — wire envelopes: request `{protocol,id,method,params}`; success
@@ -273,7 +297,8 @@ Current state: **through M5 (loops).**
   `ORCR_E2E=1 cargo test --test agent_e2e -- --test-threads=1` (M2 agent core) and
   `ORCR_E2E=1 cargo test --test completion_e2e -- --test-threads=1` (M3) and
   `ORCR_E2E=1 cargo test --test gc_e2e -- --test-threads=1` (M4) and
-  `ORCR_E2E=1 cargo test --test loop_e2e -- --test-threads=1` (M5). They
+  `ORCR_E2E=1 cargo test --test loop_e2e -- --test-threads=1` (M5) and
+  `ORCR_E2E=1 cargo test --test top_e2e -- --test-threads=1` (M6). They
   exercise real behavior against **live herdr** using the mock provider. Non-M4 e2e
   harnesses set `ORCR_DISABLE_DISCOVERY=1` so unmanaged discovery doesn't pull the
   developer's real sessions into their stores.
@@ -306,6 +331,15 @@ Current state: **through M5 (loops).**
   guard kills each run's process group (via recorded `pgid`) **before** teardown so no lingering
   `orcr agent run` executes against a dead home. DST + cron next-fire are unit-tested in
   `src/cron.rs`; enable/disable unit files are golden-tested in `src/service.rs`.
+- `tests/top_e2e.rs` (M6) proves the §7 acceptance against a live storm: the `watch.open`
+  pinned snapshot renders a node set identical to `agent ls` (with the cross-scope
+  `↖ fix_build/fixer` lineage placed once under `verify`); CLI/`/` filter node sets equal the
+  equivalent `agent ls` queries (`review`, `review/*`, `review/**`, `reviewer/**`,
+  `review/fanout/*`); the event stream delivers a post-snapshot change (seq > snapshot_seq)
+  and the refreshed tree converges; a mid-storm `kill -9` restart re-opens `watch.open` and
+  still matches the store; a 24-agent scale snapshot renders one consistent tree under the
+  frame budget. Tree/filter/lineage + a synthetic 100-agent build-under-budget are unit-tested
+  in `src/top/model/tests.rs`.
 - `tests/conformance_live.rs` diffs the pinned driver contract against live
   `herdr api schema` (guards herdr version drift).
 - **e2e safety pattern (MANDATORY, reuse it):** each e2e test creates a throwaway
