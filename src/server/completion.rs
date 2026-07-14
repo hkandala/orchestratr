@@ -195,15 +195,33 @@ impl Server {
         let (locator, cursor) = self.capture(a);
         let immediate = a.gc_mode.as_deref() == Some("immediate");
 
+        // §11.2: a `gc immediate` agent is only torn down once its final response is **verified
+        // readable** from the native transcript (the locator/cursor recorded below is exactly
+        // what a waiting `ask`/post-kill `logs` reads after the pane dies). If the response is
+        // not readable yet — the provider reported idle before flushing its transcript, or the
+        // transcript isn't located — do NOT complete/kill this tick; the public status stays
+        // `working` and we retry on the next tick rather than racing teardown ahead of the
+        // provider's first-turn flush (known-issues #2). Non-immediate modes keep the agent
+        // alive after `idle`, so a slightly-late transcript is read fine by a later `logs`.
+        if immediate {
+            let readable = locator
+                .as_ref()
+                .is_some_and(|loc| loc.last_response(&a.uuid, &a.status).is_ok());
+            if !readable {
+                return;
+            }
+        }
+
+        let cursor_str = cursor.as_deref();
         // gc immediate goes `working → ended (completed)` with **no** transient public `idle`
         // (so a waiting `ask`/`wait` settles on `completed`, not `turn_complete`, §11.2). Other
         // modes flip `working → idle`.
         let ev = {
             let mut store = self.inner.store.lock().unwrap();
             if immediate {
-                store.complete_turn_row(&a.uuid, input_seq, now_millis(), cursor.as_deref())
+                store.complete_turn_row(&a.uuid, input_seq, now_millis(), cursor_str)
             } else {
-                store.complete_turn(&a.uuid, input_seq, now_millis(), cursor.as_deref())
+                store.complete_turn(&a.uuid, input_seq, now_millis(), cursor_str)
             }
             .unwrap_or(0)
         };
@@ -212,7 +230,7 @@ impl Server {
         }
         if let (Some(loc), Some(c)) = (&locator, &cursor) {
             let mut store = self.inner.store.lock().unwrap();
-            if let Ok(cap_ev) = store.record_capture(&a.uuid, loc, c) {
+            if let Ok(cap_ev) = store.record_capture(&a.uuid, &loc.as_string(), c) {
                 drop(store);
                 self.publish(cap_ev);
             }
@@ -230,8 +248,18 @@ impl Server {
     }
 
     /// Whether the provider transcript has settled (no writes for `transcript_settle_ms`).
-    /// A settle window of 0 (mock) or an un-locatable transcript is permissive (the
-    /// stable-idle check alone governs completion).
+    /// A settle window of 0 (the mock, and any provider without a native transcript) is
+    /// permissive — the stable-idle check alone governs completion.
+    ///
+    /// For a provider WITH a real settle window (`transcript_settle_ms > 0`, i.e. claude/codex)
+    /// an un-locatable transcript means **not settled**: the turn cannot be concluded complete
+    /// on an absent transcript. This is the fix for known-issues #2 — a freshly-launched real
+    /// provider reports herdr `idle` during boot before it has registered its session or written
+    /// any transcript, and the old permissive behavior let the fast-turn-grace + stable-idle
+    /// path complete (and, under `gc immediate`, tear down) the agent in ~2.5s — before claude
+    /// ever captured a session (`no_session`) or flushed its transcript (`not_found`). Requiring
+    /// the transcript to be located AND quiet for `transcript_settle_ms` gates completion on the
+    /// provider having genuinely done work and stopped producing output (spec §5.6, §11.2).
     fn transcript_settled(&self, a: &AgentFull, tuning: &TuningParams) -> bool {
         if tuning.transcript_settle_ms == 0 {
             return true;
@@ -239,19 +267,22 @@ impl Server {
         match self.agent_transcript(a) {
             Ok(loc) => match loc.mtime_ms() {
                 Some(mt) => now_millis().saturating_sub(mt) >= tuning.transcript_settle_ms as i64,
+                // Located but un-stat'able → permissive (the stable-idle check governs).
                 None => true,
             },
-            Err(_) => true,
+            // Not locatable yet (no session captured, or no transcript file written) → the turn
+            // has not settled; wait for the provider's transcript rather than complete on nothing.
+            Err(_) => false,
         }
     }
 
     /// Best-effort capture of the transcript locator + cursor at completion (no response copy
     /// is stored; the cursor is the file's mtime marker). `(None, None)` when unavailable.
-    fn capture(&self, a: &AgentFull) -> (Option<String>, Option<String>) {
+    fn capture(&self, a: &AgentFull) -> (Option<TranscriptLocator>, Option<String>) {
         match self.agent_transcript(a) {
             Ok(loc) => {
                 let cursor = loc.mtime_ms().map(|m| m.to_string());
-                (Some(loc.as_string()), cursor)
+                (Some(loc), cursor)
             }
             Err(_) => (None, None),
         }
