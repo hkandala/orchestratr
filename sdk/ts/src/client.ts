@@ -470,7 +470,14 @@ export class OrcrClient {
     if (opts.timeout) params.timeout = opts.timeout;
     const r = (await this.req("agent.ask", params)) as Record<string, unknown>;
     const resp = r.response as Record<string, unknown> | undefined;
-    return typeof resp?.text === "string" ? resp.text : "";
+    // Share the transcript-unavailable contract with AgentHandle.lastResponse():
+    // a response carrying no text is a typed error, never a silent "" (spec §8).
+    if (!resp || typeof resp.text !== "string") {
+      throw new TranscriptUnavailable("no response text available", {
+        path: params.path as string,
+      });
+    }
+    return resp.text;
   }
 
   /** Run `fn` in a new path scope. Relative paths inside resolve under `scopePath`. */
