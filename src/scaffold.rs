@@ -116,8 +116,8 @@ fn workflow_ts() -> String {
 // watch, loops, the file convention) read the skill reference: skill/references/sdk.md
 await orcr.scope("scaffold_demo", async () => {
   const a = await orcr.agent.run({
-    agent: "claude",              // or "codex"; falls back to config defaults.agent
-    name: "hello",                // naming is mandatory — --name OR path:
+    // agent: "claude",           // optional — omitted here, so it uses config defaults.agent
+    name: "hello",                // naming is mandatory — pass name OR path
     gc: "immediate",              // one-shot: settles on ended(completed)
     prompt: "Reply with a single friendly sentence, then say DONE.",
   });
