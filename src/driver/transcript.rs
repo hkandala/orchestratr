@@ -470,6 +470,16 @@ fn file_mtime_ms(path: &Path) -> Option<i64> {
     Some(dur.as_millis() as i64)
 }
 
+/// Freshness gate (spec §11.4): a final response is reported only once the transcript file
+/// has advanced **past** the observed completion. `true` = fresh (safe to read the final
+/// response); `false` = the file has not advanced yet → `transcript_unavailable (stale)`.
+pub fn transcript_fresh(mtime_ms: Option<i64>, completed_at_ms: i64) -> bool {
+    match mtime_ms {
+        Some(mt) => mt >= completed_at_ms,
+        None => false,
+    }
+}
+
 /// The `transcript_unavailable` error (spec §13) with a `cause` in details.
 pub fn transcript_unavailable(
     uuid: &str,
@@ -581,6 +591,16 @@ mod tests {
         let one = select_candidate(vec![a.clone()], 0, "u", "idle", "sid").unwrap();
         assert_eq!(one.path, a);
         let _ = b;
+    }
+
+    #[test]
+    fn freshness_gate_flags_unadvanced_transcript() {
+        // Transcript mtime older than the completion → stale (must not report a final resp).
+        assert!(!transcript_fresh(Some(100), 200));
+        // Advanced past completion → fresh.
+        assert!(transcript_fresh(Some(300), 200));
+        // Cannot stat → treated as not fresh.
+        assert!(!transcript_fresh(None, 200));
     }
 
     #[test]

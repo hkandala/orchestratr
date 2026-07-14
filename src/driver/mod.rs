@@ -19,7 +19,9 @@ pub use integration::{
 };
 pub use protocol::*;
 pub use session::{HerdrBinary, HerdrSession};
-pub use transcript::{locate_transcript, TranscriptEntry, TranscriptLocator};
+pub use transcript::{
+    locate_transcript, transcript_fresh, TranscriptEntry, TranscriptLocator,
+};
 
 use crate::error::{ErrorCode, OrcrError, Result};
 use serde_json::{json, Value};

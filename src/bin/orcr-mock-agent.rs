@@ -94,6 +94,44 @@ impl Reporter {
     }
 }
 
+/// Per-turn behavior, from env defaults overridden by `@key=val` tokens in the prompt.
+struct Directives {
+    turn_ms: u64,
+    tool_gaps: u64,
+    gap_ms: u64,
+    block: bool,
+}
+
+impl Directives {
+    fn parse(prompt: &str, turn_ms: u64, tool_gaps: u64, gap_ms: u64, block: bool) -> Directives {
+        let mut d = Directives {
+            turn_ms,
+            tool_gaps,
+            gap_ms,
+            block,
+        };
+        for tok in prompt.split_whitespace() {
+            let tok = tok.trim_start_matches('@');
+            if let Some(v) = tok.strip_prefix("turn_ms=") {
+                if let Ok(n) = v.parse() {
+                    d.turn_ms = n;
+                }
+            } else if let Some(v) = tok.strip_prefix("tool_gaps=") {
+                if let Ok(n) = v.parse() {
+                    d.tool_gaps = n;
+                }
+            } else if let Some(v) = tok.strip_prefix("gap_ms=") {
+                if let Ok(n) = v.parse() {
+                    d.gap_ms = n;
+                }
+            } else if tok == "block" {
+                d.block = true;
+            }
+        }
+        d
+    }
+}
+
 fn main() {
     let banner =
         std::env::var("ORCR_MOCK_BANNER").unwrap_or_else(|_| "orcr-mock-agent ready".into());
@@ -106,15 +144,15 @@ fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    let tool_gaps: u64 = std::env::var("ORCR_MOCK_TOOL_GAPS")
+    let tool_gaps_env: u64 = std::env::var("ORCR_MOCK_TOOL_GAPS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    let gap_ms: u64 = std::env::var("ORCR_MOCK_GAP_MS")
+    let gap_ms_env: u64 = std::env::var("ORCR_MOCK_GAP_MS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(600);
-    let block = std::env::var("ORCR_MOCK_BLOCK").is_ok();
+    let block_env = std::env::var("ORCR_MOCK_BLOCK").is_ok();
 
     // Prove the env contract reached the pane (§5.3): dump every ORCR_* var to a file in the
     // agent's data dir, so e2e can assert it without needing to read pane env over herdr
@@ -156,23 +194,28 @@ fn main() {
             continue;
         }
 
+        // Per-turn directives embedded in the prompt (`@turn_ms=..`, `@tool_gaps=..`,
+        // `@gap_ms=..`, `@block`) override the env defaults — this is how e2e drives a
+        // specific turn shape per agent without needing to inject pane env (§5.6 matrix).
+        let d = Directives::parse(prompt, turn_ms, tool_gaps_env, gap_ms_env, block_env);
+
         // Turn begins: working.
         reporter.report(PaneAgentState::Working);
         // Optional tool-heavy turn: brief idle gaps that must not settle a completion.
-        for _ in 0..tool_gaps {
-            std::thread::sleep(Duration::from_millis(turn_ms.max(150)));
+        for _ in 0..d.tool_gaps {
+            std::thread::sleep(Duration::from_millis(d.turn_ms.max(150)));
             reporter.report(PaneAgentState::Idle);
-            std::thread::sleep(Duration::from_millis(gap_ms));
+            std::thread::sleep(Duration::from_millis(d.gap_ms));
             reporter.report(PaneAgentState::Working);
         }
-        if turn_ms > 0 {
-            std::thread::sleep(Duration::from_millis(turn_ms));
+        if d.turn_ms > 0 {
+            std::thread::sleep(Duration::from_millis(d.turn_ms));
         }
         println!("RESPONSE: {prompt}");
         println!("DONE");
         let _ = std::io::stdout().flush();
         // Turn complete: idle (or blocked, until the next input clears it).
-        if block {
+        if d.block {
             reporter.report(PaneAgentState::Blocked);
         } else {
             reporter.report(PaneAgentState::Idle);
