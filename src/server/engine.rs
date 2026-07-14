@@ -1046,6 +1046,7 @@ impl Server {
             let text = self.last_response_fresh(&row, &loc)?;
             return Ok(json!({
                 "uuid": row.uuid, "path": row.path, "resolved": resolved,
+                "created_at": row.created_at,
                 "response": { "text": text, "final": true },
             }));
         }
@@ -1058,6 +1059,7 @@ impl Server {
         }
         Ok(json!({
             "uuid": row.uuid, "path": row.path, "resolved": resolved,
+            "created_at": row.created_at,
             "entries": entries,
         }))
     }
@@ -1317,22 +1319,33 @@ impl Server {
             )
             .with_details(json!({ "reason": "reserved_name", "name": level1 })));
         }
-        // The run admission barrier: the run must still be `running` (not stopping/ended).
+        // The run admission barrier: the caller must target a *real* run of this loop that is
+        // still `running` (not stopping/ended). This also blocks a within-loop caller from
+        // escaping into a phantom run subtree or the loop root itself via an absolute `--path`
+        // (e.g. `/nightly/x` or `/nightly/r99999/x`): agents land under an active loop only as
+        // descendants of one of its runs (§5.1, §11.3).
         let run_id = effective.split('/').nth(1).unwrap_or("");
-        if let Some(l) = store.find_loop_by_name(level1).ok().flatten() {
-            if let Some(run) = store.run_by_id_or_uuid(&l.uuid, run_id).ok().flatten() {
-                if run.status != "running" {
-                    return Err(OrcrError::state_conflict(format!(
-                        "run `{level1}/{run_id}` is {} — not accepting new agents",
-                        run.status
-                    ))
-                    .with_details(
-                        json!({ "current_status": run.status, "reason": "run_stopping" }),
-                    ));
-                }
-            }
+        let run = store
+            .find_loop_by_name(level1)
+            .ok()
+            .flatten()
+            .and_then(|l| store.run_by_id_or_uuid(&l.uuid, run_id).ok().flatten());
+        match run {
+            None => Err(OrcrError::invalid_request(
+                format!(
+                    "`{level1}/{run_id}` is not a run of active loop `{level1}` — create agents \
+                     only under one of its runs"
+                ),
+                "reserved_name",
+            )
+            .with_details(json!({ "reason": "reserved_name", "name": level1 }))),
+            Some(run) if run.status != "running" => Err(OrcrError::state_conflict(format!(
+                "run `{level1}/{run_id}` is {} — not accepting new agents",
+                run.status
+            ))
+            .with_details(json!({ "current_status": run.status, "reason": "run_stopping" }))),
+            Some(_) => Ok(()),
         }
-        Ok(())
     }
 
     /// The loop data dir for an agent's effective path, if it descends from an active loop run

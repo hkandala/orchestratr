@@ -735,6 +735,7 @@ fn cmd_agent_logs(
 
     if last_response {
         let result = connect_and_request("agent.logs", params)?;
+        note_if_ended(json, &result);
         emit_success(json, result.clone(), || {
             println!(
                 "{}",
@@ -745,6 +746,7 @@ fn cmd_agent_logs(
     }
 
     let result = connect_and_request("agent.logs", params.clone())?;
+    note_if_ended(json, &result);
     let mut seen = print_entries(json, &result, 0);
     if follow {
         // Follow is a poll under the hood (§6.1): re-read the transcript and print new
@@ -760,6 +762,27 @@ fn cmd_agent_logs(
         }
     }
     Ok(())
+}
+
+/// §5.1 disambiguation: a TTY `agent logs` that resolves path-first to an ended agent (the verb
+/// is active-else-most-recent-ended, §6.1) prints a stderr note so the operator knows they hit
+/// history rather than a live agent, and how to pin the exact one.
+fn note_if_ended(json: bool, result: &Value) {
+    if json || !stdout_is_tty() {
+        return;
+    }
+    if result["resolved"].as_str() != Some("latest_ended") {
+        return;
+    }
+    let path = result["path"].as_str().unwrap_or_default();
+    let created = result["created_at"]
+        .as_i64()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string())
+        .unwrap_or_default();
+    eprintln!(
+        "note: {path} resolved to an ended agent created {created} — use the uuid for a specific one"
+    );
 }
 
 /// Print transcript entries beyond `skip`; returns the new total count. In `--json` mode the
