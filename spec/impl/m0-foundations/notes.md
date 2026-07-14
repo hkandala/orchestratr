@@ -101,5 +101,33 @@ Capture *decisions and deviations*, not a play-by-play.
 
 ## Verifier & reviewer history
 
-_(record each verify/review round's verdict + how issues were resolved)_
-</invoke>
+- **Implementation** (commits `02b9a06`..`46ef53f` on `main`): crate scaffold + error
+  model + duration parsing + home layout → config load/validate → sqlite WAL store +
+  full §12 schema → herdr socket driver + contract table + conformance fixture →
+  `orcr __m0-selfcheck` + `orcr-mock-agent` harness. A follow-up fix (`46ef53f`)
+  addressed three harness issues found while exercising the acceptance criteria: the
+  mock's `ORCR_MOCK_NO_REPORT` flag (so e2e state-reporting has a single deterministic
+  source), herdr pane-env self-discovery (mock reads `HERDR_SOCKET_PATH`/`HERDR_PANE_ID`
+  rather than needing orcr to inject them), and UUIDv4 for disposable session suffixes
+  (UUIDv7's leading timestamp hex collided across near-simultaneous tests).
+
+- **Scribe final green check** (this pass, against live herdr 0.7.2, protocol 16):
+  - `cargo build` — clean.
+  - `cargo fmt --check` — clean (no diffs).
+  - `cargo clippy --all-targets -- -D warnings` — clean (zero warnings).
+  - `cargo test` (unit + gated-off e2e) — all pass: `handshake` 2/2 (fabricated-protocol
+    reject + matching-protocol accept), `home_config` 2/2 (ORCR_HOME relocation, config
+    from relocated home), `conformance_live` 1/1 (live `herdr api schema` matches the
+    pinned contract table), plus in-crate unit tests.
+  - `ORCR_E2E=1 cargo test --test e2e` — 4/4 pass against live herdr: handshake +
+    session enumeration, idempotent owned-session bootstrap, agent lifecycle + state
+    reporting (report → normalized status round-trip incl. `done`→`idle`), and
+    empty-workspace auto-removal (create pane → close pane → workspace gone).
+  - Safety: every e2e test used a throwaway `ORCR_HOME` tempdir and a disposable
+    `orcr_test_<rand>` herdr session torn down by a drop guard. Post-run
+    `herdr session list` shows only the user's `default` session (running, untouched) —
+    no disposable sessions leaked.
+
+  Verdict: **PASS** — every M0 acceptance criterion is proven and all green gates are
+  clean. No open issues.
+
