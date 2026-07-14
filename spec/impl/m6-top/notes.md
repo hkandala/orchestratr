@@ -56,4 +56,21 @@ choices worth knowing, and discovered facts. Capture *decisions and deviations*.
 
 ## Verifier & reviewer history
 
-_(record each verify/review round's verdict + how issues were resolved)_
+- **Verify round 1 — PASS.** Ran `cargo build` (green), `cargo clippy --all-targets -D warnings`
+  (clean), `cargo fmt --check` (clean), `cargo test` (155 unit + all integration/e2e binaries
+  green), and `ORCR_E2E=1 cargo test --test top_e2e -- --test-threads=1` (5/5 against live herdr
+  0.7.2 + mock provider). No `orcr_test_*` sessions leaked (a pre-existing `orcr` session from an
+  earlier milestone smoke-check remains — not introduced by M6). All four acceptance criteria
+  proven: correctness (snapshot node-set == `agent ls` + lineage placed once), scale (100-agent
+  unit build <50ms; 24-agent live snapshot), filters (tree node set == authoritative live
+  `agent.ls` for review/review/*/review/**/reviewer/**/review/fanout/*), lineage golden
+  (`/verify/checker` under `verify` with `↖ fix_build/fixer`, not re-rooted). Filter==ls holds by
+  construction: `build_snapshot` uses `include_ended:false` (matches `ls` default) and
+  `TopFilter::agent_matches` mirrors `store::list_agents`.
+  - Non-blocking finding (for reviewer/reviser): `app.rs::run` computes `dirty` as a per-iteration
+    local and drains `rx` each pass; if a coalesced event is drained in a sub-`FRAME` window right
+    after a refresh (e.g. concurrent keypress), the `last_refresh.elapsed() >= FRAME` gate skips the
+    refresh and the dirty signal is lost until the *next* event, so the tree can briefly display a
+    stale final state after keyboard activity. Self-healing on any subsequent event and outside the
+    acceptance-tested path (which drives re-snapshot directly), but persisting `dirty` across
+    iterations would honor §11.6's "never miss an update" more strictly.
