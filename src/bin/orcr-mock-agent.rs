@@ -25,6 +25,11 @@
 //!   next input arrives (the `blocked` matrix case).
 //! - `ORCR_MOCK_NO_TRANSCRIPT`  — if set, don't write/report a transcript (tests that assert
 //!   `transcript_unavailable`).
+//! - `ORCR_MOCK_LATE_TRANSCRIPT_MS` — if > 0, report `idle` at end of turn and only write the
+//!   transcript this many ms later (simulates a real provider that reports idle before flushing
+//!   its native transcript — the known-issues #2 gc-immediate race).
+//! - `ORCR_MOCK_DELAY_WORKING_MS` — if > 0, stay `idle` for this long after receiving a line
+//!   before reporting `working` (exercises orcr's known-issues #2 submit-confirm re-send loop).
 //!
 //! Per-turn `@`-directives in the prompt: `@turn_ms=` `@tool_gaps=` `@gap_ms=` `@block`
 //! `@say=<word>` (the exact response text) `@write=<relpath>` (also write the response to
@@ -227,6 +232,20 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(600);
     let block_env = std::env::var("ORCR_MOCK_BLOCK").is_ok();
+    // Simulate a real provider that reports idle before flushing its native transcript: when set,
+    // the transcript is appended this many ms *after* the end-of-turn idle report.
+    let late_transcript_ms: u64 = std::env::var("ORCR_MOCK_LATE_TRANSCRIPT_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    // After receiving a line, wait this many ms before reporting `working` — the pane stays
+    // `idle` in the meantime, so orcr's submit-confirmation loop observes not-yet-submitted and
+    // re-sends Enter (the extra empty line is buffered and skipped). Exercises the known-issues #2
+    // submit-confirm re-send path with the mock.
+    let delay_working_ms: u64 = std::env::var("ORCR_MOCK_DELAY_WORKING_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
     // Prove the env contract reached the pane (§5.3): dump every ORCR_* var to a file in the
     // agent's data dir, so e2e can assert it without needing to read pane env over herdr
@@ -273,6 +292,11 @@ fn main() {
         // specific turn shape per agent without needing to inject pane env (§5.6 matrix).
         let d = Directives::parse(prompt, turn_ms, tool_gaps_env, gap_ms_env, block_env);
 
+        // Optionally stay idle for a beat after receiving input, so orcr's submit-confirm loop
+        // sees not-yet-submitted and re-sends Enter before this turn reports `working`.
+        if delay_working_ms > 0 {
+            std::thread::sleep(Duration::from_millis(delay_working_ms));
+        }
         // Turn begins: working.
         reporter.report(PaneAgentState::Working);
         // Optional tool-heavy turn: brief idle gaps that must not settle a completion.
@@ -291,7 +315,12 @@ fn main() {
             Some(s) => format!("{s}\nDONE"),
             None => format!("RESPONSE: {prompt}\nDONE"),
         };
-        reporter.append_transcript(prompt, &response);
+        // Default: write the transcript BEFORE reporting idle (so the completion monitor never
+        // sees idle without a settled transcript). The `late_transcript_ms` path defers it to
+        // *after* the idle report, reproducing a real provider's report-idle-then-flush race.
+        if late_transcript_ms == 0 {
+            reporter.append_transcript(prompt, &response);
+        }
         // The file convention (§8): write the response to a data-dir file on request.
         if let Some(rel) = &d.write {
             if let Ok(dir) = std::env::var("ORCR_AGENT_DATA_DIR") {
@@ -307,6 +336,10 @@ fn main() {
             reporter.report(PaneAgentState::Blocked);
         } else {
             reporter.report(PaneAgentState::Idle);
+        }
+        if late_transcript_ms > 0 {
+            std::thread::sleep(Duration::from_millis(late_transcript_ms));
+            reporter.append_transcript(prompt, &response);
         }
 
         turns += 1;

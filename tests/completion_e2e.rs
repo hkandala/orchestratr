@@ -42,6 +42,12 @@ impl TestServer {
     }
 
     fn start_with_env(extra_env: &[(&str, &str)]) -> TestServer {
+        TestServer::start_full(MOCK_TUNING, extra_env)
+    }
+
+    /// Like [`start_with_env`] but with a caller-supplied `integrations.mock.*` tuning fragment
+    /// (so a test can exercise a real settle window, unlike the default `transcript_settle_ms:0`).
+    fn start_full(tuning: &str, extra_env: &[(&str, &str)]) -> TestServer {
         let home = tempfile::tempdir().expect("home");
         let bin = HerdrBinary::discover(None).expect("herdr on PATH");
         let rand = uuid::Uuid::new_v4().simple().to_string();
@@ -59,9 +65,7 @@ impl TestServer {
         };
         std::fs::write(
             home.path().join("config.json"),
-            format!(
-                r#"{{"herdr":{{"session":"{session}"}},"concurrency":{{"max":5}},{MOCK_TUNING}}}"#
-            ),
+            format!(r#"{{"herdr":{{"session":"{session}"}},"concurrency":{{"max":5}},{tuning}}}"#),
         )
         .unwrap();
         let ts = TestServer {
@@ -467,5 +471,102 @@ fn e2e_logs_transcript_unavailable_for_mock() {
         )
         .unwrap_err();
     assert_eq!(e.code, orchestratr::ErrorCode::TranscriptUnavailable);
+    let _ = ts.request("agent.kill", json!({ "targets": [uuid] }));
+}
+
+/// Regression for known-issues #2 (real-provider `agent ask`): a provider reports herdr `idle`
+/// at the end of its turn BEFORE its native transcript is flushed. gc-immediate must not tear
+/// the pane down until the final response is verified readable — otherwise the teardown races
+/// ahead of the provider's first-turn flush and `ask` returns `transcript_unavailable`
+/// (`no_session`/`not_found`) instead of the answer.
+///
+/// This uses a REAL settle window (`transcript_settle_ms > 0`, like claude/codex) plus a mock
+/// that writes its transcript 1.5s after going idle. With the old permissive
+/// `transcript_settled` + best-effort teardown the agent completed and was killed in ~idle_stable
+/// ms — before the transcript existed — so `agent.ask` failed. With the fix it waits for the
+/// transcript to be located, settle, and be readable, then completes; `ask` returns `PONG`.
+#[test]
+fn e2e_ask_waits_for_late_transcript_before_immediate_teardown() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    // Real-provider-shaped tuning: a non-zero settle window + freshness bound.
+    let tuning = r#""integrations":{"mock":{"fast_turn_grace_ms":400,"idle_stable_ms":400,"transcript_settle_ms":800,"transcript_freshness_timeout_ms":8000,"shutdown_grace_ms":200}}"#;
+    let ts = TestServer::start_full(tuning, &[("ORCR_MOCK_LATE_TRANSCRIPT_MS", "1500")]);
+
+    // `ask` = run --gc immediate → wait → logs --last-response (spec §6.1). It must return the
+    // real response, not race the teardown into transcript_unavailable.
+    let r = ts
+        .request(
+            "agent.ask",
+            json!({
+                "path": "ask/late", "agent": "mock",
+                "prompt": "@say=PONG ping", "timeout": "30s",
+            }),
+        )
+        .expect("agent.ask must return the response, not fail with transcript_unavailable");
+    let text = r["response"]["text"].as_str().unwrap_or_default();
+    assert!(
+        text.contains("PONG"),
+        "ask should return the model response containing PONG, got: {text:?}"
+    );
+    // The agent ended completed and its pane closed (gc immediate), only AFTER the response was
+    // verified readable.
+    let uuid = r["uuid"].as_str().unwrap().to_string();
+    assert!(
+        ts.wait_status(&uuid, "ended", Duration::from_secs(10)),
+        "gc-immediate agent should end after the readable-response teardown"
+    );
+    assert!(wait_until(Duration::from_secs(10), || {
+        !ts.driver
+            .workspace_list()
+            .unwrap()
+            .iter()
+            .any(|w| w.label == "ask")
+    }));
+}
+
+/// Regression for known-issues #2 (real-provider prompt submission): the submitting Enter can be
+/// dropped if it lands before the provider TUI is interactive, leaving the prompt unsubmitted so
+/// the agent never works. orcr's submit-confirmation loop re-sends Enter until the pane leaves
+/// `idle`. Here the mock is configured with a submit-confirm window and made to stay `idle` for a
+/// beat after receiving input (`ORCR_MOCK_DELAY_WORKING_MS`), so orcr observes not-yet-submitted
+/// and drives the re-send loop; the turn must still complete exactly once (no double-delivery).
+#[test]
+fn e2e_submit_confirm_resends_until_working() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    // Enable the submit-confirm loop for the mock (off by default) so this path is exercised.
+    let tuning = r#""integrations":{"mock":{"fast_turn_grace_ms":2500,"idle_stable_ms":700,"transcript_settle_ms":0,"shutdown_grace_ms":200,"submit_confirm_ms":6000}}"#;
+    let ts = TestServer::start_full(tuning, &[("ORCR_MOCK_DELAY_WORKING_MS", "1200")]);
+    let uuid = ts.run("submit/worker", Some("@turn_ms=0 hi"), None);
+    // The turn completes despite the delayed `working` (the re-send loop tolerates it) and is
+    // recorded exactly once.
+    let waited = ts.wait(&["submit/worker"], "25s");
+    let t = target(&waited, "submit/worker");
+    assert_eq!(
+        t["reason"],
+        json!("turn_complete"),
+        "the turn must complete after submit-confirm re-sends"
+    );
+    assert_eq!(t["ok"], json!(true));
+    // Exactly one turn ran — the re-sent (empty) Enters never opened a second turn: the mock
+    // transcript has a single assistant response (no double-delivery).
+    let logs = ts
+        .request("agent.logs", json!({ "target": "submit/worker" }))
+        .unwrap();
+    let assistant = logs["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["role"] == json!("assistant") && e["kind"] == json!("text"))
+        .count();
+    assert_eq!(
+        assistant, 1,
+        "re-sent Enters must not open extra turns (expected 1 assistant response)"
+    );
     let _ = ts.request("agent.kill", json!({ "targets": [uuid] }));
 }
