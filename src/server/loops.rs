@@ -16,6 +16,7 @@ use crate::cron::{self, Cron};
 use crate::error::{OrcrError, Result};
 use crate::store::{now_millis, LoopRow, LoopRunRow, RunAllocation};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -415,7 +416,7 @@ impl Server {
     pub(super) fn glob_kill_run_agents(&self, run_path: &str) {
         let pattern = format!("{run_path}/**");
         for _ in 0..100 {
-            let params = serde_json::json!({ "targets": [pattern], "force": true });
+            let params = json!({ "targets": [pattern], "force": true });
             match self.handle_agent_kill(&params) {
                 Ok(r) => {
                     let killed = r["killed"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -539,7 +540,7 @@ impl Server {
                             .append_event(
                                 "loop.skipped",
                                 Some(&l.uuid),
-                                &serde_json::json!({
+                                &json!({
                                     "loop_uuid": l.uuid, "name": l.name,
                                     "reason": "missed_while_down", "due_at": nf,
                                 }),
@@ -634,8 +635,6 @@ impl Server {
             .map_err(|e| OrcrError::server_error("loop_payload", format!("bad loop.json: {e}")))
     }
 }
-
-use serde_json::{json, Value};
 
 impl Server {
     // --- loop verb handlers (spec §6.2) ---
