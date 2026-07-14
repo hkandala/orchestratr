@@ -62,6 +62,14 @@ the scheduler, and `server enable/disable`.
   process group therefore survives a `kill -9` of the server (as at a real reboot), which the
   restart-recovery e2e exploits (kills the run's pgid explicitly to force the dead-run path).
 - New event kinds added: `loop.ended` (once-loop end), `loop_run.stopping`.
+- **Test-teardown safety gotcha**: a run command that spawns `orcr agent run` can, if it runs
+  against a *torn-down* throwaway `ORCR_HOME` (tempdir already deleted at test end), fall back to
+  the default config (`herdr.session = "orcr"`) and bootstrap the **real** `orcr` session — a
+  safety-rule violation. This is purely a test artifact (production `~/.orcr` persists). The
+  loop e2e drop guard now kills every run's process group (via the recorded `pgid`, read over the
+  live socket) *before* stopping the server / deleting the home, so no lingering `orcr agent run`
+  ever executes against a dead home. Verified: 3 consecutive full-suite runs leak no session and
+  leave no orphan run processes.
 
 ## Verifier & reviewer history
 

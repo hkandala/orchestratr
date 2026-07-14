@@ -119,6 +119,23 @@ impl TestServer {
 
 impl Drop for TestServer {
     fn drop(&mut self) {
+        // Kill every loop run's process group FIRST, while the server + throwaway home still
+        // exist — otherwise a lingering `orcr agent run` in a run command could execute against
+        // a torn-down home, fall back to the default config, and bootstrap the real `orcr`
+        // session (a safety defect). We read pgids over the live socket, then signal them.
+        if let Ok(loops) = self.request("loop.ls", json!({ "all": true })) {
+            for l in loops["loops"].as_array().cloned().unwrap_or_default() {
+                if let Some(name) = l["name"].as_str() {
+                    for run in self.run_ls(name, true) {
+                        if let Some(pgid) = run["pgid"].as_i64() {
+                            unsafe {
+                                libc::kill(-(pgid as i32), libc::SIGKILL);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let _ = self.request("server.stop", json!({}));
         for _ in 0..20 {
             match self.client().handshake() {
