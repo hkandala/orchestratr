@@ -80,10 +80,22 @@ impl Client {
     }
 
     /// Send one request and decode the response. Opens a fresh connection per call.
+    ///
+    /// Blocking methods (`agent.wait`/`agent.ask`) hold the connection open until the target
+    /// turn settles or the caller's own `timeout` param elapses — the server owns that deadline.
+    /// Capping them at a fixed client read timeout would kill real turns that run for minutes,
+    /// so we leave the read timeout unset for them (unbounded); every other method keeps the 30s
+    /// guard against a wedged server. Mirrors the TS SDK transport (`sdk/ts/src/wire.ts`).
     pub fn request(&self, method: &str, params: Value) -> Result<Value> {
         let mut stream = self.connect()?;
+        let blocking = matches!(method, "agent.wait" | "agent.ask");
+        let read_timeout = if blocking {
+            None
+        } else {
+            Some(Duration::from_secs(30))
+        };
         stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
+            .set_read_timeout(read_timeout)
             .and_then(|_| stream.set_write_timeout(Some(Duration::from_secs(30))))
             .ok();
         let req = json!({

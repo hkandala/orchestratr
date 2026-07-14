@@ -16,6 +16,14 @@ export const ORCR_PROTOCOL = 1;
 const MAX_FRAME = 16 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 
+// Server-blocking methods: the server holds the connection open until the target agent turn
+// settles (or the caller-supplied `timeout` param elapses), sending nothing in the meantime.
+// A fixed client wall-clock cap would kill real (non-mock) turns that routinely run for
+// minutes — and make a caller's own `wait({timeout:'5m'})` unusable — so we never impose
+// REQUEST_TIMEOUT_MS on these. The server owns the deadline; if it dies the socket closes and
+// we surface `server_unreachable`. Mirrors the Rust client (`server/client.rs`).
+const BLOCKING_METHODS = new Set<string>(["agent.wait", "agent.ask"]);
+
 /** Resolve the orcr home dir (`$ORCR_HOME` → `~/.orcr`) — mirrors `home.rs`. */
 export function orcrHome(): string {
   const env = process.env.ORCR_HOME;
@@ -178,14 +186,37 @@ export class Transport {
     return this.sockPath;
   }
 
-  /** Send one request, decode the `{ok,result|error}` envelope. Fresh connection per call. */
+  /**
+   * Send one request, decode the `{ok,result|error}` envelope. Fresh connection per call.
+   *
+   * A client-side wall-clock timeout guards against a wedged server for ordinary methods, but
+   * blocking methods (`agent.wait`/`agent.ask`) are never capped — their cost is the agent's
+   * turn, bounded server-side by the caller's own `timeout` param (unbounded when none given).
+   * On a client timeout we reject with a typed {@link EnvironmentError} (`cause:"client_timeout"`)
+   * so callers can catch it via the same error hierarchy as every other failure path.
+   */
   async request(method: string, params: unknown = {}): Promise<unknown> {
     const sock = await connect(this.sockPath);
     const reader = new FrameReader(sock);
-    const timer = setTimeout(() => sock.destroy(new Error("request timed out")), REQUEST_TIMEOUT_MS);
+    const timeoutMs = BLOCKING_METHODS.has(method) ? null : REQUEST_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       sock.write(buildRequest(method, params));
-      const frame = await reader.next();
+      const framePromise = reader.next();
+      let frame: unknown | null;
+      if (timeoutMs === null) {
+        frame = await framePromise;
+      } else {
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new EnvironmentError("request timed out", { cause: "client_timeout" })),
+            timeoutMs,
+          );
+        });
+        // Promise.race attaches handlers to both, so a late socket-error rejection on
+        // `framePromise` after the timeout wins is still considered handled (no unhandled reject).
+        frame = await Promise.race([framePromise, timeout]);
+      }
       if (frame === null) {
         throw new EnvironmentError("server closed the connection with no response", {
           cause: "server_unreachable",
@@ -193,7 +224,7 @@ export class Transport {
       }
       return decode(frame as Envelope);
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       sock.destroy();
     }
   }
