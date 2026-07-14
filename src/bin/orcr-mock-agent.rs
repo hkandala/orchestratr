@@ -36,6 +36,9 @@ struct Reporter {
     pane_id: String,
     agent: String,
     session_id: Option<String>,
+    /// A claude-format transcript the mock writes so `logs`/`ask` have a readable file
+    /// (reported to herdr as a `path`-kind `agent_session`). `None` when no data dir.
+    transcript_path: Option<String>,
 }
 
 impl Reporter {
@@ -48,6 +51,7 @@ impl Reporter {
                 pane_id: String::new(),
                 agent: String::new(),
                 session_id: None,
+                transcript_path: None,
             };
         }
         // Prefer an explicit override, else use herdr's own injected pane env
@@ -73,23 +77,59 @@ impl Reporter {
             (Some(sock), false) => HerdrDriver::connect(sock).ok(),
             _ => None,
         };
+        // A transcript file in the agent's data dir, reported as a `path` pointer so `ask`/
+        // `logs --last-response` resolve (herdr surfaces it as `agent_session.kind = "path"`).
+        let transcript_path = std::env::var("ORCR_AGENT_DATA_DIR")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|dir| {
+                std::path::Path::new(&dir)
+                    .join("transcript.jsonl")
+                    .to_string_lossy()
+                    .to_string()
+            });
         Reporter {
             driver,
             pane_id,
             agent,
             session_id,
+            transcript_path,
         }
     }
 
     fn report(&self, state: PaneAgentState) {
         if let Some(d) = &self.driver {
-            let _ = d.pane_report_agent(
+            let _ = d.pane_report_agent_full(
                 &self.pane_id,
                 "orcr:mock",
                 &self.agent,
                 state,
                 self.session_id.as_deref(),
+                self.transcript_path.as_deref(),
             );
+        }
+    }
+
+    /// Append a user prompt + assistant response to the claude-format transcript (§11.4), so a
+    /// caller's `lastResponse()`/`ask()` reads real text back.
+    fn append_transcript(&self, prompt: &str, response: &str) {
+        let Some(path) = &self.transcript_path else {
+            return;
+        };
+        use std::io::Write as _;
+        let now = chrono::Utc::now().to_rfc3339();
+        let user = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": prompt },
+        });
+        let asst = serde_json::json!({
+            "type": "assistant",
+            "timestamp": now,
+            "message": { "role": "assistant", "content": response },
+        });
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{user}");
+            let _ = writeln!(f, "{asst}");
         }
     }
 }
@@ -100,6 +140,8 @@ struct Directives {
     tool_gaps: u64,
     gap_ms: u64,
     block: bool,
+    /// `@say=<word>` — the exact response text to emit (single token; default echoes the prompt).
+    say: Option<String>,
 }
 
 impl Directives {
@@ -109,6 +151,7 @@ impl Directives {
             tool_gaps,
             gap_ms,
             block,
+            say: None,
         };
         for tok in prompt.split_whitespace() {
             let tok = tok.trim_start_matches('@');
@@ -124,6 +167,8 @@ impl Directives {
                 if let Ok(n) = v.parse() {
                     d.gap_ms = n;
                 }
+            } else if let Some(v) = tok.strip_prefix("say=") {
+                d.say = Some(v.to_string());
             } else if tok == "block" {
                 d.block = true;
             }
@@ -211,8 +256,14 @@ fn main() {
         if d.turn_ms > 0 {
             std::thread::sleep(Duration::from_millis(d.turn_ms));
         }
-        println!("RESPONSE: {prompt}");
-        println!("DONE");
+        // The response text: an explicit `@say=` value, else the echoed prompt. The sentinel
+        // `DONE` is appended so file-convention callers have a stable marker.
+        let response = match &d.say {
+            Some(s) => format!("{s}\nDONE"),
+            None => format!("RESPONSE: {prompt}\nDONE"),
+        };
+        reporter.append_transcript(prompt, &response);
+        println!("{response}");
         let _ = std::io::stdout().flush();
         // Turn complete: idle (or blocked, until the next input clears it).
         if d.block {
