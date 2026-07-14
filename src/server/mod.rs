@@ -676,9 +676,11 @@ impl Server {
         let store = self.inner.store.lock().unwrap();
         let count =
             |sql: &str| -> i64 { store.conn().query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
-        let live = count("SELECT COUNT(*) FROM agents WHERE status NOT IN ('ended','lost')");
-        let queued = count("SELECT COUNT(*) FROM agents WHERE status = 'queued'");
-        let blocked = count("SELECT COUNT(*) FROM agents WHERE status = 'blocked'");
+        let live = count(
+            "SELECT COUNT(*) FROM agents WHERE managed = 1 AND status NOT IN ('ended','lost')",
+        );
+        let queued = count("SELECT COUNT(*) FROM agents WHERE managed = 1 AND status = 'queued'");
+        let blocked = count("SELECT COUNT(*) FROM agents WHERE managed = 1 AND status = 'blocked'");
         let unmanaged =
             count("SELECT COUNT(*) FROM agents WHERE managed = 0 AND status != 'ended'");
         Ok(json!({

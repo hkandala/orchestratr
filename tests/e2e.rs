@@ -286,6 +286,7 @@ fn e2e_server_status_reports_herdr() {
     let start = Command::new(orcr)
         .args(["server", "start"])
         .env("ORCR_HOME", orcr_home.path())
+        .env("ORCR_DISABLE_DISCOVERY", "1")
         .stdin(Stdio::null())
         .output()
         .expect("orcr server start");
