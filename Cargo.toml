@@ -1,0 +1,39 @@
+[package]
+name = "orchestratr"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.89"
+description = "orchestratr (orcr) — a cross-provider orchestrator for AI coding agents, built on herdr"
+license = "MIT"
+default-run = "orcr"
+
+[[bin]]
+name = "orcr"
+path = "src/bin/orcr.rs"
+
+[[bin]]
+name = "orcr-mock-agent"
+path = "src/bin/orcr-mock-agent.rs"
+
+[lib]
+name = "orchestratr"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+uuid = { version = "1", features = ["v7"] }
+dirs = "5"
+libc = "0.2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
