@@ -1012,6 +1012,552 @@ impl Store {
         Ok(rows)
     }
 
+    // --- GC: park / reap / timeout (spec §5.4, §11.2) ---
+
+    /// Managed `gc auto` agents that are turn-complete and have been idle since at or before
+    /// `idle_cutoff`, with no move in flight — the park candidates (spec §5.4). The attach-lease
+    /// guard is applied by the caller (leases live in a separate table).
+    pub fn park_candidates(&self, idle_cutoff: i64) -> Result<Vec<AgentFull>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "{AGENT_FULL_SELECT} WHERE managed=1 AND gc_mode='auto' AND status='idle' \
+                 AND move_state='none' AND idle_since IS NOT NULL AND idle_since <= ?1"
+            ))
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([idle_cutoff], read_agent_full_row)
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows)
+    }
+
+    /// Managed agents parked since at or before `kill_cutoff` — the reap candidates (§5.4).
+    pub fn reap_candidates(&self, kill_cutoff: i64) -> Result<Vec<AgentFull>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "{AGENT_FULL_SELECT} WHERE managed=1 AND status='parked' \
+                 AND parked_at IS NOT NULL AND parked_at <= ?1"
+            ))
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([kill_cutoff], read_agent_full_row)
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows)
+    }
+
+    /// Managed agents whose explicit `--timeout` deadline has passed (spec §5.4) — kill with
+    /// `exit_reason: timeout`. Applies in every gc mode (there is no *default* timeout, but an
+    /// explicit one is enforced even under `gc never`).
+    pub fn timed_out_agents(&self, now: i64) -> Result<Vec<AgentFull>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "{AGENT_FULL_SELECT} WHERE managed=1 AND deadline_at IS NOT NULL \
+                 AND deadline_at <= ?1 AND status NOT IN ('ended','lost')"
+            ))
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([now], read_agent_full_row)
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows)
+    }
+
+    /// Begin a two-phase pane move (spec §5.4): CAS the exclusive move lease on. Sets
+    /// `move_state`/`move_token` only if the row is still at `from_status` with no move in
+    /// flight. Returns true if this call won the lease.
+    pub fn begin_move(
+        &mut self,
+        uuid: &str,
+        from_status: &str,
+        move_state: &str,
+        token: &str,
+    ) -> Result<bool> {
+        let (uuid, from_status, move_state, token) = (
+            uuid.to_string(),
+            from_status.to_string(),
+            move_state.to_string(),
+            token.to_string(),
+        );
+        self.with_immediate_tx(|tx| {
+            let n = tx
+                .execute(
+                    "UPDATE agents SET move_state=?3, move_token=?4, updated_at=?5 \
+                     WHERE uuid=?1 AND status=?2 AND move_state='none'",
+                    rusqlite::params![uuid, from_status, move_state, token, now_millis()],
+                )
+                .map_err(map_sqlite)?;
+            Ok(n > 0)
+        })
+    }
+
+    /// Complete a park (spec §5.4): only if `move_token` still matches (the move we own). Sets
+    /// `status='parked'`, clears the lease, stamps `parked_at`, and records the new location.
+    /// Emits `agent.location_changed` + `agent.status_changed`. Returns the event seq (0 if the
+    /// token no longer matches — someone else resolved the move).
+    pub fn finish_park(
+        &mut self,
+        uuid: &str,
+        token: &str,
+        session: &str,
+        terminal_id: &str,
+        pane_id: &str,
+    ) -> Result<i64> {
+        let (uuid, token, session, terminal_id, pane_id) = (
+            uuid.to_string(),
+            token.to_string(),
+            session.to_string(),
+            terminal_id.to_string(),
+            pane_id.to_string(),
+        );
+        let now = now_millis();
+        self.with_immediate_tx(|tx| {
+            let n = tx
+                .execute(
+                    "UPDATE agents SET status='parked', move_state='none', move_token=NULL, \
+                     parked_at=?5, herdr_session=?2, terminal_id=?3, pane_id=?4, \
+                     last_status_change_at=?5, updated_at=?5 WHERE uuid=?1 AND move_token=?6",
+                    rusqlite::params![uuid, session, terminal_id, pane_id, now, token],
+                )
+                .map_err(map_sqlite)?;
+            if n == 0 {
+                return Ok(0);
+            }
+            append_event_tx(
+                tx,
+                "agent.location_changed",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "pane_id": pane_id, "terminal_id": terminal_id }),
+            )?;
+            append_event_tx(
+                tx,
+                "agent.status_changed",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "status": "parked" }),
+            )
+        })
+    }
+
+    /// Complete an un-park (spec §5.4): only if `move_token` matches. Sets `status='idle'`,
+    /// clears the lease + `parked_at`, resets the idle clock, and records the new location.
+    /// Emits `agent.location_changed` + `agent.status_changed`. Returns the event seq (0 if the
+    /// token no longer matches).
+    pub fn finish_unpark(
+        &mut self,
+        uuid: &str,
+        token: &str,
+        session: &str,
+        terminal_id: &str,
+        pane_id: &str,
+    ) -> Result<i64> {
+        let (uuid, token, session, terminal_id, pane_id) = (
+            uuid.to_string(),
+            token.to_string(),
+            session.to_string(),
+            terminal_id.to_string(),
+            pane_id.to_string(),
+        );
+        let now = now_millis();
+        self.with_immediate_tx(|tx| {
+            let n = tx
+                .execute(
+                    "UPDATE agents SET status='idle', move_state='none', move_token=NULL, \
+                     parked_at=NULL, idle_since=?5, herdr_session=?2, terminal_id=?3, \
+                     pane_id=?4, last_status_change_at=?5, updated_at=?5 \
+                     WHERE uuid=?1 AND move_token=?6",
+                    rusqlite::params![uuid, session, terminal_id, pane_id, now, token],
+                )
+                .map_err(map_sqlite)?;
+            if n == 0 {
+                return Ok(0);
+            }
+            append_event_tx(
+                tx,
+                "agent.location_changed",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "pane_id": pane_id, "terminal_id": terminal_id }),
+            )?;
+            append_event_tx(
+                tx,
+                "agent.status_changed",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "status": "idle" }),
+            )
+        })
+    }
+
+    /// Roll back a half-done move (spec §5.4, §11.5): clear the lease, leaving the public
+    /// status where it was (idle for a failed park, parked for a failed un-park). Only affects
+    /// the row if `move_token` matches. Returns true if a move was rolled back.
+    pub fn rollback_move(&mut self, uuid: &str, token: &str) -> Result<bool> {
+        let (uuid, token) = (uuid.to_string(), token.to_string());
+        self.with_immediate_tx(|tx| {
+            let n = tx
+                .execute(
+                    "UPDATE agents SET move_state='none', move_token=NULL, updated_at=?3 \
+                     WHERE uuid=?1 AND move_token=?2",
+                    rusqlite::params![uuid, token, now_millis()],
+                )
+                .map_err(map_sqlite)?;
+            Ok(n > 0)
+        })
+    }
+
+    /// Managed agents with an in-flight move (`move_state != 'none'`) — half-done park/un-park
+    /// moves the reconciler completes or rolls back after a crash (spec §11.5).
+    pub fn agents_in_move(&self) -> Result<Vec<AgentFull>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "{AGENT_FULL_SELECT} WHERE managed=1 AND move_state != 'none' \
+                 AND status NOT IN ('ended','lost')"
+            ))
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([], read_agent_full_row)
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows)
+    }
+
+    /// All managed agents currently `lost` (spec §11.5): their panes vanished and the path
+    /// stays reserved until reconciliation confirms the terminal is really gone.
+    pub fn lost_agents(&self) -> Result<Vec<AgentFull>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "{AGENT_FULL_SELECT} WHERE managed=1 AND status='lost'"
+            ))
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([], read_agent_full_row)
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows)
+    }
+
+    // --- attach leases (spec §5.4, §6.1, §12) ---
+
+    /// Prepare an attach (spec §6.1, §11.2): in ONE transaction, validate the target is
+    /// attachable, insert the lease, and read the current location — so GC can never move/reap
+    /// between resolution and the lease landing. Returns the location + `attach.started` seq.
+    /// Queued/starting/ended/lost targets → `state_conflict`.
+    pub fn prepare_attach(
+        &mut self,
+        uuid: &str,
+        lease_id: &str,
+        mode: &str,
+        connection: &str,
+        client_pid: i64,
+        ttl_ms: i64,
+    ) -> Result<(AttachInfo, i64)> {
+        let (uuid, lease_id, mode, connection) = (
+            uuid.to_string(),
+            lease_id.to_string(),
+            mode.to_string(),
+            connection.to_string(),
+        );
+        let now = now_millis();
+        self.with_immediate_tx(|tx| {
+            let row = read_agent_full_tx(tx, &uuid)?
+                .ok_or_else(|| OrcrError::not_found(format!("no agent with uuid {uuid}")))?;
+            if matches!(
+                row.status.as_str(),
+                "queued" | "starting" | "ended" | "lost"
+            ) {
+                return Err(OrcrError::state_conflict(format!(
+                    "agent `{}` is {} — cannot attach",
+                    row.path, row.status
+                ))
+                .with_details(json!({ "current_status": row.status })));
+            }
+            let terminal_id = row.terminal_id.clone().ok_or_else(|| {
+                OrcrError::state_conflict(format!("agent `{}` has no live pane", row.path))
+                    .with_details(json!({ "current_status": row.status }))
+            })?;
+            tx.execute(
+                "INSERT INTO attaches \
+                 (agent_uuid, lease_id, mode, connection, client_pid, started_at, \
+                  heartbeat_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)",
+                rusqlite::params![
+                    uuid,
+                    lease_id,
+                    mode,
+                    connection,
+                    client_pid,
+                    now,
+                    now + ttl_ms
+                ],
+            )
+            .map_err(map_sqlite)?;
+            let ev = append_event_tx(
+                tx,
+                "attach.started",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "lease_id": lease_id, "mode": mode }),
+            )?;
+            Ok((
+                AttachInfo {
+                    terminal_id,
+                    pane_id: row.pane_id.clone(),
+                    herdr_session: row.herdr_session.clone(),
+                },
+                ev,
+            ))
+        })
+    }
+
+    /// Heartbeat an attach lease (spec §5.4): refresh `heartbeat_at`/`expires_at`. Returns
+    /// true if the lease still existed.
+    pub fn heartbeat_lease(&mut self, lease_id: &str, ttl_ms: i64) -> Result<bool> {
+        let lease_id = lease_id.to_string();
+        let now = now_millis();
+        self.with_immediate_tx(|tx| {
+            let n = tx
+                .execute(
+                    "UPDATE attaches SET heartbeat_at=?2, expires_at=?3 WHERE lease_id=?1",
+                    rusqlite::params![lease_id, now, now + ttl_ms],
+                )
+                .map_err(map_sqlite)?;
+            Ok(n > 0)
+        })
+    }
+
+    /// Release an attach lease (spec §5.4): drop it and emit `attach.ended`. Returns the event
+    /// seq (0 if the lease was already gone).
+    pub fn release_lease(&mut self, lease_id: &str) -> Result<i64> {
+        let lease_id = lease_id.to_string();
+        self.with_immediate_tx(|tx| {
+            let agent: Option<String> = tx
+                .query_row(
+                    "SELECT agent_uuid FROM attaches WHERE lease_id=?1",
+                    [&lease_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(map_sqlite)?;
+            let Some(agent) = agent else {
+                return Ok(0);
+            };
+            tx.execute("DELETE FROM attaches WHERE lease_id=?1", [&lease_id])
+                .map_err(map_sqlite)?;
+            append_event_tx(
+                tx,
+                "attach.ended",
+                Some(&agent),
+                &json!({ "uuid": agent, "lease_id": lease_id }),
+            )
+        })
+    }
+
+    /// Whether the agent has a *fresh* attach lease (not expired) — the GC interlock that
+    /// survives restarts (spec §5.4).
+    pub fn has_fresh_lease(&self, uuid: &str, now: i64) -> Result<bool> {
+        let n: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM attaches WHERE agent_uuid=?1 AND expires_at > ?2",
+                rusqlite::params![uuid, now],
+                |r| r.get(0),
+            )
+            .map_err(map_sqlite)?;
+        Ok(n > 0)
+    }
+
+    /// Delete every attach lease whose heartbeat expired (spec §5.4, cleanup). Emits
+    /// `attach.ended` per lease. Returns the highest event seq written (0 if none).
+    pub fn expire_leases(&mut self, now: i64) -> Result<i64> {
+        self.with_immediate_tx(|tx| {
+            let expired: Vec<(String, String)> = {
+                let mut stmt = tx
+                    .prepare("SELECT lease_id, agent_uuid FROM attaches WHERE expires_at <= ?1")
+                    .map_err(map_sqlite)?;
+                let rows = stmt
+                    .query_map([now], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    })
+                    .map_err(map_sqlite)?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(map_sqlite)?
+            };
+            let mut last = 0;
+            for (lease_id, agent) in expired {
+                tx.execute("DELETE FROM attaches WHERE lease_id=?1", [&lease_id])
+                    .map_err(map_sqlite)?;
+                last = append_event_tx(
+                    tx,
+                    "attach.ended",
+                    Some(&agent),
+                    &json!({ "uuid": agent, "lease_id": lease_id, "reason": "expired" }),
+                )?;
+            }
+            Ok(last)
+        })
+    }
+
+    // --- unmanaged discovery (spec §5.7, §11.5) ---
+
+    /// The active unmanaged row keyed by (herdr session, terminal_id), if any (§5.7).
+    pub fn find_unmanaged(&self, session: &str, terminal_id: &str) -> Result<Option<AgentFull>> {
+        self.conn
+            .query_row(
+                &format!(
+                    "{AGENT_FULL_SELECT} WHERE managed=0 AND herdr_session=?1 \
+                     AND terminal_id=?2 AND status != 'ended' LIMIT 1"
+                ),
+                rusqlite::params![session, terminal_id],
+                read_agent_full_row,
+            )
+            .optional()
+            .map_err(map_sqlite)
+    }
+
+    /// All active unmanaged rows in a session (to detect vanished terminals, §5.7).
+    pub fn active_unmanaged(&self, session: &str) -> Result<Vec<AgentFull>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "{AGENT_FULL_SELECT} WHERE managed=0 AND herdr_session=?1 AND status != 'ended'"
+            ))
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([session], read_agent_full_row)
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows)
+    }
+
+    /// Whether any *active* agent (managed or unmanaged) already holds `path` — used to make an
+    /// unmanaged path unique with a deterministic suffix (§5.7).
+    pub fn path_active(&self, path: &str) -> Result<bool> {
+        let n: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM agents WHERE path=?1 AND status != 'ended'",
+                [path],
+                |r| r.get(0),
+            )
+            .map_err(map_sqlite)?;
+        Ok(n > 0)
+    }
+
+    /// Insert a discovered unmanaged agent row (spec §5.7). The path must already be made
+    /// unique by the caller. Emits `agent.created`. Returns the event seq.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_unmanaged(
+        &mut self,
+        uuid: &str,
+        path: &str,
+        session: &str,
+        terminal_id: &str,
+        pane_id: &str,
+        provider: Option<&str>,
+        status: &str,
+        agent_session: Option<(&str, &str)>,
+    ) -> Result<i64> {
+        let (uuid, path, session, terminal_id, pane_id, status) = (
+            uuid.to_string(),
+            path.to_string(),
+            session.to_string(),
+            terminal_id.to_string(),
+            pane_id.to_string(),
+            status.to_string(),
+        );
+        let provider = provider.map(|s| s.to_string());
+        let (askind, asval) = match agent_session {
+            Some((k, v)) => (Some(k.to_string()), Some(v.to_string())),
+            None => (None, None),
+        };
+        let now = now_millis();
+        self.with_immediate_tx(|tx| {
+            tx.execute(
+                "INSERT INTO agents (uuid, path, managed, origin, agent, herdr_session, \
+                 terminal_id, pane_id, agent_session_kind, agent_session_value, status, \
+                 created_at, last_status_change_at, updated_at) \
+                 VALUES (?1, ?2, 0, 'detected', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10)",
+                rusqlite::params![
+                    uuid,
+                    path,
+                    provider,
+                    session,
+                    terminal_id,
+                    pane_id,
+                    askind,
+                    asval,
+                    status,
+                    now
+                ],
+            )
+            .map_err(|e| map_insert_conflict(e, &path))?;
+            append_event_tx(
+                tx,
+                "agent.created",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "path": path, "status": status, "agent": provider,
+                         "managed": false }),
+            )
+        })
+    }
+
+    /// Update a discovered unmanaged agent's status/location (spec §5.7). Only emits + flips
+    /// when something actually changed. Returns the event seq (0 if unchanged).
+    pub fn update_unmanaged(
+        &mut self,
+        uuid: &str,
+        status: &str,
+        pane_id: &str,
+        agent_session: Option<(&str, &str)>,
+    ) -> Result<i64> {
+        let (uuid, status, pane_id) = (uuid.to_string(), status.to_string(), pane_id.to_string());
+        let (askind, asval) = match agent_session {
+            Some((k, v)) => (Some(k.to_string()), Some(v.to_string())),
+            None => (None, None),
+        };
+        let now = now_millis();
+        self.with_immediate_tx(|tx| {
+            let cur: Option<String> = tx
+                .query_row("SELECT status FROM agents WHERE uuid=?1", [&uuid], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .map_err(map_sqlite)?;
+            let Some(cur) = cur else { return Ok(0) };
+            // Always refresh location + late transcript pointer.
+            tx.execute(
+                "UPDATE agents SET pane_id=?2, \
+                 agent_session_kind=COALESCE(?3, agent_session_kind), \
+                 agent_session_value=COALESCE(?4, agent_session_value), updated_at=?5 \
+                 WHERE uuid=?1",
+                rusqlite::params![uuid, pane_id, askind, asval, now],
+            )
+            .map_err(map_sqlite)?;
+            if cur == status {
+                return Ok(0);
+            }
+            tx.execute(
+                "UPDATE agents SET status=?2, last_status_change_at=?3, updated_at=?3 \
+                 WHERE uuid=?1",
+                rusqlite::params![uuid, status, now],
+            )
+            .map_err(map_sqlite)?;
+            append_event_tx(
+                tx,
+                "agent.status_changed",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "status": status }),
+            )
+        })
+    }
+
     // --- Events (the subscription cursor, §11.6, §12) ---
 
     /// Append an event row and return its monotonic `seq`. This opens its own
@@ -1153,6 +1699,15 @@ pub struct EventRow {
     pub payload: serde_json::Value,
 }
 
+/// The live location read under the attach-prepare transaction (spec §6.1). `terminal_id` is
+/// globally unique and stable across pane moves, so the exec command addresses it directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachInfo {
+    pub terminal_id: String,
+    pub pane_id: Option<String>,
+    pub herdr_session: Option<String>,
+}
+
 /// A minimal agent read view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentRow {
@@ -1208,6 +1763,9 @@ pub struct AgentFull {
     pub agent_session_kind: Option<String>,
     pub agent_session_value: Option<String>,
     pub status: String,
+    /// Exclusive move lease state (`none|parking|unparking`, §5.4).
+    pub move_state: String,
+    pub move_token: Option<String>,
     pub blocked_kind: Option<String>,
     pub input_seq: i64,
     pub cancel_requested: bool,
@@ -1217,6 +1775,8 @@ pub struct AgentFull {
     pub created_at: i64,
     pub starting_at: Option<i64>,
     pub idle_since: Option<i64>,
+    /// When the agent entered `parked` (basis for the reap clock, §5.4).
+    pub parked_at: Option<i64>,
     pub last_status_change_at: Option<i64>,
     pub ended_at: Option<i64>,
 }
@@ -1267,17 +1827,19 @@ pub struct AgentFilter {
 const AGENT_FULL_SELECT: &str =
     "SELECT uuid, path, managed, origin, parent_id, agent, model, effort, \
      gc_mode, cwd, herdr_session, terminal_id, pane_id, launch_token, \
-     agent_session_kind, agent_session_value, status, blocked_kind, input_seq, \
+     agent_session_kind, agent_session_value, status, move_state, move_token, \
+     blocked_kind, input_seq, \
      cancel_requested, exit_reason, queue_seq, deadline_at, created_at, starting_at, \
-     idle_since, last_status_change_at, ended_at FROM agents";
+     idle_since, parked_at, last_status_change_at, ended_at FROM agents";
 
 /// The same read scoped to one uuid.
 const AGENT_FULL_SELECT_ONE: &str =
     "SELECT uuid, path, managed, origin, parent_id, agent, model, effort, \
      gc_mode, cwd, herdr_session, terminal_id, pane_id, launch_token, \
-     agent_session_kind, agent_session_value, status, blocked_kind, input_seq, \
+     agent_session_kind, agent_session_value, status, move_state, move_token, \
+     blocked_kind, input_seq, \
      cancel_requested, exit_reason, queue_seq, deadline_at, created_at, starting_at, \
-     idle_since, last_status_change_at, ended_at FROM agents WHERE uuid = ?1";
+     idle_since, parked_at, last_status_change_at, ended_at FROM agents WHERE uuid = ?1";
 
 /// Deserialize an `AgentFull` from a row selecting [`AGENT_FULL_COLUMNS`] in order.
 fn read_agent_full_row(r: &rusqlite::Row) -> rusqlite::Result<AgentFull> {
@@ -1299,17 +1861,20 @@ fn read_agent_full_row(r: &rusqlite::Row) -> rusqlite::Result<AgentFull> {
         agent_session_kind: r.get(14)?,
         agent_session_value: r.get(15)?,
         status: r.get(16)?,
-        blocked_kind: r.get(17)?,
-        input_seq: r.get(18)?,
-        cancel_requested: r.get::<_, i64>(19)? != 0,
-        exit_reason: r.get(20)?,
-        queue_seq: r.get(21)?,
-        deadline_at: r.get(22)?,
-        created_at: r.get(23)?,
-        starting_at: r.get(24)?,
-        idle_since: r.get(25)?,
-        last_status_change_at: r.get(26)?,
-        ended_at: r.get(27)?,
+        move_state: r.get(17)?,
+        move_token: r.get(18)?,
+        blocked_kind: r.get(19)?,
+        input_seq: r.get(20)?,
+        cancel_requested: r.get::<_, i64>(21)? != 0,
+        exit_reason: r.get(22)?,
+        queue_seq: r.get(23)?,
+        deadline_at: r.get(24)?,
+        created_at: r.get(25)?,
+        starting_at: r.get(26)?,
+        idle_since: r.get(27)?,
+        parked_at: r.get(28)?,
+        last_status_change_at: r.get(29)?,
+        ended_at: r.get(30)?,
     })
 }
 
@@ -1718,6 +2283,159 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(s.list_agents(&f).unwrap().len(), 3);
+    }
+
+    /// Move an agent into a live `idle` state with a recorded pane (park test scaffolding).
+    fn make_idle(s: &mut Store, uuid: &str, path: &str) {
+        s.enqueue_agent(&NewAgent::queued(uuid, path, "mock"))
+            .unwrap();
+        s.record_location(uuid, "orcr", &format!("term_{uuid}"), &format!("w1:{uuid}"))
+            .unwrap();
+        s.deliver_input(uuid, "orcr", now_millis()).unwrap();
+        s.complete_turn(uuid, 1, now_millis(), None).unwrap();
+        s.set_idle_since(uuid, Some(now_millis())).unwrap();
+    }
+
+    #[test]
+    fn park_candidates_respect_gc_mode_and_idle_clock() {
+        let mut s = Store::open_in_memory().unwrap();
+        make_idle(&mut s, "u1", "w/a");
+        // A `gc never` agent is never a park candidate.
+        make_idle(&mut s, "u2", "w/b");
+        s.conn
+            .execute("UPDATE agents SET gc_mode='never' WHERE uuid='u2'", [])
+            .unwrap();
+        let cands = s.park_candidates(now_millis() + 1).unwrap();
+        let ids: Vec<&str> = cands.iter().map(|a| a.uuid.as_str()).collect();
+        assert_eq!(ids, vec!["u1"]);
+        // Idle-clock gate: cutoff before idle_since → no candidates.
+        assert!(s.park_candidates(0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn two_phase_park_and_reap() {
+        let mut s = Store::open_in_memory().unwrap();
+        make_idle(&mut s, "u1", "w/a");
+        // Begin the move (CAS from idle).
+        assert!(s.begin_move("u1", "idle", "parking", "tok1").unwrap());
+        // A second begin on the same row loses (lease already held).
+        assert!(!s.begin_move("u1", "idle", "parking", "tok2").unwrap());
+        // Finishing with the wrong token is a no-op.
+        assert_eq!(s.finish_park("u1", "wrong", "orcr", "t", "p").unwrap(), 0);
+        // Finish with the right token → parked.
+        assert!(s.finish_park("u1", "tok1", "orcr", "t2", "w9:p2").unwrap() > 0);
+        let a = s.agent_full("u1").unwrap().unwrap();
+        assert_eq!(a.status, "parked");
+        assert_eq!(a.move_state, "none");
+        assert!(a.move_token.is_none());
+        assert!(a.parked_at.is_some());
+        assert_eq!(a.pane_id.as_deref(), Some("w9:p2"));
+        // Reap candidate once parked_at is in the past.
+        let reap = s.reap_candidates(now_millis() + 1).unwrap();
+        assert_eq!(reap.len(), 1);
+        assert!(s.reap_candidates(0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn unpark_resets_clock_and_rollback_restores() {
+        let mut s = Store::open_in_memory().unwrap();
+        make_idle(&mut s, "u1", "w/a");
+        s.begin_move("u1", "idle", "parking", "t").unwrap();
+        s.finish_park("u1", "t", "orcr", "t2", "p2").unwrap();
+        // Un-park two-phase.
+        assert!(s.begin_move("u1", "parked", "unparking", "u").unwrap());
+        assert!(s.finish_unpark("u1", "u", "orcr", "t3", "p3").unwrap() > 0);
+        let a = s.agent_full("u1").unwrap().unwrap();
+        assert_eq!(a.status, "idle");
+        assert!(a.parked_at.is_none());
+        assert!(a.idle_since.is_some());
+        // Rollback path: begin a move, roll it back — status stays put, lease cleared.
+        assert!(s.begin_move("u1", "idle", "parking", "r").unwrap());
+        assert_eq!(s.agents_in_move().unwrap().len(), 1);
+        assert!(s.rollback_move("u1", "r").unwrap());
+        assert_eq!(s.agent_full("u1").unwrap().unwrap().status, "idle");
+        assert!(s.agents_in_move().unwrap().is_empty());
+    }
+
+    #[test]
+    fn timed_out_agents_selects_deadline_passed() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.enqueue_agent(&NewAgent {
+            deadline_at: Some(now_millis() - 1),
+            ..NewAgent::queued("u1", "w/a", "mock")
+        })
+        .unwrap();
+        s.enqueue_agent(&NewAgent {
+            deadline_at: Some(now_millis() + 60_000),
+            ..NewAgent::queued("u2", "w/b", "mock")
+        })
+        .unwrap();
+        let out = s.timed_out_agents(now_millis()).unwrap();
+        let ids: Vec<&str> = out.iter().map(|a| a.uuid.as_str()).collect();
+        assert_eq!(ids, vec!["u1"]);
+    }
+
+    #[test]
+    fn attach_lease_guards_gc_and_expires() {
+        let mut s = Store::open_in_memory().unwrap();
+        make_idle(&mut s, "u1", "w/a");
+        let (info, ev) = s
+            .prepare_attach("u1", "lease1", "observe", "cli", 42, 30_000)
+            .unwrap();
+        assert!(ev > 0);
+        assert_eq!(info.terminal_id, "term_u1");
+        assert!(s.has_fresh_lease("u1", now_millis()).unwrap());
+        // Heartbeat keeps it fresh.
+        assert!(s.heartbeat_lease("lease1", 30_000).unwrap());
+        // A far-future `now` sees it expired.
+        assert!(!s.has_fresh_lease("u1", now_millis() + 60_000).unwrap());
+        // expire_leases cleans it up.
+        assert!(s.expire_leases(now_millis() + 60_000).unwrap() > 0);
+        assert!(!s.has_fresh_lease("u1", now_millis()).unwrap());
+        // Release is a no-op once gone.
+        assert_eq!(s.release_lease("lease1").unwrap(), 0);
+    }
+
+    #[test]
+    fn prepare_attach_rejects_queued() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.enqueue_agent(&NewAgent::queued("u1", "w/a", "mock"))
+            .unwrap();
+        let e = s
+            .prepare_attach("u1", "l", "observe", "cli", 1, 1000)
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::StateConflict);
+    }
+
+    #[test]
+    fn unmanaged_insert_update_and_lookup() {
+        let mut s = Store::open_in_memory().unwrap();
+        assert!(s.find_unmanaged("main", "term_x").unwrap().is_none());
+        let ev = s
+            .insert_unmanaged(
+                "uu",
+                "unmanaged/main/w6_p1",
+                "main",
+                "term_x",
+                "w6:p1",
+                Some("claude"),
+                "working",
+                Some(("id", "sess")),
+            )
+            .unwrap();
+        assert!(ev > 0);
+        let found = s.find_unmanaged("main", "term_x").unwrap().unwrap();
+        assert!(!found.managed);
+        assert_eq!(found.status, "working");
+        assert_eq!(found.agent.as_deref(), Some("claude"));
+        // Status change emits; an unchanged status does not.
+        assert!(s.update_unmanaged("uu", "idle", "w6:p1", None).unwrap() > 0);
+        assert_eq!(s.update_unmanaged("uu", "idle", "w6:p1", None).unwrap(), 0);
+        assert_eq!(s.active_unmanaged("main").unwrap().len(), 1);
+        // Terminal gone → ended → drops out of active set.
+        s.transition_status("uu", "ended", None).unwrap();
+        assert!(s.active_unmanaged("main").unwrap().is_empty());
+        assert!(!s.path_active("unmanaged/main/w6_p1").unwrap());
     }
 
     #[test]

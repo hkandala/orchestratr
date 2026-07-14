@@ -1204,6 +1204,8 @@ mod tests {
             agent_session_kind: None,
             agent_session_value: None,
             status: status.into(),
+            move_state: "none".into(),
+            move_token: None,
             blocked_kind: None,
             input_seq: 1,
             cancel_requested: false,
@@ -1213,6 +1215,7 @@ mod tests {
             created_at: 0,
             starting_at: None,
             idle_since: None,
+            parked_at: None,
             last_status_change_at: None,
             ended_at: None,
         }
