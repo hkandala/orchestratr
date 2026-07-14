@@ -48,3 +48,26 @@ Root cause + belt-and-suspenders fixes applied:
 - **Confirmed:** full e2e suite (agent/completion/loop/gc/recipe/top) run green against live
   herdr 0.7.2 with the mock; `herdr session list` showed only the user's `default` session
   before and after — no `orcr`/`orcr_test_*` leak.
+
+## 2. `agent ask` reported FAILING in manual testing (real provider) — MUST reproduce + fix in manual-e2e
+
+The user, testing orcr by hand via `cargo run` against a real `claude` provider, observed
+`orcr agent ask` FAILING. The automated e2e gate exercises `ask` only against the MOCK
+provider (which writes a self-contained transcript), so a real-provider-specific failure
+in the `ask` path would not have been caught.
+
+`ask` = `run --gc immediate` → settle `wait` → `logs --last-response` (spec §6.1). Likely
+suspects to investigate against a REAL claude/codex agent:
+- transcript adapter fails to locate/parse the real claude/codex native transcript
+  (identity gate by `agent_session` + `created_at`; freshness gate) → `transcript_unavailable`;
+- gc-immediate tears down the pane before the final response is captured/readable
+  (the §11.2 "response verified readable before kill" ordering);
+- the settle/completion detection for a real provider's first turn (fast-turn grace,
+  transcript settle) mis-fires so `wait` never settles or settles too early;
+- CLI exit/`--json` path for `ask` surfacing the error unhelpfully.
+
+Manual-e2e MUST: reproduce `orcr agent ask --name <n> -a claude -p "..."` end-to-end
+against a REAL claude agent (and codex), capture the exact failure (stderr, exit code,
+`--json` error code + details), root-cause it, FIX it, and add a regression test
+(real-provider smoke where feasible; otherwise a mock-based test that covers the same
+code path the real failure exercised). Record findings in manual-e2e-results.md.
