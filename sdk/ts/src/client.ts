@@ -158,17 +158,27 @@ export class AgentHandle {
   async *followLogs(opts: { intervalMs?: number } = {}): AsyncIterable<unknown> {
     const interval = opts.intervalMs ?? 500;
     let seen = 0;
+    // The transcript may not exist yet while the agent is still `starting`; treat that as "no
+    // entries yet" and keep polling rather than throwing out of the iterator.
+    const drain = async (): Promise<unknown[]> => {
+      try {
+        return await this.logs();
+      } catch (e) {
+        if (e instanceof TranscriptUnavailable) return [];
+        throw e;
+      }
+    };
     for (;;) {
-      const entries = await this.logs();
+      const entries = await drain();
       for (let i = seen; i < entries.length; i++) yield entries[i];
       seen = entries.length;
       // Stop once the agent has ended and we've drained its transcript.
-      const ls = await this.orcr.agent.ls({ all: true, pattern: this.uuid });
+      const ls = await this.orcr.agent.ls({ all: true });
       const me = ls.find((a) => String((a as Record<string, unknown>).uuid) === this.uuid) as
         | Record<string, unknown>
         | undefined;
       if (me && String(me.status) === "ended") {
-        const after = await this.logs();
+        const after = await drain();
         for (let i = seen; i < after.length; i++) yield after[i];
         return;
       }
