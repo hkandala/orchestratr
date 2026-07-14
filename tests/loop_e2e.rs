@@ -570,3 +570,86 @@ fn e2e_restart_recovery() {
         "no replayed/duplicated runs"
     );
 }
+
+/// Missed cron fire (server down across a scheduled slot): a cron fire that comes due while the
+/// server is dead is skipped-and-logged on restart (never replayed), and `next_fire_at` is
+/// advanced forward (spec §6.2, §11.3).
+#[test]
+fn e2e_missed_cron_fire_skipped() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    let ts = TestServer::start();
+    // A once-a-minute cron: its next fire is the top of the next minute (<= 60s away).
+    let created = ts.create_loop(
+        "missed",
+        json!({ "cron": "* * * * *", "max_concurrency": 1 }),
+        &["sh", "-c", "echo tick"],
+    );
+    let orig_next = created["loop"]["next_fire_at"]
+        .as_i64()
+        .expect("next_fire_at set at create");
+
+    // Kill the server hard *before* the fire is due, so it can never tick that slot.
+    let server_pid = ts.pid();
+    unsafe {
+        libc::kill(server_pid as i32, libc::SIGKILL);
+    }
+    // Wait past the scheduled slot in real wall-clock time so the fire is genuinely missed.
+    let now_ms = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+    };
+    while now_ms() <= orig_next + 1000 {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // Restart → recovery decides the missed slot exactly once: skipped, not replayed.
+    ts.spawn_server();
+
+    // A `loop.skipped` (reason=missed_while_down) event is emitted, visible via `--source orcr`.
+    assert!(
+        wait_until(Duration::from_secs(20), || {
+            let logs = ts
+                .request("loop.logs", json!({ "name": "missed", "source": "orcr" }))
+                .unwrap_or_default();
+            logs["lines"]
+                .as_array()
+                .map(|ls| {
+                    ls.iter().any(|l| {
+                        let t = l["text"].as_str().unwrap_or("");
+                        t.contains("loop.skipped") && t.contains("missed_while_down")
+                    })
+                })
+                .unwrap_or(false)
+        }),
+        "a loop.skipped(missed_while_down) event should be logged on restart"
+    );
+
+    // No run row was created for the missed slot — the fire was skipped, never replayed.
+    assert!(
+        ts.run_ls("missed", true).is_empty(),
+        "missed cron fire must not be replayed as a run"
+    );
+
+    // next_fire_at was advanced forward past the missed slot.
+    let new_next = ts
+        .request("loop.ls", json!({ "all": true }))
+        .unwrap()
+        .get("loops")
+        .and_then(|v| v.as_array())
+        .and_then(|ls| {
+            ls.iter()
+                .find(|l| l["name"].as_str() == Some("missed"))
+                .cloned()
+        })
+        .and_then(|l| l["next_fire_at"].as_i64())
+        .expect("missed loop still present with a next_fire_at");
+    assert!(
+        new_next > orig_next,
+        "next_fire_at should advance past the missed slot (was {orig_next}, now {new_next})"
+    );
+}
