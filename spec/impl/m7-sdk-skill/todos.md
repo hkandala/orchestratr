@@ -68,12 +68,12 @@ Ships: TS SDK, orcr scaffold, tested recipes, SKILL.md + references, packaging +
 ## Acceptance criteria
 
 - [x] SDK covers 100% of schema methods (generated-client CI check)
-- [x] Every §9 recipe runs e2e against mock provider in CI; fix-until-green + fan-out-merge smoke real providers (best-effort/deferred — see notes)
-- [x] `orcr.scope` nesting composes same effective paths as CLI (property test)
+- [x] Every §9 recipe runs e2e against mock provider in CI (`recipe_e2e::e2e_recipes_run_against_mock` + loop-until-done); fix-until-green + fan-out-merge real-provider smoke DEFERRED to manual-e2e (best-effort, master-prompt §6)
+- [x] `orcr.scope` nesting composes same effective paths as CLI (property test: `sdk/ts/test/scope.test.ts` + live `e2e_sdk_scope_matches_cli`)
 - [x] Skill drill: fresh agent + SKILL.md → hot path (validated by structure + doc-test; live drill best-effort)
-- [x] reference files contain no stale flags (doc-test vs --help)
+- [x] reference files contain no stale flags (doc-test vs --help: `tests/skill_docs.rs`)
 - [x] doc-test rejects run/ask sample missing --name/--path
-- [x] Concurrency fixtures: 2× fan-out + 2× tournament concurrent, clean
+- [~] Concurrency fixtures: PARTIAL — 2 concurrent (fan-out + tournament) distinct scopes run clean (`e2e_concurrent_fanout_and_tournament`). The literal 4-way (2× each) reliably hits a herdr concurrent-burst `agent.start` limitation → kept as `#[ignore]`d `e2e_concurrent_burst_high` + documented in notes.md (engine follow-up)
 - [x] Scaffold: clean checkout → scaffold + npx tsx workflow.ts green vs mock; re-run → state_conflict; missing-node → environment_error nothing created; pinned SDK version == CLI version
 - [x] Package installs clean (via file: spec / tarball in CI); quickstart works
 
