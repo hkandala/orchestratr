@@ -68,12 +68,31 @@ impl Server {
             store.timed_out_agents(now_millis()).unwrap_or_default()
         };
         for a in due {
-            self.log()
-                .warn(format!("--timeout expired for {} — killing", a.path));
-            if let (Ok(driver), Some(pane)) = (self.owned_driver(), a.pane_id.as_deref()) {
-                self.graceful_shutdown(&driver, &a, pane);
+            // Hold the per-agent move lock (like `reap_sweep`) so a concurrent park/un-park can't
+            // interleave: acting on a stale `pane_id` while the pane is relocating would orphan it.
+            let move_lock = self.lock_move(&a.uuid);
+            let _held = move_lock.lock().unwrap();
+            // Re-read under the lock — the row may have ended, or a move may have started, between
+            // candidate selection and acquiring the lock.
+            let cur = {
+                let store = self.inner.store.lock().unwrap();
+                store.agent_full(&a.uuid).ok().flatten()
+            };
+            let Some(cur) = cur else { continue };
+            if cur.status == "ended" || cur.status == "lost" {
+                continue; // already resolved
             }
-            self.end_agent(&a.uuid, "timeout");
+            if cur.move_state != "none" {
+                // Mid-move (park/un-park in flight) — leave it for a later tick, once the move has
+                // settled and `pane_id` points at the live pane again.
+                continue;
+            }
+            self.log()
+                .warn(format!("--timeout expired for {} — killing", cur.path));
+            if let (Ok(driver), Some(pane)) = (self.owned_driver(), cur.pane_id.as_deref()) {
+                self.graceful_shutdown(&driver, &cur, pane);
+            }
+            self.end_agent(&cur.uuid, "timeout");
         }
     }
 

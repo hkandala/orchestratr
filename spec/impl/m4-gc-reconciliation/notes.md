@@ -15,6 +15,18 @@ choices worth knowing, and discovered facts. Capture *decisions and deviations*.
   agent; a user shell does not) while staying within the socket's capabilities. Both are
   reported and never touched.
 
+- **Crash-recovery pane matching is by herdr label (the full path), not by
+  `ORCR_ID` + launch token.** §11.1 frames pane↔row matching as "by ORCR_ID and launch
+  token — never by location guessing", but herdr's `pane.list`/`PaneInfo` exposes no pane
+  env, so the injected `ORCR_LAUNCH_TOKEN`/`ORCR_ID` cannot be read back off a live pane.
+  `reconcile_agent` therefore matches an orphan pane by its herdr **label**, which is the
+  agent's full path (`path::herdr_name`). This is safe under the active-path-uniqueness
+  invariant (at most one active agent holds a given path, enforced by the partial-unique
+  path index), so the label identifies exactly one row — it is not location guessing. The
+  stored launch token remains a correctness anchor (injected into the pane, persisted in
+  `launch.json`) and would be used directly if a future herdr exposes pane env. The same
+  socket limitation underlies the marked/unmarked classification note above.
+
 - **`home_workspace` is derived, not stored.** The milestone text says park "records
   `home_workspace`", but §12 lists home-workspace as derived (first path segment, else
   `default`) and the path is immutable, so no column is needed — un-park derives the home
@@ -182,6 +194,19 @@ choices worth knowing, and discovered facts. Capture *decisions and deviations*.
   (via a test-only `ORCR_TEST_REAP_DELAY_MS` hook that widens the pre-lock window) and asserts the
   agent survives (un-parks to `blocked`, pane back in the home workspace) with the send landing
   and no `reaped` end.
+
+## Comprehensive review (post-M7) → fixes
+
+- **`timeout_sweep` now takes the per-agent move lock and skips move-in-flight agents.** It was
+  the only GC path acting without the move lock: `timed_out_agents` selects any non-ended/lost
+  agent past its deadline, including one with `move_state != 'none'` (mid park/un-park), and the
+  sweep called `graceful_shutdown` on the row's `pane_id` — stale while the pane is relocating,
+  which could orphan the moved pane or race the move CAS. Fix: mirror `reap_sweep` — hold
+  `self.lock_move(uuid)`, re-read under the lock, skip if already ended/lost, and defer a
+  mid-move agent to a later tick (once the move settles and `pane_id` is live again). This does
+  **not** make a `send` cancel a timeout (the deadline is still absolute per the note below); it
+  only removes the stale-pane race. Verified by the existing `gc_e2e::e2e_explicit_timeout_kills`
+  + soak.
 
 - **LOW — `repaired` drift metric over-counted no-op recoveries.** `recover_one_move_locked`
   incremented `repaired` unconditionally, before the outcome was known, so a no-op recovery (e.g.
