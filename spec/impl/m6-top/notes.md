@@ -67,10 +67,36 @@ choices worth knowing, and discovered facts. Capture *decisions and deviations*.
   (`/verify/checker` under `verify` with `↖ fix_build/fixer`, not re-rooted). Filter==ls holds by
   construction: `build_snapshot` uses `include_ended:false` (matches `ls` default) and
   `TopFilter::agent_matches` mirrors `store::list_agents`.
-  - Non-blocking finding (for reviewer/reviser): `app.rs::run` computes `dirty` as a per-iteration
-    local and drains `rx` each pass; if a coalesced event is drained in a sub-`FRAME` window right
-    after a refresh (e.g. concurrent keypress), the `last_refresh.elapsed() >= FRAME` gate skips the
-    refresh and the dirty signal is lost until the *next* event, so the tree can briefly display a
-    stale final state after keyboard activity. Self-healing on any subsequent event and outside the
-    acceptance-tested path (which drives re-snapshot directly), but persisting `dirty` across
-    iterations would honor §11.6's "never miss an update" more strictly.
+  - Non-blocking finding (for reviewer/reviser): `app.rs::run` computed `dirty` as a per-iteration
+    local and drained `rx` each pass; if a coalesced event was drained in a sub-`FRAME` window right
+    after a refresh (e.g. concurrent keypress), the `last_refresh.elapsed() >= FRAME` gate skipped the
+    refresh and the dirty signal was lost until the *next* event, so the tree could briefly display a
+    stale final state after keyboard activity.
+  - **Resolved (scribe/finalize).** `dirty` is now hoisted to a loop-persistent `let mut dirty`
+    outside the render loop and only cleared (`dirty = false`) once a refresh actually runs, so a
+    coalesced signal held back by the frame gate survives to the next iteration and is never dropped —
+    honoring §11.6's "never miss an update" strictly rather than relying on self-heal. No behavior
+    change on the acceptance-tested path; unit + `top_e2e` remain green.
+
+## Reviewer history
+
+- **Review round 1 — PASS.** Code-review pass over the M6 surface (`src/top/model.rs`,
+  `src/top/app.rs`, `src/cli.rs` top wiring, the `agent_row_json`/`build_snapshot` snapshot
+  enrichment, and `tests/top_e2e.rs`). Findings: only the single non-blocking coalescing nit
+  carried over from verify round 1 (above), now resolved at finalize. No correctness, security,
+  spec-adherence, or test-quality blockers: the pure model is heavily unit-tested with golden
+  structure diffs, `TopFilter::agent_matches` mirrors `store::list_agents` byte-for-byte (filter==ls
+  by construction), snapshot enrichment is strictly additive (backward-compatible shapes), and the
+  e2e suite exercises all four acceptance criteria against live herdr + mock. Verdict: PASS.
+
+## Finalize (scribe)
+
+- Fixed a stray tool-call artifact (`</content></invoke>`) accidentally appended to `todos.md`.
+- Resolved the verifier's non-blocking coalescing finding in `app.rs` (see above).
+- Final green check re-run at finalize — see the milestone completion summary; all gates green
+  (`cargo build`, unit `cargo test`, `cargo clippy -D warnings`, `cargo fmt --check`, and
+  `ORCR_E2E=1 top_e2e` against live herdr 0.7.2 + mock).
+- Test-hygiene: cleaned up the pre-existing leaked owned `orcr` herdr session (bootstrapped by an
+  earlier milestone smoke-check that didn't override `herdr.session`; flagged in commit 9a2afef).
+  Verified `herdr session list --json` shows no `orcr`/`orcr_test_*` sessions after finalize; the
+  user's real `default` session was never touched.

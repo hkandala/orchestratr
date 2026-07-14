@@ -182,6 +182,10 @@ impl App {
     fn run(&mut self, terminal: &mut Term) -> Result<()> {
         self.connect()?;
         let mut last_refresh = Instant::now();
+        // `dirty` persists across iterations: a coalesced signal that arrives inside a
+        // sub-FRAME window (e.g. right after a keypress-driven redraw) is held until the
+        // frame gate opens, so a state change is never dropped (§11.6 "never miss").
+        let mut dirty = false;
         loop {
             terminal
                 .draw(|f| self.draw(f))
@@ -199,7 +203,6 @@ impl App {
             }
 
             // Coalesce the event stream into at most one refresh per frame.
-            let mut dirty = false;
             let mut reconnect = false;
             while let Ok(msg) = self.rx.try_recv() {
                 match msg {
@@ -223,6 +226,7 @@ impl App {
                     let _ = self.connect();
                 }
                 last_refresh = Instant::now();
+                dirty = false;
             }
         }
     }

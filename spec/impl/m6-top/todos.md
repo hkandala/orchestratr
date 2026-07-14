@@ -54,5 +54,3 @@ Ships: view-only TUI tree, live statuses, filters, navigation, snapshot+event re
 
 ## Deferred / out of scope
 - Action keys (attach/send/kill/logs from TUI) + per-agent live activity feed — §17 future work.
-</content>
-</invoke>
