@@ -335,7 +335,34 @@ pub enum ApiCmd {
 
 /// Parse args and run; returns the process exit code.
 pub fn run() -> i32 {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            use clap::error::ErrorKind;
+            // Help/version aren't errors: print as usual and exit 0.
+            if matches!(
+                e.kind(),
+                ErrorKind::DisplayHelp
+                    | ErrorKind::DisplayVersion
+                    | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            ) {
+                let _ = e.print();
+                return 0;
+            }
+            // A bad flag / name / missing arg is an `invalid_request` (exit 1) per §6/§13 —
+            // not clap's default exit 2 (which §13 reserves for environment errors). The parse
+            // failed, so detect `--json` by scanning argv.
+            let json = std::env::args().any(|a| a == "--json");
+            let err = OrcrError::invalid_request(e.to_string().trim_end().to_string(), "cli_parse");
+            if json {
+                println!("{}", err.to_envelope());
+            } else {
+                // Keep clap's rich usage message on stderr.
+                let _ = e.print();
+            }
+            return err.exit_code();
+        }
+    };
     let json = cli.json;
     match dispatch(&cli) {
         Ok(()) => 0,
@@ -407,7 +434,20 @@ fn cmd_top(
 
     let compiled = match pattern.as_deref().filter(|s| !s.is_empty()) {
         Some(p) => {
-            let resolved = crate::path::resolve_selector(scope.as_deref(), p)?;
+            // §6.3 accepts `<pattern|uuid>`: a uuid/≥8-hex-prefix resolves (via the uuid-aware
+            // `agent.ls`) to that one agent's path, mirroring wait/kill; otherwise it is a glob.
+            // If the ls resolves to exactly one agent we scope top to that agent's path; a
+            // multi-match (a hex string that is really a path glob) falls back to glob compile.
+            let resolved = if looks_like_uuid_selector(p) {
+                let rows = connect_and_request("agent.ls", json!({ "pattern": p }))?;
+                let agents = rows["agents"].as_array().cloned().unwrap_or_default();
+                match agents.first().and_then(|a| a["path"].as_str()) {
+                    Some(path) if agents.len() == 1 => path.to_string(),
+                    _ => crate::path::resolve_selector(scope.as_deref(), p)?,
+                }
+            } else {
+                crate::path::resolve_selector(scope.as_deref(), p)?
+            };
             Some(crate::path::Pattern::compile(&resolved)?)
         }
         None => None,
@@ -829,11 +869,7 @@ fn cmd_agent_kill(json: bool, targets: &[String], force: bool, yes: bool) -> Res
                 r["status"].as_str().unwrap_or_default()
             );
         }
-        eprint!("Kill these {} agent(s)? [y/N] ", rows.len());
-        std::io::stderr().flush().ok();
-        let mut answer = String::new();
-        std::io::stdin().lock().read_line(&mut answer).ok();
-        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+        if !confirm(&format!("Kill these {} agent(s)? [y/N]", rows.len())) {
             eprintln!("aborted");
             return Ok(());
         }
@@ -996,15 +1032,31 @@ fn print_ls_human(result: &Value) {
         println!("no agents");
         return;
     }
+    let now = chrono::Utc::now().timestamp_millis();
+    println!(
+        "{:<40} {:<8} {:<9} {:<8} {:>5}",
+        "PATH", "UUID", "STATUS", "AGENT", "AGE"
+    );
     for a in &agents {
         let uuid = a["uuid"].as_str().unwrap_or_default();
         let short = uuid.get(..8).unwrap_or(uuid);
+        // §12 derived age: basis = created_at for queued/starting, else last_status_change_at.
+        let status = a["status"].as_str().unwrap_or_default();
+        let basis = match status {
+            "queued" | "starting" => a["created_at"].as_i64(),
+            _ => a["last_status_change_at"]
+                .as_i64()
+                .or_else(|| a["created_at"].as_i64()),
+        }
+        .unwrap_or(now);
+        let age = crate::top::model::format_age(now - basis);
         println!(
-            "{:<40} {:<8} {:<9} {:<8}",
+            "{:<40} {:<8} {:<9} {:<8} {:>5}",
             a["path"].as_str().unwrap_or_default(),
             short,
-            a["status"].as_str().unwrap_or_default(),
+            status,
             a["agent"].as_str().unwrap_or("-"),
+            age,
         );
     }
 }
@@ -1155,14 +1207,33 @@ fn cmd_loop_rm(json: bool, names: &[String], kill_active: bool, yes: bool) -> Re
     // runs + kills their agents). A plain `loop rm` only ends the definition (history stays,
     // runs keep going), so it is non-destructive and needs no prompt.
     if kill_active && !yes && !json && stdout_is_tty() {
-        eprint!(
-            "Remove loop(s) {} and kill active runs? [y/N] ",
-            names.join(", ")
-        );
-        std::io::stderr().flush().ok();
-        let mut answer = String::new();
-        std::io::stdin().lock().read_line(&mut answer).ok();
-        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+        // Enumerate the resolved loops and each one's active runs so the operator confirms
+        // against the real target set (spec §6).
+        for name in names {
+            let listed = connect_and_request("loop.run.ls", json!({ "name": name }))?;
+            let runs: Vec<&Value> = listed["runs"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter(|r| {
+                            matches!(
+                                r["status"].as_str().unwrap_or_default(),
+                                "pending" | "running" | "stopping"
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            eprintln!("Loop {name}: {} active run(s)", runs.len());
+            for r in &runs {
+                eprintln!(
+                    "  {} [{}]",
+                    r["run_id"].as_str().unwrap_or_default(),
+                    r["status"].as_str().unwrap_or_default()
+                );
+            }
+        }
+        if !confirm("Remove these loop(s) and kill their active runs? [y/N]") {
             eprintln!("aborted");
             return Ok(());
         }
@@ -1282,14 +1353,32 @@ fn cmd_loop_run_start(json: bool, name: &str) -> Result<()> {
 
 fn cmd_loop_run_stop(json: bool, name: &str, run: Option<&str>, yes: bool) -> Result<()> {
     if !yes && !json && stdout_is_tty() {
-        let what = run
-            .map(|r| format!("run {name}/{r}"))
-            .unwrap_or_else(|| format!("all runs of loop {name}"));
-        eprint!("Stop {what}? [y/N] ");
-        std::io::stderr().flush().ok();
-        let mut answer = String::new();
-        std::io::stdin().lock().read_line(&mut answer).ok();
-        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+        // Enumerate the resolved targets (the loop's active/pending runs, or the one named
+        // run) so the operator confirms against the real set, not just argv (spec §6).
+        let mut lsp = json!({ "name": name });
+        if let Some(r) = run {
+            lsp["run"] = json!(r);
+        }
+        let listed = connect_and_request("loop.run.ls", lsp)?;
+        let mut rows = listed["runs"].as_array().cloned().unwrap_or_default();
+        if let Some(r) = run {
+            rows.retain(|row| row["run_id"].as_str() == Some(r) || row["uuid"].as_str() == Some(r));
+        }
+        rows.retain(|row| {
+            matches!(
+                row["status"].as_str().unwrap_or_default(),
+                "pending" | "running" | "stopping"
+            )
+        });
+        eprintln!("Matched {} run(s) of loop {name}:", rows.len());
+        for row in &rows {
+            eprintln!(
+                "  {} [{}]",
+                row["run_id"].as_str().unwrap_or_default(),
+                row["status"].as_str().unwrap_or_default()
+            );
+        }
+        if !confirm(&format!("Stop these {} run(s)? [y/N]", rows.len())) {
             eprintln!("aborted");
             return Ok(());
         }
@@ -1553,6 +1642,23 @@ fn print_status_human(s: &Value) {
 pub fn stdout_is_tty() -> bool {
     // SAFETY: isatty on a valid fd is always safe.
     unsafe { libc::isatty(libc::STDOUT_FILENO) == 1 }
+}
+
+/// A selector that should be resolved as a uuid rather than a path glob (spec §5.1): a full
+/// uuid (dashes can't be path chars) or a git-style ≥8-hex prefix.
+fn looks_like_uuid_selector(s: &str) -> bool {
+    s.contains('-') || (s.len() >= 8 && s.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// TTY [y/N] confirmation (spec §6): print `question` to stderr, read one line from stdin,
+/// and return whether it was an affirmative (`y`/`Y`/`yes`). Callers gate this behind
+/// `!yes && !json && stdout_is_tty()` and print "aborted" on a `false`.
+fn confirm(question: &str) -> bool {
+    eprint!("{question} ");
+    std::io::stderr().flush().ok();
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer).ok();
+    matches!(answer.trim(), "y" | "Y" | "yes")
 }
 
 /// Read the last `tail` lines of a file (all lines if `tail` is None). Missing file = empty.
