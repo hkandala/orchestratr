@@ -71,6 +71,20 @@ Capture *decisions and deviations*, not a play-by-play.
 - **AF_UNIX socket send buffer is ~8 KB** here, which is why the nonblocking bug surfaced
   precisely on the schema (the first >8 KB payload).
 
+## Discovered facts / gotchas (cont.)
+
+- **The race test could leak a revived server (test-hygiene fix, round 1).** The 8 racing
+  `server start` procs each spawn a detached `--foreground` child. A child still in the tiny
+  window *before* `try_acquire` (its fast-path handshake just failed) grabs the lock the
+  instant the test `kill -9`s the winner and binds a **new** server — after the test's
+  first-`is_err()` "gone" poll returns. The tempdir then deletes out from under it and it
+  runs forever. Fix: `TestHome` now has a `reap_server()` (loop `kill -9` the
+  handshake-reported pid — catches a mid-start child that `server stop` can't — until the
+  socket stays dead for 8 consecutive probes, closing the revival window) invoked from a
+  `Drop` guard on every test, and the race test asserts `reap_server()` reaches stable-dead.
+  Verified: `cargo test --test server_protocol` run 5×, `pgrep -f 'orcr server start
+  --foreground'` empty after each.
+
 ## Verifier & reviewer history
 
 - **Implementation** (this pass, on `main`): wire protocol + framing → method registry +

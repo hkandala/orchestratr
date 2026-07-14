@@ -62,6 +62,7 @@ registry + self-describing schema), events + snapshot-then-subscribe.
 - [x] Unit: wire framing, registry/schema coverage, event bus, cursor_expired logic, lock guard
 - [x] Integration (no herdr): server start/stop/status/api over the socket; race; kill-9 restart; subscription; logs --follow
 - [x] e2e (ORCR_E2E=1, live herdr): server.status reports herdr reachability + integrations against a disposable session
+- [x] Test hygiene (verifier round 1): `TestHome` `Drop` guard + `reap_server()` fully reaps any auto-start-revived server so no `--foreground` orphan leaks to a deleted tempdir; race test asserts stable-dead
 
 ## Deferred / out of scope
 - server enable/disable → M5 (per milestone out-of-scope)

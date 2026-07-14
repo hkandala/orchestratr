@@ -60,6 +60,44 @@ impl TestHome {
     fn stop_server(&self) {
         let _ = self.run(&["server", "stop"], &[]);
     }
+    /// Fully reap any server bound to this home — including one a still-in-flight auto-start
+    /// child *revives* after we kill the current one. Loops: while a server answers the
+    /// handshake, `kill -9` its reported pid (catches a mid-start child that `server stop`
+    /// would miss); stop only once the socket stays dead for `STABLE_DEAD_PROBES` consecutive
+    /// probes, which closes the auto-start revival window deterministically. Returns whether
+    /// the socket reached that stable-dead state within the grace window.
+    fn reap_server(&self) -> bool {
+        // Grace window comfortably exceeds any auto-start child's lifetime (a loser child
+        // gives up after its 15s readiness wait), so the loop practically always exits via
+        // the stable-dead condition rather than the deadline.
+        const STABLE_DEAD_PROBES: u32 = 8;
+        let client = self.client();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut dead_streak = 0u32;
+        while dead_streak < STABLE_DEAD_PROBES {
+            match handshake_pid(&client) {
+                Some(pid) => {
+                    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+                    dead_streak = 0;
+                }
+                None => dead_streak += 1,
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        true
+    }
+}
+
+impl Drop for TestHome {
+    /// Never leave a server bound to a tempdir that is about to be deleted (master-prompt §6:
+    /// tests must leave no cruft). Reaps the server — plus any auto-start revival — before the
+    /// tempdir is unlinked.
+    fn drop(&mut self) {
+        self.reap_server();
+    }
 }
 
 fn handshake_pid(client: &Client) -> Option<u32> {
@@ -110,10 +148,20 @@ fn race_auto_start_yields_one_server() {
     assert_eq!(handshake_pid(&client), Some(pid));
 
     // Uniqueness proof: kill that one pid → the socket must go dead. If a second server had
-    // bound, one would still answer.
+    // been co-serving concurrently, one would still answer immediately.
     let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
     let gone = wait_until(Duration::from_secs(5), || client.handshake().is_err());
     assert!(gone, "no server should answer after killing the single pid");
+
+    // Close the auto-start revival window deterministically: a loser child that was still
+    // mid-start when we freed the lock can bind a *new* server after the poll above returns.
+    // Reap until the socket stays dead across consecutive probes so nothing outlives the test
+    // (and so the tempdir isn't deleted out from under a revived server). `Drop` repeats this
+    // as a safety net.
+    assert!(
+        th.reap_server(),
+        "socket should stay dead — no auto-start child should keep reviving the server"
+    );
 }
 
 // --- Acceptance: kill -9 → next client restarts cleanly; store uncorrupted ---
