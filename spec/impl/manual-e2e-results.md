@@ -35,7 +35,7 @@ check result too.
 | E03 | claude lifecycle run→wait→logs→send→wait | claude | high | _pending_ | | |
 | E04 | codex lifecycle run→send→logs→kill | codex | high | _pending_ | | |
 | E05 | claude logs --tail/--follow/--last-response freshness | claude | high | _pending_ | | |
-| E06 | identity/paths/globs/scope (deterministic) | mock | high | _pending_ | | |
+| E06 | identity/paths/globs/scope (deterministic) | mock | high | **PASS** | 0/1/7 as specified | All 8 steps match §5.1 exactly: glob node sets (`*`/`**`/`a/b/*`), `{rand}` creation-expand + selector-reject, reserved level-1 names blocked (level-2 ok), depth guard (>8), concurrent same-path → one winner + `state_conflict`(exit 7) with occupant `{uuid,path,status}`, exact verbs reject wildcards. No leak. |
 | E07 | queue + concurrency caps (FIFO, never over cap) | mock | high | _pending_ | | |
 | E08 | gc auto park→send→unpark→reap | mock | high | _pending_ | | |
 | E09 | gc immediate vs never (teardown ordering) | mock | normal | _pending_ | | |
@@ -403,3 +403,41 @@ work of the manual-e2e phase.
 - Steps that do NOT depend on the transcript all PASS: `run` (spawn, exit 0), `send` (delivered, re-armed to a fresh `input_seq:2`, prompt reached the pane and was answered), and `[TEARDOWN]` (pane closed, session stopped+deleted, `no leak`).
 - The E05-specific behaviors the test set out to verify — `--tail` bounding, `--tail N --follow` docker/kubectl tail-then-stream semantics, and `--last-response` freshness — could NOT be observed on this box because there is no native claude transcript to read; they are effectively **BLOCKED by the environment** and rolled up as FAIL here. On a standard claude that persists native transcripts, these are expected to pass (as designed/covered by the mock e2e).
 - No orcr code changed (this executor observes only). No session leaked (`no leak`).
+
+---
+
+## E06 — Identity, paths, globs, scope resolution (deterministic) — **PASS** (severity: none; all behaviors match §5.1)
+
+- **provider:** mock · **priority:** high · **verdict:** PASS (8/8 steps)
+- **env:** throwaway `ORCR_HOME=/tmp/orcr_e2e.XP8w09`, disposable session `orcr_e2e_80fdcd03`, `ORCR_DISABLE_DISCOVERY=1`, mock provider. Leak check: **no leak**.
+
+### Observed vs expected (step by step)
+
+| step | command | expected (§5.1) | observed | verdict |
+|---|---|---|---|---|
+| 2 | spawn `review/fanout/file_1`, `file_2`, `review/synth`, `--name lonely` (all `-a mock --gc never`) | 4× `<path> <uuid>`, exit 0 | all 4 printed `<path> <uuid>`, exit 0 | PASS |
+| 3 | `agent ls "review/*"` | direct children of review → `synth` only (not nested) | `review/synth` only, exit 0 | PASS |
+| 3 | `agent ls "review/**"` | everything under review, any depth, never `review` itself | `review/fanout/file_1`, `file_2`, `review/synth`, exit 0 | PASS |
+| 3 | `agent ls "review/fanout/*"` | `file_1`, `file_2` | `file_1`, `file_2`, exit 0 | PASS |
+| 3 | `agent ls "*"` | level-1 nodes = agents at exactly one segment | `lonely` only (correct: `review` is an intermediate path node with no agent living AT it; `*` = one whole segment), exit 0 | PASS |
+| 4 | `agent run --path "batch_{rand}/w1"` ×2 | two distinct `batch_xxxxx` roots | `batch_ufd5q/w1` and `batch_hk8f4/w1` (distinct), exit 0 | PASS |
+| 4 | `agent ls "batch_{rand}/*"` (selector) | `invalid_request` ({rand} creation-only) | `invalid_request` `{reason:"invalid_segment"}` "has an invalid segment `batch_{rand}`", exit 1 | PASS |
+| 5 | `agent run --name idle` | `invalid_request` `reason:"reserved_name"` | `invalid_request` `{name:"idle",reason:"reserved_name"}`, exit 1 | PASS |
+| 5 | `agent run --path unmanaged/x` | `invalid_request` `reserved_name` | `invalid_request` `{name:"unmanaged",reason:"reserved_name"}`, exit 1 | PASS |
+| 5 | `agent run --path /idle/y` | `invalid_request` `reserved_name` (level-1) | `invalid_request` `{name:"idle",reason:"reserved_name"}`, exit 1 | PASS |
+| 5 | `agent run --path review/idle` | SUCCESS (reserved only at level-1) | `ok:true` `status:"queued"`, exit 0 | PASS |
+| 6 | `agent run --path a/b/c/d/e/f/g/h/i` (9 seg) | `invalid_request` `reason:"path_too_deep"` | `invalid_request` `{reason:"path_too_deep",segments:9}` "exceeding the limit of 8", exit 1 | PASS |
+| 7 | 2× concurrent `agent run --path review/synth` | one winner + other `state_conflict path_in_use` with occupant `{uuid,path,status}` | path already occupied by step-2 agent → **both** `state_conflict` (exit 7) with `occupant:{path:"review/synth",status:"idle",uuid:019f62a5-54dd…}` — correct `path_in_use`; see note | PASS |
+| 7 | (added) 2× concurrent `agent run --path race/win` (fresh) | exactly one wins | raceA `ok:true` exit 0; raceB `state_conflict path_in_use` exit 7, occupant `{path:"race/win",status:"queued",uuid:…62d0…}` — **exactly one winner** | PASS |
+| 7 | `agent ls --all --json` | disambiguate reused paths by uuid+created_at | rows carry `uuid` + `created_at` (epoch ms) + `pane_id`; all 8 agents listed | PASS |
+| 8 | `agent send "review/*" "hi"` | `invalid_request` (exact verb rejects wildcard) | `invalid_request` `{reason:"wildcard_not_allowed"}` "…takes an exact target", exit 1 | PASS |
+| 8 | `agent logs "review/**"` | `invalid_request` | `invalid_request` `{reason:"wildcard_not_allowed"}`, exit 1 | PASS |
+| 9 | `[TEARDOWN]` | no leak | killed all 8 panes, server stopped, session stopped+deleted; `herdr session list` → **no leak** | PASS |
+
+### Notes
+
+- **Exit-code mapping confirmed:** `invalid_request` → 1, `state_conflict` → 7, success → 0 (matches expected).
+- **`agent ls "*"` returning only `lonely` is correct, not a miss.** `*` = one whole segment (§5.1) and `ls` lists *agents*, not path directories. No agent lives AT path `review` (only children), so it is not matched; `lonely` is the only depth-1 agent. Verified against spec §5.1 (lines 215–222) and the grammar block (lines 258–268).
+- **Step 7 nuance:** the plan's literal path `review/synth` was already occupied by the step-2 agent (`--gc never`), so both concurrent runs correctly returned `state_conflict`/`path_in_use` against the existing occupant rather than racing each other. An added race on a fresh path `race/win` produced exactly one `ok:true` winner + one `state_conflict` — both the pre-occupied and true-race forms of `path_in_use` behave per spec, and details include the occupying `{uuid,path,status}` in both.
+- `{rand}`-in-selector detail `reason` is `invalid_segment` (generic selector-validation path) rather than a `{rand}`-specific reason, but the code is the required `invalid_request` and the message names the offending segment — spec-compliant.
+- No orcr code changed (executor observes only). No session leaked.
