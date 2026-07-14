@@ -18,6 +18,7 @@ pub mod home;
 pub mod lock;
 pub mod path;
 pub mod server;
+pub mod service;
 pub mod store;
 pub mod wire;
 

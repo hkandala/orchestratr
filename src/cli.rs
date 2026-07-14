@@ -35,6 +35,11 @@ pub enum Command {
         #[command(subcommand)]
         cmd: AgentCmd,
     },
+    /// Durable cron over any command: loops and their runs (§6.2).
+    Loop {
+        #[command(subcommand)]
+        cmd: LoopCmd,
+    },
     /// The orcr server: single writer, socket API (§6.4).
     Server {
         #[command(subcommand)]
@@ -169,6 +174,102 @@ pub enum AgentCmd {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum LoopCmd {
+    /// Create a durable loop over a command (`-- <command…>`), on a cron or `--once-at`.
+    Create {
+        /// The loop's name (one segment, root-level, mandatory).
+        name: String,
+        /// Five-field cron expression (quote it). Mutually exclusive with --once-at.
+        cron: Option<String>,
+        /// Fire once at a time (a duration like `30m` from now, or an RFC3339/local timestamp).
+        #[arg(long = "once-at")]
+        once_at: Option<String>,
+        /// Max concurrent runs (default 1).
+        #[arg(long = "max-concurrency")]
+        max_concurrency: Option<i64>,
+        /// At capacity: `queue` (coalesce, default) or `skip` (drop the fire).
+        #[arg(long, value_parser = ["queue", "skip"])]
+        overlap: Option<String>,
+        /// Kill a run after this duration (no default).
+        #[arg(long)]
+        timeout: Option<String>,
+        /// The command to run, after `--` (an argv array, executed directly — no shell).
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
+    /// Pause loop(s): no new fires (a pending scheduled run is held).
+    Pause {
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
+    /// Resume paused loop(s).
+    Resume {
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
+    /// End loop definition(s); history stays queryable.
+    Rm {
+        #[arg(required = true)]
+        names: Vec<String>,
+        /// Also stop active/pending runs and kill their agents.
+        #[arg(long = "kill-active")]
+        kill_active: bool,
+        /// Skip the TTY confirmation.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+    /// List loops.
+    Ls {
+        names: Vec<String>,
+        #[arg(long)]
+        status: Option<String>,
+        /// Include ended loops (history).
+        #[arg(long)]
+        all: bool,
+    },
+    /// Interleaved command output + scheduler actions, tagged by run.
+    Logs {
+        name: String,
+        #[arg(long)]
+        run: Option<String>,
+        #[arg(long, value_parser = ["orcr", "command"])]
+        source: Option<String>,
+        #[arg(long)]
+        tail: Option<usize>,
+        #[arg(long)]
+        follow: bool,
+    },
+    /// Verbs on a loop's runs (executions).
+    Run {
+        #[command(subcommand)]
+        cmd: LoopRunCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LoopRunCmd {
+    /// Manually trigger a run (works on paused loops); prints `<loop>/<run_id> <run_uuid>`.
+    Start { name: String },
+    /// Stop run(s): optional `<run_id|run_uuid>` targets one, else all active + pending.
+    Stop {
+        name: String,
+        run: Option<String>,
+        /// Skip the TTY confirmation.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+    /// List a loop's runs.
+    Ls {
+        name: String,
+        #[arg(long)]
+        status: Option<String>,
+        /// Include ended runs (history).
+        #[arg(long)]
+        all: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum ServerCmd {
     /// Start the server (idempotent); blocks until ready.
     Start {
@@ -189,6 +290,10 @@ pub enum ServerCmd {
         #[arg(long)]
         follow: bool,
     },
+    /// Register start-at-login so loops fire after a reboot (launchd/systemd).
+    Enable,
+    /// Remove the start-at-login registration (server + store untouched).
+    Disable,
 }
 
 #[derive(Subcommand, Debug)]
@@ -219,11 +324,14 @@ pub fn run() -> i32 {
 fn dispatch(cli: &Cli) -> Result<()> {
     match &cli.command {
         Command::Agent { cmd } => dispatch_agent(cli.json, cmd),
+        Command::Loop { cmd } => dispatch_loop(cli.json, cmd),
         Command::Server { cmd } => match cmd {
             ServerCmd::Start { foreground } => cmd_server_start(cli.json, *foreground),
             ServerCmd::Stop => cmd_server_stop(cli.json),
             ServerCmd::Status => cmd_server_status(cli.json),
             ServerCmd::Logs { tail, follow } => cmd_server_logs(cli.json, *tail, *follow),
+            ServerCmd::Enable => cmd_server_enable(cli.json),
+            ServerCmd::Disable => cmd_server_disable(cli.json),
         },
         Command::Api { cmd } => match cmd {
             ApiCmd::Schema { output } => cmd_api_schema(cli.json, output.as_deref()),
@@ -809,6 +917,337 @@ fn print_ls_human(result: &Value) {
     }
 }
 
+// --- loop ---
+
+fn dispatch_loop(json: bool, cmd: &LoopCmd) -> Result<()> {
+    match cmd {
+        LoopCmd::Create {
+            name,
+            cron,
+            once_at,
+            max_concurrency,
+            overlap,
+            timeout,
+            command,
+        } => cmd_loop_create(
+            json,
+            name,
+            cron,
+            once_at,
+            max_concurrency,
+            overlap,
+            timeout,
+            command,
+        ),
+        LoopCmd::Pause { names } => cmd_loop_set(json, "loop.pause", names),
+        LoopCmd::Resume { names } => cmd_loop_set(json, "loop.resume", names),
+        LoopCmd::Rm {
+            names,
+            kill_active,
+            yes,
+        } => cmd_loop_rm(json, names, *kill_active, *yes),
+        LoopCmd::Ls { names, status, all } => cmd_loop_ls(json, names, status.as_deref(), *all),
+        LoopCmd::Logs {
+            name,
+            run,
+            source,
+            tail,
+            follow,
+        } => cmd_loop_logs(
+            json,
+            name,
+            run.as_deref(),
+            source.as_deref(),
+            *tail,
+            *follow,
+        ),
+        LoopCmd::Run { cmd } => match cmd {
+            LoopRunCmd::Start { name } => cmd_loop_run_start(json, name),
+            LoopRunCmd::Stop { name, run, yes } => {
+                cmd_loop_run_stop(json, name, run.as_deref(), *yes)
+            }
+            LoopRunCmd::Ls { name, status, all } => {
+                cmd_loop_run_ls(json, name, status.as_deref(), *all)
+            }
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_loop_create(
+    json: bool,
+    name: &str,
+    cron: &Option<String>,
+    once_at: &Option<String>,
+    max_concurrency: &Option<i64>,
+    overlap: &Option<String>,
+    timeout: &Option<String>,
+    command: &[String],
+) -> Result<()> {
+    if cron.is_some() == once_at.is_some() {
+        return Err(OrcrError::invalid_request(
+            "pass exactly one of a cron expression or --once-at",
+            "cadence_required",
+        ));
+    }
+    // The loop's creation cwd is the workspace its agents inherit (§6.2): the caller's cwd.
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.display().to_string());
+    let mut params = json!({ "name": name, "command": command });
+    let obj = params.as_object_mut().unwrap();
+    if let Some(c) = cron {
+        obj.insert("cron".into(), json!(c));
+    }
+    if let Some(o) = once_at {
+        obj.insert("once_at".into(), json!(o));
+    }
+    if let Some(m) = max_concurrency {
+        obj.insert("max_concurrency".into(), json!(m));
+    }
+    if let Some(o) = overlap {
+        obj.insert("overlap".into(), json!(o));
+    }
+    if let Some(t) = timeout {
+        obj.insert("timeout".into(), json!(t));
+    }
+    if let Some(c) = &cwd {
+        obj.insert("cwd".into(), json!(c));
+    }
+    let result = connect_and_request("loop.create", params)?;
+    let l = &result["loop"];
+    emit_success(json, result.clone(), || {
+        let argv: Vec<String> = l["argv"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        println!("loop {} created", l["name"].as_str().unwrap_or_default());
+        println!("  command:  {}", argv.join(" "));
+        println!(
+            "  cadence:  {} ({})",
+            l["cadence"].as_str().unwrap_or_default(),
+            l["tz"].as_str().unwrap_or_default(),
+        );
+        if let Some(nf) = l["next_fire_at"].as_i64() {
+            println!("  next:     {nf} (UTC ms)");
+        }
+        println!("  cancel:   {}", l["cancel"].as_str().unwrap_or_default());
+    });
+    Ok(())
+}
+
+fn cmd_loop_set(json: bool, method: &str, names: &[String]) -> Result<()> {
+    let result = connect_and_request(method, json!({ "names": names }))?;
+    emit_success(json, result.clone(), || {
+        for u in result["updated"].as_array().into_iter().flatten() {
+            println!(
+                "{} {}",
+                u["name"].as_str().unwrap_or_default(),
+                u["status"].as_str().unwrap_or_default()
+            );
+        }
+        for s in result["skipped"].as_array().into_iter().flatten() {
+            println!(
+                "skipped {} ({})",
+                s["name"].as_str().unwrap_or_default(),
+                s["reason"].as_str().unwrap_or_default()
+            );
+        }
+    });
+    Ok(())
+}
+
+fn cmd_loop_rm(json: bool, names: &[String], kill_active: bool, yes: bool) -> Result<()> {
+    if !yes && !json && stdout_is_tty() {
+        eprint!("Remove loop(s) {}? [y/N] ", names.join(", "));
+        std::io::stderr().flush().ok();
+        let mut answer = String::new();
+        std::io::stdin().lock().read_line(&mut answer).ok();
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            eprintln!("aborted");
+            return Ok(());
+        }
+    }
+    let (caller_id, caller_path) = caller_identity();
+    let mut params = json!({ "names": names, "kill_active": kill_active });
+    add_caller(&mut params, &caller_id, &caller_path);
+    let result = connect_and_request("loop.rm", params)?;
+    emit_success(json, result.clone(), || {
+        for r in result["removed"].as_array().into_iter().flatten() {
+            println!(
+                "removed {} ({})",
+                r["name"].as_str().unwrap_or_default(),
+                r["reason"].as_str().unwrap_or_default()
+            );
+        }
+        for s in result["skipped"].as_array().into_iter().flatten() {
+            println!(
+                "skipped {} ({})",
+                s["name"].as_str().unwrap_or_default(),
+                s["reason"].as_str().unwrap_or_default()
+            );
+        }
+    });
+    Ok(())
+}
+
+fn cmd_loop_ls(json: bool, names: &[String], status: Option<&str>, all: bool) -> Result<()> {
+    let mut params = json!({ "names": names, "all": all });
+    if let Some(s) = status {
+        params["status"] = json!(s);
+    }
+    let result = connect_and_request("loop.ls", params)?;
+    emit_success(json, result.clone(), || {
+        let loops = result["loops"].as_array().cloned().unwrap_or_default();
+        if loops.is_empty() {
+            println!("no loops");
+            return;
+        }
+        for l in &loops {
+            println!(
+                "{:<20} {:<8} {:<16} next={}",
+                l["name"].as_str().unwrap_or_default(),
+                l["status"].as_str().unwrap_or_default(),
+                l["cadence"].as_str().unwrap_or_default(),
+                l["next_fire_at"]
+                    .as_i64()
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".into()),
+            );
+        }
+    });
+    Ok(())
+}
+
+fn cmd_loop_logs(
+    json: bool,
+    name: &str,
+    run: Option<&str>,
+    source: Option<&str>,
+    tail: Option<usize>,
+    follow: bool,
+) -> Result<()> {
+    let build = || {
+        let mut params = json!({ "name": name });
+        if let Some(r) = run {
+            params["run"] = json!(r);
+        }
+        if let Some(s) = source {
+            params["source"] = json!(s);
+        }
+        if let Some(t) = tail {
+            params["tail"] = json!(t);
+        }
+        params
+    };
+    let result = connect_and_request("loop.logs", build())?;
+    let mut seen = print_loop_lines(json, &result, 0);
+    if follow {
+        loop {
+            std::thread::sleep(Duration::from_millis(500));
+            match connect_and_request("loop.logs", build()) {
+                Ok(r) => seen = print_loop_lines(false, &r, seen),
+                Err(_) => continue,
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_loop_lines(json: bool, result: &Value, skip: usize) -> usize {
+    let lines = result["lines"].as_array().cloned().unwrap_or_default();
+    if json {
+        emit_success(true, result.clone(), || {});
+        return lines.len();
+    }
+    for l in lines.iter().skip(skip) {
+        println!(
+            "[{}] {}",
+            l["run"].as_str().unwrap_or_default(),
+            l["text"].as_str().unwrap_or_default(),
+        );
+    }
+    lines.len()
+}
+
+fn cmd_loop_run_start(json: bool, name: &str) -> Result<()> {
+    let result = connect_and_request("loop.run.start", json!({ "name": name }))?;
+    let r = &result["run"];
+    let path = r["path"].as_str().unwrap_or_default().to_string();
+    let uuid = r["uuid"].as_str().unwrap_or_default().to_string();
+    emit_success(json, result.clone(), || {
+        println!("{path} {uuid}");
+    });
+    Ok(())
+}
+
+fn cmd_loop_run_stop(json: bool, name: &str, run: Option<&str>, yes: bool) -> Result<()> {
+    if !yes && !json && stdout_is_tty() {
+        let what = run
+            .map(|r| format!("run {name}/{r}"))
+            .unwrap_or_else(|| format!("all runs of loop {name}"));
+        eprint!("Stop {what}? [y/N] ");
+        std::io::stderr().flush().ok();
+        let mut answer = String::new();
+        std::io::stdin().lock().read_line(&mut answer).ok();
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            eprintln!("aborted");
+            return Ok(());
+        }
+    }
+    let mut params = json!({ "name": name });
+    if let Some(r) = run {
+        params["run"] = json!(r);
+    }
+    let result = connect_and_request("loop.run.stop", params)?;
+    emit_success(json, result.clone(), || {
+        for s in result["stopped"].as_array().into_iter().flatten() {
+            println!(
+                "{} {}",
+                s["path"].as_str().unwrap_or_default(),
+                s["status"].as_str().unwrap_or_default()
+            );
+        }
+        for s in result["skipped"].as_array().into_iter().flatten() {
+            println!(
+                "skipped {} ({})",
+                s["run_id"].as_str().unwrap_or_default(),
+                s["reason"].as_str().unwrap_or_default()
+            );
+        }
+    });
+    Ok(())
+}
+
+fn cmd_loop_run_ls(json: bool, name: &str, status: Option<&str>, all: bool) -> Result<()> {
+    let mut params = json!({ "name": name, "all": all });
+    if let Some(s) = status {
+        params["status"] = json!(s);
+    }
+    let result = connect_and_request("loop.run.ls", params)?;
+    emit_success(json, result.clone(), || {
+        let runs = result["runs"].as_array().cloned().unwrap_or_default();
+        if runs.is_empty() {
+            println!("no runs");
+            return;
+        }
+        for r in &runs {
+            println!(
+                "{:<10} {:<10} {:<10} agents={}",
+                r["run_id"].as_str().unwrap_or_default(),
+                r["status"].as_str().unwrap_or_default(),
+                r["kind"].as_str().unwrap_or_default(),
+                r["agents"].as_i64().unwrap_or(0),
+            );
+        }
+    });
+    Ok(())
+}
+
 // --- server ---
 
 fn cmd_server_start(json: bool, foreground: bool) -> Result<()> {
@@ -881,6 +1320,31 @@ fn cmd_server_logs(json: bool, tail: Option<usize>, follow: bool) -> Result<()> 
             println!("{l}");
         }
     }
+    Ok(())
+}
+
+fn cmd_server_enable(json: bool) -> Result<()> {
+    let home = Home::ensure()?;
+    let result = crate::service::enable(&home)?;
+    emit_success(json, result.clone(), || {
+        println!(
+            "enabled: wrote {}\n  verify: {}",
+            result["unit"].as_str().unwrap_or_default(),
+            result["verify"].as_str().unwrap_or_default(),
+        );
+    });
+    Ok(())
+}
+
+fn cmd_server_disable(json: bool) -> Result<()> {
+    let home = Home::ensure()?;
+    let result = crate::service::disable(&home)?;
+    emit_success(json, result.clone(), || {
+        println!(
+            "disabled: removed {}",
+            result["unit"].as_str().unwrap_or_default(),
+        );
+    });
     Ok(())
 }
 

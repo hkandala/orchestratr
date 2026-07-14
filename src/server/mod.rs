@@ -711,7 +711,7 @@ impl Server {
             "integrations": integrations,
             "counts": counts,
             "loops_firing": true,
-            "loops": [],
+            "loops": self.loops_status(),
             "drift": {
                 "lost": drift.lost,
                 "repaired": self.inner.repaired.load(Ordering::SeqCst),
@@ -779,6 +779,23 @@ impl Server {
             "session": session,
             "session_running": running,
         })
+    }
+
+    /// Active/paused loops + their next fires for `server status` (spec §6.4, §13).
+    fn loops_status(&self) -> Value {
+        let store = self.inner.store.lock().unwrap();
+        let loops = store.list_loops(&[], None, false).unwrap_or_default();
+        let rows: Vec<Value> = loops
+            .iter()
+            .map(|l| {
+                json!({
+                    "name": l.name,
+                    "status": l.status,
+                    "next_fire_at": l.next_fire_at,
+                })
+            })
+            .collect();
+        Value::Array(rows)
     }
 
     fn integration_state(&self) -> Value {
