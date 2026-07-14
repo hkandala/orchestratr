@@ -841,7 +841,26 @@ impl Server {
     /// `agent.ls` (spec §6.1): active (and, with `all`, ended) agents as flat rows.
     pub(super) fn handle_agent_ls(&self, params: &Value) -> Result<Value> {
         let scope = self.caller_scope_full(params);
-        let pattern = match str_param(params, "pattern").filter(|s| !s.is_empty()) {
+        let raw = str_param(params, "pattern").filter(|s| !s.is_empty());
+
+        // §6.1 accepts `<pattern|uuid>`: a full uuid (dashes can't be path chars) or a ≥8-hex
+        // prefix that names no path resolves to that single agent (git-style), mirroring
+        // wait/kill — not a literal path glob.
+        if let Some(r) = &raw {
+            let store = self.inner.store.lock().unwrap();
+            let is_uuidish = r.contains('-')
+                || (is_uuid_prefix(r)
+                    && store
+                        .find_by_path(&path::resolve_selector(scope.as_deref(), r)?)?
+                        .is_none());
+            if is_uuidish {
+                let a = uuid_lookup(store.find_by_uuid_or_prefix(r)?, r)?;
+                let row = agent_row_json(&store, &a);
+                return Ok(json!({ "agents": [row] }));
+            }
+        }
+
+        let pattern = match raw {
             Some(p) => Some(path::resolve_selector(scope.as_deref(), &p)?),
             None => None,
         };
@@ -1467,13 +1486,32 @@ fn is_uuid_prefix(s: &str) -> bool {
     s.len() >= 8 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// The shortest git-style prefix (≥ 8 chars) of `u` that no *other* candidate shares (§5.1).
+/// UUIDv7 values created in the same millisecond share their first ~12 characters, so a fixed
+/// slice would report identical, non-disambiguating prefixes; this grows the prefix until it is
+/// unique (falling back to the full uuid if two are somehow indistinguishable).
+fn shortest_distinct_prefix(u: &str, cands: &[String]) -> String {
+    let chars: Vec<char> = u.chars().collect();
+    let min = 8.min(chars.len());
+    for len in min..=chars.len() {
+        let pfx: String = chars[..len].iter().collect();
+        if !cands.iter().any(|o| o != u && o.starts_with(&pfx)) {
+            return pfx;
+        }
+    }
+    u.to_string()
+}
+
 /// Turn a [`UuidLookup`] into a single row or the right error.
 fn uuid_lookup(lookup: UuidLookup, raw: &str) -> Result<AgentFull> {
     match lookup {
         UuidLookup::Found(a) => Ok(*a),
         UuidLookup::Ambiguous(cands) => {
-            let prefixes: Vec<String> =
-                cands.iter().map(|u| u.chars().take(12).collect()).collect();
+            // Report actually-disambiguating prefixes, not a fixed slice (§5.1).
+            let prefixes: Vec<String> = cands
+                .iter()
+                .map(|u| shortest_distinct_prefix(u, &cands))
+                .collect();
             Err(
                 OrcrError::not_found(format!("uuid prefix `{raw}` is ambiguous"))
                     .with_details(json!({ "target": raw, "candidates": prefixes })),
@@ -1552,6 +1590,30 @@ mod tests {
         let st = settle_of(&agent("lost", None)).unwrap();
         assert!(!st.ok);
         assert_eq!(st.reason, "lost");
+    }
+
+    #[test]
+    fn ambiguous_prefixes_are_actually_distinguishing() {
+        // Two UUIDv7 values created in the same millisecond share their first 12 characters
+        // (timestamp prefix). A fixed 12-char slice would report identical prefixes; the
+        // shortest-distinct-prefix must grow past the shared run so the candidates differ.
+        let a = "0197b2c3-d4e5-7a11-8000-000000000001".to_string();
+        let b = "0197b2c3-d4e5-7a11-8000-000000000002".to_string();
+        let cands = vec![a.clone(), b.clone()];
+        let pa = shortest_distinct_prefix(&a, &cands);
+        let pb = shortest_distinct_prefix(&b, &cands);
+        assert_ne!(
+            pa, pb,
+            "reported candidate prefixes must be distinguishable"
+        );
+        assert!(a.starts_with(&pa) && b.starts_with(&pb));
+        assert!(pa.len() >= 8 && pb.len() >= 8);
+        // A prefix that is unique at 8 chars stays short.
+        let c = vec![
+            "abcdef01-0000-7000-8000-000000000000".to_string(),
+            "12345678-0000-7000-8000-000000000000".to_string(),
+        ];
+        assert_eq!(shortest_distinct_prefix(&c[0], &c), "abcdef01");
     }
 
     #[test]
