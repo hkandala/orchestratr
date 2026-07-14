@@ -199,6 +199,13 @@ pub fn is_pattern(s: &str) -> bool {
     s.split('/').any(|seg| seg == "*" || seg == "**")
 }
 
+/// True if a selector should be resolved as a uuid rather than a path (spec §5.1): a full
+/// uuid (dashes can't be path chars) or a git-style ≥ 8-hex-char prefix. The one place this
+/// path-vs-uuid decision lives — CLI and the socket handlers both derive from it.
+pub fn looks_like_uuid_selector(s: &str) -> bool {
+    s.contains('-') || (s.len() >= 8 && s.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
 /// Resolve a selector (path or pattern) against the caller's scope into an absolute form
 /// (leading `/` = absolute), validating pattern grammar. Does **not** enforce the depth
 /// limit (patterns may legitimately be short) but every literal segment must be valid.

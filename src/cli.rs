@@ -438,7 +438,7 @@ fn cmd_top(
             // `agent.ls`) to that one agent's path, mirroring wait/kill; otherwise it is a glob.
             // If the ls resolves to exactly one agent we scope top to that agent's path; a
             // multi-match (a hex string that is really a path glob) falls back to glob compile.
-            let resolved = if looks_like_uuid_selector(p) {
+            let resolved = if crate::path::looks_like_uuid_selector(p) {
                 let rows = connect_and_request("agent.ls", json!({ "pattern": p }))?;
                 let agents = rows["agents"].as_array().cloned().unwrap_or_default();
                 match agents.first().and_then(|a| a["path"].as_str()) {
@@ -487,7 +487,18 @@ fn dispatch_agent(json: bool, cmd: &AgentCmd) -> Result<()> {
             cwd,
             timeout,
         } => cmd_agent_run(
-            json, name, path, agent, prompt, gc, model, effort, cwd, timeout,
+            json,
+            &SpawnOpts {
+                name,
+                path,
+                agent,
+                prompt,
+                model,
+                effort,
+                cwd,
+                timeout,
+            },
+            gc,
         ),
         AgentCmd::Ask {
             name,
@@ -498,7 +509,19 @@ fn dispatch_agent(json: bool, cmd: &AgentCmd) -> Result<()> {
             effort,
             cwd,
             timeout,
-        } => cmd_agent_ask(json, name, path, agent, prompt, model, effort, cwd, timeout),
+        } => cmd_agent_ask(
+            json,
+            &SpawnOpts {
+                name,
+                path,
+                agent,
+                prompt,
+                model,
+                effort,
+                cwd,
+                timeout,
+            },
+        ),
         AgentCmd::Wait { targets, timeout } => cmd_agent_wait(json, targets, timeout.as_deref()),
         AgentCmd::Logs {
             target,
@@ -565,29 +588,22 @@ fn require_name_xor_path(name: &Option<String>, path: &Option<String>) -> Result
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn cmd_agent_run(
-    json: bool,
-    name: &Option<String>,
-    path: &Option<String>,
-    agent: &Option<String>,
-    prompt: &Option<String>,
-    gc: &Option<String>,
-    model: &Option<String>,
-    effort: &Option<String>,
-    cwd: &Option<String>,
-    timeout: &Option<String>,
-) -> Result<()> {
-    require_name_xor_path(name, path)?;
-    let prompt = resolve_prompt(prompt.as_deref())?;
-    let cwd = default_cwd(cwd);
-    let mut params = build_spawn_params(name, path, agent, &prompt, model, effort, &cwd, timeout);
-    if let Some(g) = gc {
-        params
-            .as_object_mut()
-            .unwrap()
-            .insert("gc".into(), json!(g));
-    }
+/// The spawn options shared by `agent run` and `agent ask` (§6.1), borrowed straight from the
+/// parsed clap args so the handlers don't thread eight `&Option<String>` params by hand.
+struct SpawnOpts<'a> {
+    name: &'a Option<String>,
+    path: &'a Option<String>,
+    agent: &'a Option<String>,
+    prompt: &'a Option<String>,
+    model: &'a Option<String>,
+    effort: &'a Option<String>,
+    cwd: &'a Option<String>,
+    timeout: &'a Option<String>,
+}
+
+fn cmd_agent_run(json: bool, o: &SpawnOpts, gc: &Option<String>) -> Result<()> {
+    let mut params = build_spawn_params(o)?;
+    set_opt(&mut params, "gc", gc.clone());
 
     let result = connect_and_request("agent.run", params)?;
     let a = &result["agent"];
@@ -636,22 +652,8 @@ fn cmd_agent_send(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn cmd_agent_ask(
-    json: bool,
-    name: &Option<String>,
-    path: &Option<String>,
-    agent: &Option<String>,
-    prompt: &Option<String>,
-    model: &Option<String>,
-    effort: &Option<String>,
-    cwd: &Option<String>,
-    timeout: &Option<String>,
-) -> Result<()> {
-    require_name_xor_path(name, path)?;
-    let prompt = resolve_prompt(prompt.as_deref())?;
-    let cwd = default_cwd(cwd);
-    let params = build_spawn_params(name, path, agent, &prompt, model, effort, &cwd, timeout);
+fn cmd_agent_ask(json: bool, o: &SpawnOpts) -> Result<()> {
+    let params = build_spawn_params(o)?;
     let result = connect_and_request("agent.ask", params)?;
     emit_success(json, &result, || {
         // The final response on stdout (§6.1).
@@ -666,9 +668,7 @@ fn cmd_agent_ask(
 fn cmd_agent_wait(json: bool, targets: &[String], timeout: Option<&str>) -> Result<()> {
     let (caller_id, caller_path) = caller_identity();
     let mut params = json!({ "targets": targets });
-    if let Some(t) = timeout {
-        params["timeout"] = json!(t);
-    }
+    set_opt(&mut params, "timeout", timeout);
     add_caller(&mut params, &caller_id, &caller_path);
     let result = connect_and_request("agent.wait", params)?;
     emit_success(json, &result, || {
@@ -728,9 +728,7 @@ fn cmd_agent_logs(
 ) -> Result<()> {
     let (caller_id, caller_path) = caller_identity();
     let mut params = json!({ "target": target, "last_response": last_response });
-    if let Some(n) = tail {
-        params["tail"] = json!(n);
-    }
+    set_opt(&mut params, "tail", tail);
     add_caller(&mut params, &caller_id, &caller_path);
 
     if last_response {
@@ -747,21 +745,40 @@ fn cmd_agent_logs(
 
     let result = connect_and_request("agent.logs", params.clone())?;
     note_if_ended(json, &result);
-    let mut seen = print_entries(json, &result, 0);
+    let seen = print_entries(json, &result, 0);
     if follow {
-        // Follow is a poll under the hood (§6.1): re-read the transcript and print new
-        // entries. Ignore --json for the live stream (each entry printed as it arrives).
-        loop {
-            std::thread::sleep(Duration::from_millis(500));
+        // Follow is a poll under the hood (§6.1): re-read the transcript and print new entries.
+        // Ignore --json for the live stream (each entry is printed as it arrives).
+        let build = || {
             let mut p = json!({ "target": target, "last_response": false });
             add_caller(&mut p, &caller_id, &caller_path);
-            match connect_and_request("agent.logs", p) {
-                Ok(r) => seen = print_entries(false, &r, seen),
-                Err(_) => continue,
-            }
-        }
+            p
+        };
+        follow_poll(
+            "agent.logs",
+            build,
+            |r, seen| print_entries(false, r, seen),
+            seen,
+        );
     }
     Ok(())
+}
+
+/// The shared `--follow` poll loop (§6.1): every 500ms re-request `method` with freshly-built
+/// params and print entries beyond `seen`; transient errors are skipped. Diverges (only
+/// interrupted by the operator).
+fn follow_poll(
+    method: &str,
+    build: impl Fn() -> Value,
+    mut print: impl FnMut(&Value, usize) -> usize,
+    mut seen: usize,
+) -> ! {
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+        if let Ok(r) = connect_and_request(method, build()) {
+            seen = print(&r, seen);
+        }
+    }
 }
 
 /// §5.1 disambiguation: a TTY `agent logs` that resolves path-first to an ended agent (the verb
@@ -948,16 +965,9 @@ fn cmd_agent_ls(
     }
     let (caller_id, caller_path) = caller_identity();
     let mut params = json!({ "managed": managed, "unmanaged": unmanaged, "all": all });
-    let obj = params.as_object_mut().unwrap();
-    if let Some(p) = pattern {
-        obj.insert("pattern".into(), json!(p));
-    }
-    if let Some(a) = agent {
-        obj.insert("agent".into(), json!(a));
-    }
-    if let Some(s) = status {
-        obj.insert("status".into(), json!(s));
-    }
+    set_opt(&mut params, "pattern", pattern.clone());
+    set_opt(&mut params, "agent", agent.clone());
+    set_opt(&mut params, "status", status.clone());
     add_caller(&mut params, &caller_id, &caller_path);
     let result = connect_and_request("agent.ls", params)?;
     emit_success(json, &result, || print_ls_human(&result));
@@ -985,60 +995,40 @@ fn default_cwd(cwd: &Option<String>) -> Option<String> {
     }
 }
 
-/// Assemble the params shared by `agent run` and `agent ask` (§6.1): naming, provider,
-/// prompt, model/effort, cwd, timeout, and the caller identity. Verb-specific fields (e.g.
-/// `gc`) are added by the caller on top.
-#[allow(clippy::too_many_arguments)]
-fn build_spawn_params(
-    name: &Option<String>,
-    path: &Option<String>,
-    agent: &Option<String>,
-    prompt: &Option<String>,
-    model: &Option<String>,
-    effort: &Option<String>,
-    cwd: &Option<String>,
-    timeout: &Option<String>,
-) -> Value {
+/// Assemble the params shared by `agent run` and `agent ask` (§6.1): enforce naming, resolve
+/// the prompt (`-p -` from stdin) and the effective cwd, then set naming, provider, model/
+/// effort, cwd, timeout, and the caller identity. Verb-specific fields (e.g. `gc`) are added on
+/// top by the caller.
+fn build_spawn_params(o: &SpawnOpts) -> Result<Value> {
+    require_name_xor_path(o.name, o.path)?;
+    let prompt = resolve_prompt(o.prompt.as_deref())?;
+    let cwd = default_cwd(o.cwd);
     let (caller_id, caller_path) = caller_identity();
     let mut params = json!({});
-    let obj = params.as_object_mut().unwrap();
-    if let Some(n) = name {
-        obj.insert("name".into(), json!(n));
-    }
-    if let Some(p) = path {
-        obj.insert("path".into(), json!(p));
-    }
-    if let Some(a) = agent {
-        obj.insert("agent".into(), json!(a));
-    }
-    if let Some(p) = prompt {
-        obj.insert("prompt".into(), json!(p));
-    }
-    if let Some(m) = model {
-        obj.insert("model".into(), json!(m));
-    }
-    if let Some(e) = effort {
-        obj.insert("effort".into(), json!(e));
-    }
-    if let Some(c) = cwd {
-        obj.insert("cwd".into(), json!(c));
-    }
-    if let Some(t) = timeout {
-        obj.insert("timeout".into(), json!(t));
-    }
+    set_opt(&mut params, "name", o.name.clone());
+    set_opt(&mut params, "path", o.path.clone());
+    set_opt(&mut params, "agent", o.agent.clone());
+    set_opt(&mut params, "prompt", prompt);
+    set_opt(&mut params, "model", o.model.clone());
+    set_opt(&mut params, "effort", o.effort.clone());
+    set_opt(&mut params, "cwd", cwd);
+    set_opt(&mut params, "timeout", o.timeout.clone());
     add_caller(&mut params, &caller_id, &caller_path);
-    params
+    Ok(params)
+}
+
+/// Set `key => value` on a JSON object only when the option is `Some` (the optional-field
+/// idiom repeated across the CLI request builders).
+fn set_opt<T: Into<Value>>(params: &mut Value, key: &str, opt: Option<T>) {
+    if let Some(x) = opt {
+        params[key] = x.into();
+    }
 }
 
 /// Attach the caller identity params to a request object.
 fn add_caller(params: &mut Value, caller_id: &Option<String>, caller_path: &Option<String>) {
-    let obj = params.as_object_mut().unwrap();
-    if let Some(id) = caller_id {
-        obj.insert("caller_id".into(), json!(id));
-    }
-    if let Some(cp) = caller_path {
-        obj.insert("caller_path".into(), json!(cp));
-    }
+    set_opt(params, "caller_id", caller_id.clone());
+    set_opt(params, "caller_path", caller_path.clone());
 }
 
 /// Auto-start the server if needed, then send one request.
@@ -1173,25 +1163,12 @@ fn cmd_loop_create(
         .ok()
         .map(|p| p.display().to_string());
     let mut params = json!({ "name": name, "command": command });
-    let obj = params.as_object_mut().unwrap();
-    if let Some(c) = cron {
-        obj.insert("cron".into(), json!(c));
-    }
-    if let Some(o) = once_at {
-        obj.insert("once_at".into(), json!(o));
-    }
-    if let Some(m) = max_concurrency {
-        obj.insert("max_concurrency".into(), json!(m));
-    }
-    if let Some(o) = overlap {
-        obj.insert("overlap".into(), json!(o));
-    }
-    if let Some(t) = timeout {
-        obj.insert("timeout".into(), json!(t));
-    }
-    if let Some(c) = &cwd {
-        obj.insert("cwd".into(), json!(c));
-    }
+    set_opt(&mut params, "cron", cron.clone());
+    set_opt(&mut params, "once_at", once_at.clone());
+    set_opt(&mut params, "max_concurrency", *max_concurrency);
+    set_opt(&mut params, "overlap", overlap.clone());
+    set_opt(&mut params, "timeout", timeout.clone());
+    set_opt(&mut params, "cwd", cwd);
     let result = connect_and_request("loop.create", params)?;
     let l = &result["loop"];
     emit_success(json, &result, || {
@@ -1297,9 +1274,7 @@ fn cmd_loop_rm(json: bool, names: &[String], kill_active: bool, yes: bool) -> Re
 
 fn cmd_loop_ls(json: bool, names: &[String], status: Option<&str>, all: bool) -> Result<()> {
     let mut params = json!({ "names": names, "all": all });
-    if let Some(s) = status {
-        params["status"] = json!(s);
-    }
+    set_opt(&mut params, "status", status);
     let result = connect_and_request("loop.ls", params)?;
     emit_success(json, &result, || {
         let loops = result["loops"].as_array().cloned().unwrap_or_default();
@@ -1333,27 +1308,20 @@ fn cmd_loop_logs(
 ) -> Result<()> {
     let build = || {
         let mut params = json!({ "name": name });
-        if let Some(r) = run {
-            params["run"] = json!(r);
-        }
-        if let Some(s) = source {
-            params["source"] = json!(s);
-        }
-        if let Some(t) = tail {
-            params["tail"] = json!(t);
-        }
+        set_opt(&mut params, "run", run);
+        set_opt(&mut params, "source", source);
+        set_opt(&mut params, "tail", tail);
         params
     };
     let result = connect_and_request("loop.logs", build())?;
-    let mut seen = print_loop_lines(json, &result, 0);
+    let seen = print_loop_lines(json, &result, 0);
     if follow {
-        loop {
-            std::thread::sleep(Duration::from_millis(500));
-            match connect_and_request("loop.logs", build()) {
-                Ok(r) => seen = print_loop_lines(false, &r, seen),
-                Err(_) => continue,
-            }
-        }
+        follow_poll(
+            "loop.logs",
+            build,
+            |r, seen| print_loop_lines(false, r, seen),
+            seen,
+        );
     }
     Ok(())
 }
@@ -1390,9 +1358,7 @@ fn cmd_loop_run_stop(json: bool, name: &str, run: Option<&str>, yes: bool) -> Re
         // Enumerate the resolved targets (the loop's active/pending runs, or the one named
         // run) so the operator confirms against the real set, not just argv (spec §6).
         let mut lsp = json!({ "name": name });
-        if let Some(r) = run {
-            lsp["run"] = json!(r);
-        }
+        set_opt(&mut lsp, "run", run);
         let listed = connect_and_request("loop.run.ls", lsp)?;
         let mut rows = listed["runs"].as_array().cloned().unwrap_or_default();
         if let Some(r) = run {
@@ -1418,9 +1384,7 @@ fn cmd_loop_run_stop(json: bool, name: &str, run: Option<&str>, yes: bool) -> Re
         }
     }
     let mut params = json!({ "name": name });
-    if let Some(r) = run {
-        params["run"] = json!(r);
-    }
+    set_opt(&mut params, "run", run);
     let result = connect_and_request("loop.run.stop", params)?;
     emit_success(json, &result, || {
         for s in result["stopped"].as_array().into_iter().flatten() {
@@ -1443,9 +1407,7 @@ fn cmd_loop_run_stop(json: bool, name: &str, run: Option<&str>, yes: bool) -> Re
 
 fn cmd_loop_run_ls(json: bool, name: &str, status: Option<&str>, all: bool) -> Result<()> {
     let mut params = json!({ "name": name, "all": all });
-    if let Some(s) = status {
-        params["status"] = json!(s);
-    }
+    set_opt(&mut params, "status", status);
     let result = connect_and_request("loop.run.ls", params)?;
     emit_success(json, &result, || {
         let runs = result["runs"].as_array().cloned().unwrap_or_default();
@@ -1715,12 +1677,6 @@ fn print_status_human(s: &Value) {
 pub fn stdout_is_tty() -> bool {
     // SAFETY: isatty on a valid fd is always safe.
     unsafe { libc::isatty(libc::STDOUT_FILENO) == 1 }
-}
-
-/// A selector that should be resolved as a uuid rather than a path glob (spec §5.1): a full
-/// uuid (dashes can't be path chars) or a git-style ≥8-hex prefix.
-fn looks_like_uuid_selector(s: &str) -> bool {
-    s.contains('-') || (s.len() >= 8 && s.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 /// TTY [y/N] confirmation (spec §6): print `question` to stderr, read one line from stdin,
