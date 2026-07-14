@@ -269,11 +269,32 @@ pub fn methods() -> Vec<MethodDef> {
     add(
         "agent.attach.prepare",
         "Insert an attach lease and return the herdr attach exec command.",
-        object(json!({ "target": str_schema(), "takeover": bool_schema() })),
-        object(
-            json!({ "uuid": str_schema(), "path": str_schema(), "command": array_of(str_schema()) }),
-        ),
+        object(json!({
+            "target": str_schema(), "takeover": bool_schema(), "client_pid": int_schema(),
+            "caller_id": str_schema(), "caller_path": str_schema(),
+        })),
+        object(json!({
+            "uuid": str_schema(), "path": str_schema(), "lease_id": str_schema(),
+            "takeover": bool_schema(), "ttl_ms": int_schema(),
+            "command": array_of(str_schema()),
+        })),
+        true,
         false,
+    );
+    add(
+        "agent.attach.heartbeat",
+        "Refresh an attach lease so GC keeps deferring while the terminal is attached.",
+        object(json!({ "lease_id": str_schema() })),
+        object(json!({ "ok": bool_schema() })),
+        true,
+        false,
+    );
+    add(
+        "agent.attach.release",
+        "Release an attach lease on detach (GC resumes).",
+        object(json!({ "lease_id": str_schema() })),
+        object(json!({ "released": bool_schema() })),
+        true,
         false,
     );
     add(

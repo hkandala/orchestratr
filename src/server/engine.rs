@@ -935,6 +935,88 @@ impl Server {
         }))
     }
 
+    /// `agent.attach.prepare` (spec §6.1, §11.2): the one terminal-mediated verb. Validates the
+    /// target, **inserts the attach lease first** and reads the live location under the same
+    /// transaction (so GC can never move/reap between resolution and lease), and returns the
+    /// `herdr agent attach` exec command. Queued/starting/ended/lost → `state_conflict`.
+    pub(super) fn handle_agent_attach_prepare(&self, params: &Value) -> Result<Value> {
+        let target = str_param(params, "target").ok_or_else(|| {
+            OrcrError::invalid_request("attach requires a target", "target_required")
+        })?;
+        let takeover = params
+            .get("takeover")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let client_pid = params
+            .get("client_pid")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let scope = caller_scope(params);
+        let row = self.resolve_singleton(&scope, &target)?;
+
+        let lease_id = uuid::Uuid::new_v4().to_string();
+        let mode = if takeover { "takeover" } else { "observe" };
+        let ttl_ms = self.inner.config.timings.attach_lease_ttl.as_millis() as i64;
+        let (info, ev) = {
+            let mut store = self.inner.store.lock().unwrap();
+            store.prepare_attach(&row.uuid, &lease_id, mode, "cli", client_pid, ttl_ms)?
+        };
+        self.publish(ev);
+
+        // Build the exec command. `terminal_id` is globally unique and stable across pane
+        // moves, so it addresses the target even after a park/un-park (§6.1).
+        let bin = HerdrBinary::discover(Some(self.inner.config.herdr.bin.as_str()))?;
+        let session = info
+            .herdr_session
+            .clone()
+            .unwrap_or_else(|| self.inner.config.herdr.session.clone());
+        let mut command = vec![
+            bin.path().display().to_string(),
+            "--session".to_string(),
+            session,
+            "agent".to_string(),
+            "attach".to_string(),
+            info.terminal_id.clone(),
+        ];
+        if takeover {
+            command.push("--takeover".to_string());
+        }
+        Ok(json!({
+            "uuid": row.uuid,
+            "path": row.path,
+            "lease_id": lease_id,
+            "takeover": takeover,
+            "ttl_ms": ttl_ms,
+            "command": command,
+        }))
+    }
+
+    /// `agent.attach.heartbeat` (spec §5.4): keep the lease fresh while the CLI is attached.
+    pub(super) fn handle_agent_attach_heartbeat(&self, params: &Value) -> Result<Value> {
+        let lease_id = str_param(params, "lease_id").ok_or_else(|| {
+            OrcrError::invalid_request("heartbeat requires lease_id", "lease_required")
+        })?;
+        let ttl_ms = self.inner.config.timings.attach_lease_ttl.as_millis() as i64;
+        let ok = {
+            let mut store = self.inner.store.lock().unwrap();
+            store.heartbeat_lease(&lease_id, ttl_ms)?
+        };
+        Ok(json!({ "ok": ok }))
+    }
+
+    /// `agent.attach.release` (spec §5.4): drop the lease on detach; GC resumes.
+    pub(super) fn handle_agent_attach_release(&self, params: &Value) -> Result<Value> {
+        let lease_id = str_param(params, "lease_id").ok_or_else(|| {
+            OrcrError::invalid_request("release requires lease_id", "lease_required")
+        })?;
+        let ev = {
+            let mut store = self.inner.store.lock().unwrap();
+            store.release_lease(&lease_id)?
+        };
+        self.publish(ev);
+        Ok(json!({ "released": ev > 0 }))
+    }
+
     // --- resolution helpers ---
 
     /// Resolve an exact singleton target (§5.1): wildcards rejected; path-first then uuid.

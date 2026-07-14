@@ -130,6 +130,14 @@ pub enum AgentCmd {
         #[arg(short = 'p', long = "prompt")]
         prompt_flag: Option<String>,
     },
+    /// Attach your terminal to an agent's pane (observe by default; --takeover claims input).
+    Attach {
+        /// The target agent (`<path|uuid>`; no wildcards).
+        target: String,
+        /// Claim input (drive the agent directly), rather than observe-only.
+        #[arg(long)]
+        takeover: bool,
+    },
     /// Kill matched agents (patterns + uuids); graceful shutdown → pane closed.
     Kill {
         /// Targets (`<pattern|uuid>...`).
@@ -263,6 +271,7 @@ fn dispatch_agent(json: bool, cmd: &AgentCmd) -> Result<()> {
             prompt,
             prompt_flag,
         } => cmd_agent_send(json, target, prompt.as_deref(), prompt_flag.as_deref()),
+        AgentCmd::Attach { target, takeover } => cmd_agent_attach(json, target, *takeover),
         AgentCmd::Kill {
             targets,
             force,
@@ -599,6 +608,84 @@ fn print_entries(json: bool, result: &Value, skip: usize) -> usize {
     entries.len()
 }
 
+/// `agent attach` (spec §6.1): the one terminal-mediated verb. The CLI calls
+/// `agent.attach.prepare` (which inserts the lease first, so GC defers), execs `herdr agent
+/// attach` locally while heart-beating the lease, and releases it on exit. Abrupt CLI death →
+/// the lease expires by heartbeat.
+fn cmd_agent_attach(json: bool, target: &str, takeover: bool) -> Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let (caller_id, caller_path) = caller_identity();
+    let mut params = json!({
+        "target": target, "takeover": takeover, "client_pid": std::process::id(),
+    });
+    add_caller(&mut params, &caller_id, &caller_path);
+    let prep = connect_and_request("agent.attach.prepare", params)?;
+
+    let uuid = prep["uuid"].as_str().unwrap_or_default().to_string();
+    let path = prep["path"].as_str().unwrap_or_default().to_string();
+    let lease_id = prep["lease_id"].as_str().unwrap_or_default().to_string();
+    let ttl_ms = prep["ttl_ms"].as_u64().unwrap_or(30_000);
+    let command: Vec<String> = prep["command"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    if command.is_empty() {
+        return Err(OrcrError::server_error(
+            "attach_command",
+            "attach.prepare returned no exec command",
+        ));
+    }
+
+    // Heartbeat the lease in the background (every ~ttl/2) until the attach session ends, so GC
+    // keeps deferring park/reap while attached (§5.4).
+    let stop = Arc::new(AtomicBool::new(false));
+    let hb_lease = lease_id.clone();
+    let hb_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        let interval = Duration::from_millis((ttl_ms / 2).max(1000));
+        while !hb_stop.load(Ordering::SeqCst) {
+            std::thread::sleep(interval);
+            if hb_stop.load(Ordering::SeqCst) {
+                break;
+            }
+            let _ = connect_and_request("agent.attach.heartbeat", json!({ "lease_id": hb_lease }));
+        }
+    });
+
+    // Exec the interactive herdr attach, inheriting the terminal.
+    let status = std::process::Command::new(&command[0])
+        .args(&command[1..])
+        .status();
+
+    // Detach: stop heart-beating and release the lease (GC resumes).
+    stop.store(true, Ordering::SeqCst);
+    let _ = heartbeat.join();
+    let _ = connect_and_request("agent.attach.release", json!({ "lease_id": lease_id }));
+
+    match status {
+        Ok(_) => {
+            emit_success(
+                json,
+                json!({ "uuid": uuid, "path": path, "attached": true, "takeover": takeover }),
+                || {
+                    println!("detached {path}");
+                },
+            );
+            Ok(())
+        }
+        Err(e) => Err(OrcrError::environment(
+            "herdr_unreachable",
+            format!("failed to exec `{}`: {e}", command.join(" ")),
+        )),
+    }
+}
+
 fn cmd_agent_kill(json: bool, targets: &[String], force: bool, yes: bool) -> Result<()> {
     let (caller_id, caller_path) = caller_identity();
 
@@ -884,11 +971,21 @@ fn print_status_human(s: &Value) {
     }
     if let Some(c) = s.get("counts") {
         println!(
-            "  counts    live={} queued={} blocked={} unmanaged={}",
+            "  counts    live={} queued={} blocked={} unmanaged={} unmarked_panes={} \
+             unknown_marked_panes={}",
             c.get("live").unwrap_or(&Value::Null),
             c.get("queued").unwrap_or(&Value::Null),
             c.get("blocked").unwrap_or(&Value::Null),
             c.get("unmanaged").unwrap_or(&Value::Null),
+            c.get("unmarked_panes").unwrap_or(&Value::Null),
+            c.get("unknown_marked_panes").unwrap_or(&Value::Null),
+        );
+    }
+    if let Some(d) = s.get("drift") {
+        println!(
+            "  drift     lost={} repaired={}",
+            d.get("lost").unwrap_or(&Value::Null),
+            d.get("repaired").unwrap_or(&Value::Null),
         );
     }
 }

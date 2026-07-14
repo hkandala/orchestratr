@@ -387,6 +387,21 @@ impl Server {
                 let _ = write_to(writer, &respond(&req.id, out));
                 false
             }
+            "agent.attach.prepare" => {
+                let out = self.handle_agent_attach_prepare(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "agent.attach.heartbeat" => {
+                let out = self.handle_agent_attach_heartbeat(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "agent.attach.release" => {
+                let out = self.handle_agent_attach_release(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
             "events.subscribe" => {
                 self.start_subscription(&req, writer, sub_stops, false);
                 false
