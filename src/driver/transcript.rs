@@ -155,18 +155,23 @@ pub fn locate_transcript(
         "codex" => codex_candidates(value),
         _ => claude_candidates(value, cwd),
     };
-    select_candidate(candidates, created_at_ms, uuid, status, value)
+    select_candidate(provider, candidates, created_at_ms, uuid, status, value)
 }
 
 /// Pick exactly one candidate: 0 → not_found; 1 → it; >1 → prefer the newest that is not
 /// older than `created_at` (identity by session + created_at), else `ambiguous`.
 fn select_candidate(
+    provider: &str,
     mut candidates: Vec<PathBuf>,
     created_at_ms: i64,
     uuid: &str,
     status: &str,
     value: &str,
 ) -> Result<TranscriptLocator> {
+    let locator = |path: PathBuf| TranscriptLocator {
+        provider: provider.to_string(),
+        path,
+    };
     candidates.sort();
     candidates.dedup();
     match candidates.len() {
@@ -204,20 +209,6 @@ fn select_candidate(
                 "uuid": uuid, "status": status, "cause": "ambiguous", "candidates": list,
             })))
         }
-    }
-}
-
-fn locator(path: PathBuf) -> TranscriptLocator {
-    let provider = if path.components().any(|c| c.as_os_str() == "sessions")
-        && path.to_string_lossy().contains(".codex")
-    {
-        "codex"
-    } else {
-        "claude"
-    };
-    TranscriptLocator {
-        provider: provider.to_string(),
-        path,
     }
 }
 
@@ -599,7 +590,7 @@ mod tests {
         let a = write(tmp.path(), "a.jsonl", "{}");
         let b = write(tmp.path(), "b.jsonl", "{}");
         // Both fresh (mtime >= 0) so created_at can't disambiguate → ambiguous.
-        let e = select_candidate(vec![a, b], i64::MAX, "u", "idle", "sid").unwrap_err();
+        let e = select_candidate("claude", vec![a, b], i64::MAX, "u", "idle", "sid").unwrap_err();
         assert_eq!(e.code, ErrorCode::TranscriptUnavailable);
         assert_eq!(e.details["cause"], "ambiguous");
         assert_eq!(e.details["candidates"].as_array().unwrap().len(), 2);
@@ -613,8 +604,9 @@ mod tests {
         // created_at = 0 → both files are "fresh" (mtime >= 0), still >1 fresh → ambiguous;
         // but with created_at far in the future only files newer than it survive → 0 fresh →
         // still ambiguous. Use the single-candidate path to prove selection.
-        let one = select_candidate(vec![a.clone()], 0, "u", "idle", "sid").unwrap();
+        let one = select_candidate("codex", vec![a.clone()], 0, "u", "idle", "sid").unwrap();
         assert_eq!(one.path, a);
+        assert_eq!(one.provider, "codex");
         let _ = b;
     }
 
