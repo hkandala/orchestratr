@@ -189,8 +189,17 @@ impl Drop for TestServer {
                 Err(_) => break,
             }
         }
-        let _ = self.bin.session_stop(&self.session);
-        let _ = self.bin.session_delete(&self.session);
+        // Tear down the disposable session, verifying it is actually gone (herdr can
+        // transiently reject a stop/delete right after the owning server is killed — retry
+        // until `find_session` reports it absent, so no `orcr_test_*` session ever leaks).
+        for _ in 0..20 {
+            let _ = self.bin.session_stop(&self.session);
+            let _ = self.bin.session_delete(&self.session);
+            match self.bin.find_session(&self.session) {
+                Ok(None) => break,
+                _ => std::thread::sleep(Duration::from_millis(200)),
+            }
+        }
     }
 }
 
@@ -245,10 +254,7 @@ fn e2e_concurrent_fanout_and_tournament() {
     let ts = TestServer::start(&[]);
     // A copy of fan-out-and-merge and a copy of tournament, running concurrently under distinct
     // top scopes — proves scope isolation (no path collision / cross-talk) between concurrent
-    // workflows. NOTE: much larger *bursts* of simultaneous instant agents against one owned
-    // herdr session (e.g. 4+ fan-outs all issuing Promise.all agent.starts at the same instant)
-    // hit a herdr-level agent.start reliability limit — see m7-sdk-skill/notes.md and the
-    // ignored `e2e_concurrent_burst_high` below.
+    // workflows. The stronger two-copies-each fixture is `e2e_concurrent_burst_high` below.
     let jobs = [
         ("recipes/fan-out-and-merge.ts", "review_a"),
         ("recipes/tournament.ts", "tourney_a"),
@@ -272,13 +278,13 @@ fn e2e_concurrent_fanout_and_tournament() {
     );
 }
 
-/// The full 4-way concurrency fixture (two copies each of fan-out + tournament). Ignored: it
-/// reliably surfaces a herdr `agent.start` reliability limit under high concurrent-burst load
-/// (some panes' commands never launch, and orcr's fast-turn path then falsely completes a
-/// never-started agent). Tracked in m7-sdk-skill/notes.md as an engine follow-up; run manually
-/// with `--ignored` to reproduce.
+/// The full concurrency-fixtures acceptance (spec M7): **two copies each** of fan-out-and-merge
+/// and tournament, started concurrently under distinct top scopes, run clean. This exercises two
+/// copies of the *same* scope-parameterized recipe coexisting without collision — the exact
+/// singleton-vs-scope behavior the spec's §9 preamble calls out. (Fixed by making the herdr
+/// agent `name` the full session-unique path; herdr 0.7.2 enforces session-global name
+/// uniqueness — see m7-sdk-skill/notes.md.)
 #[test]
-#[ignore = "surfaces a herdr concurrent-burst agent.start limitation — see notes.md"]
 fn e2e_concurrent_burst_high() {
     if !e2e_enabled() {
         eprintln!("skipping (set ORCR_E2E=1)");
