@@ -65,15 +65,31 @@ impl Drop for Harness {
         // Best-effort teardown; never touches the user's default session.
         let _ = self.bin.session_stop(&self.session);
         let _ = self.bin.session_delete(&self.session);
-        // Known-issues #1: the disposable session must not leak. Skipped mid-panic so a real
-        // failure isn't masked by a double panic (abort).
+        // Known-issues #1: neither the disposable session nor the literal `orcr` owned-session
+        // name must leak. Skipped mid-panic so a real failure isn't masked by a double panic.
         if !std::thread::panicking() {
             assert!(
                 matches!(self.bin.find_session(&self.session), Ok(None)),
                 "disposable session `{}` leaked after teardown",
                 self.session
             );
+            assert!(
+                matches!(self.bin.find_session("orcr"), Ok(None)),
+                "literal `orcr` session leaked after teardown"
+            );
         }
+    }
+}
+
+/// A detached `orcr server` pid, SIGKILLed on drop (belt-and-suspenders teardown so a panic
+/// before an explicit `server.stop` can't orphan a server against a soon-deleted session).
+struct ServerProc(u32);
+
+impl Drop for ServerProc {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &self.0.to_string()])
+            .status();
     }
 }
 
@@ -295,6 +311,10 @@ fn e2e_server_status_reports_herdr() {
     let start = Command::new(orcr)
         .args(["server", "start"])
         .env("ORCR_HOME", orcr_home.path())
+        // Belt-and-suspenders (known-issues #1): pin the disposable session on the child too, so
+        // a config-less orphan can never bootstrap the literal `orcr` session — matching every
+        // other e2e harness.
+        .env("ORCR_HERDR_SESSION", &h.session)
         .env("ORCR_DISABLE_DISCOVERY", "1")
         .stdin(Stdio::null())
         .output()
@@ -309,6 +329,11 @@ fn e2e_server_status_reports_herdr() {
     let status = client
         .request("server.status", serde_json::json!({}))
         .expect("server.status");
+
+    // Track the detached server so a panic before `server.stop` can't leave an orphan running
+    // against a soon-deleted session. Armed before the asserts; dropped (killed) before the
+    // Harness teardown that stops+deletes the session.
+    let _server = ServerProc(status["pid"].as_u64().expect("server pid") as u32);
 
     // herdr binary reachable; the owned (disposable) session is running and pingable.
     let herdr = &status["herdr"];
