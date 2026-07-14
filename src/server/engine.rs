@@ -520,13 +520,18 @@ impl Server {
         let cwd = str_param(params, "cwd").filter(|s| !s.is_empty());
         let prompt = str_param(params, "prompt");
 
-        // Caller identity → scope + lineage (§5.3). A managed agent's scope is its path minus
-        // its name; a plain shell has none. (loop-run scope lands in M5.)
+        // Caller identity → scope + lineage (§5.3). An agent's scope is its path minus its
+        // name; a **loop run** is a directory, so its scope is its whole run path; a plain
+        // shell has none (§5.3).
         let caller_id = str_param(params, "caller_id").filter(|s| !s.is_empty());
         let caller_path = str_param(params, "caller_path").filter(|s| !s.is_empty());
-        let scope = caller_path.as_deref().and_then(path::scope_of_agent);
+        let ctx = self.caller_context(caller_id.as_deref(), caller_path.as_deref());
+        let scope = ctx.scope.clone();
 
         let effective = path::resolve_create(scope.as_deref(), &input)?;
+
+        // Active-loop namespace protection + the run admission barrier (§5.1, §6.2, §11.3).
+        self.check_loop_namespace(&effective, caller_path.as_deref())?;
 
         // Build the launch plan (argv + model/effort mapping).
         let plan = launch_plan(&provider, model.as_deref(), effort.as_deref())?;
@@ -540,11 +545,16 @@ impl Server {
         let mut env: BTreeMap<String, String> = BTreeMap::new();
         env.insert("ORCR_ID".into(), uuid.clone());
         env.insert("ORCR_PATH".into(), effective.clone());
-        if let (Some(pid), Some(ppath)) = (&caller_id, &caller_path) {
+        if let (Some(pid), Some(ppath)) = (&ctx.parent_id, &ctx.parent_path) {
             env.insert("ORCR_PARENT_ID".into(), pid.clone());
             env.insert("ORCR_PARENT_PATH".into(), ppath.clone());
         }
         env.insert("ORCR_AGENT_DATA_DIR".into(), data_dir.display().to_string());
+        // ORCR_LOOP_DATA_DIR is set for every agent descended from a loop run (§5.3): the
+        // loop's shared scratch dir, derived from the effective path's level-1 loop name.
+        if let Some(dir) = self.loop_data_dir_for(&effective) {
+            env.insert("ORCR_LOOP_DATA_DIR".into(), dir);
+        }
         // So a nested `orcr` call reaches the same server (relocated homes, tests).
         env.insert(
             "ORCR_HOME".into(),
@@ -589,7 +599,7 @@ impl Server {
             path: effective.clone(),
             managed: true,
             origin: "run".into(),
-            parent_id: caller_id.clone(),
+            parent_id: ctx.parent_id.clone(),
             agent: Some(provider.clone()),
             model: model.clone(),
             effort: effort.clone(),
@@ -632,10 +642,10 @@ impl Server {
         if let Some(q) = queue_position {
             agent_obj["queue_position"] = json!(q);
         }
-        if let Some(pid) = &caller_id {
+        if let Some(pid) = &ctx.parent_id {
             agent_obj["parent_id"] = json!(pid);
         }
-        if let Some(ppath) = &caller_path {
+        if let Some(ppath) = &ctx.parent_path {
             agent_obj["parent_path"] = json!(ppath);
         }
         Ok(json!({ "agent": agent_obj, "permissions": "bypass" }))
@@ -648,7 +658,7 @@ impl Server {
             OrcrError::invalid_request("send requires a target", "target_required")
         })?;
         let prompt = str_param(params, "prompt").unwrap_or_default();
-        let scope = caller_scope(params);
+        let scope = self.caller_scope_full(params);
         let mut row = self.resolve_singleton(&scope, &target)?;
         if row.status == "ended" || row.status == "lost" {
             return Err(OrcrError::not_found(format!(
@@ -746,7 +756,7 @@ impl Server {
             .get("preview")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let scope = caller_scope(params);
+        let scope = self.caller_scope_full(params);
 
         let matched = self.resolve_targets(&scope, &targets)?;
         if matched.is_empty() {
@@ -833,7 +843,7 @@ impl Server {
 
     /// `agent.ls` (spec §6.1): active (and, with `all`, ended) agents as flat rows.
     pub(super) fn handle_agent_ls(&self, params: &Value) -> Result<Value> {
-        let scope = caller_scope(params);
+        let scope = self.caller_scope_full(params);
         let pattern = match str_param(params, "pattern").filter(|s| !s.is_empty()) {
             Some(p) => Some(path::resolve_selector(scope.as_deref(), &p)?),
             None => None,
@@ -886,7 +896,7 @@ impl Server {
                 "target_required",
             ));
         }
-        let scope = caller_scope(params);
+        let scope = self.caller_scope_full(params);
         let timeout_ms = match str_param(params, "timeout").filter(|s| !s.is_empty()) {
             Some(t) => Some(crate::duration::parse_duration(&t)?.as_millis() as i64),
             None => None,
@@ -1000,7 +1010,7 @@ impl Server {
         let target = str_param(params, "target").ok_or_else(|| {
             OrcrError::invalid_request("logs requires a target", "target_required")
         })?;
-        let scope = caller_scope(params);
+        let scope = self.caller_scope_full(params);
         let last_response = params
             .get("last_response")
             .and_then(|v| v.as_bool())
@@ -1051,7 +1061,7 @@ impl Server {
             .get("client_pid")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
-        let scope = caller_scope(params);
+        let scope = self.caller_scope_full(params);
         let row = self.resolve_singleton(&scope, &target)?;
 
         let lease_id = uuid::Uuid::new_v4().to_string();
@@ -1216,6 +1226,124 @@ impl Server {
         crate::driver::IntegrationState::from_herdr_status(&raw)
     }
 
+    /// Resolve the caller's scope + lineage (spec §5.3). A **loop run** caller is a directory:
+    /// its scope is its whole run path and it parents children *inside* it. An **agent** caller
+    /// is a file: its scope is its path minus its name, and children land beside it. A plain
+    /// shell has no scope.
+    pub(super) fn caller_context(
+        &self,
+        caller_id: Option<&str>,
+        caller_path: Option<&str>,
+    ) -> CallerContext {
+        let caller_id = caller_id.filter(|s| !s.is_empty());
+        let caller_path = caller_path.filter(|s| !s.is_empty());
+        // A loop-run caller: caller_id is a loop_run uuid.
+        if let Some(id) = caller_id {
+            let is_run = {
+                let store = self.inner.store.lock().unwrap();
+                store.run_by_uuid(id).ok().flatten().is_some()
+            };
+            if is_run {
+                return CallerContext {
+                    scope: caller_path.map(String::from),
+                    parent_id: Some(id.to_string()),
+                    parent_path: caller_path.map(String::from),
+                };
+            }
+        }
+        CallerContext {
+            scope: caller_path.and_then(path::scope_of_agent),
+            parent_id: caller_id.map(String::from),
+            parent_path: caller_path.map(String::from),
+        }
+    }
+
+    /// The caller scope for target-resolution verbs (send/kill/ls/wait/logs): full run path for
+    /// a loop-run caller, else the agent's directory (spec §5.3).
+    pub(super) fn caller_scope_full(&self, params: &Value) -> Option<String> {
+        self.caller_context(
+            str_param(params, "caller_id").as_deref(),
+            str_param(params, "caller_path").as_deref(),
+        )
+        .scope
+    }
+
+    /// Enforce active-loop namespace protection + the run admission barrier on a creation path
+    /// (spec §5.1, §6.2, §11.3). A root/unrelated context may not create anything under an
+    /// active loop's name; only a context *inside* one of that loop's runs may, and only while
+    /// that run is still accepting work (`running`).
+    fn check_loop_namespace(&self, effective: &str, caller_path: Option<&str>) -> Result<()> {
+        let level1 = effective.split('/').next().unwrap_or("");
+        let active = {
+            let store = self.inner.store.lock().unwrap();
+            store.active_loop_names().unwrap_or_default()
+        };
+        if !active.iter().any(|n| n == level1) {
+            return Ok(());
+        }
+        // Allowed only from inside a run of this loop (the caller's path is under `<loop>/…`).
+        let within = caller_path
+            .map(|p| p.split('/').next() == Some(level1))
+            .unwrap_or(false);
+        if !within {
+            return Err(OrcrError::invalid_request(
+                format!("`{level1}` is an active loop — create agents only inside its runs"),
+                "reserved_name",
+            )
+            .with_details(json!({ "reason": "reserved_name", "name": level1 })));
+        }
+        // The run admission barrier: the run must still be `running` (not stopping/ended).
+        let run_id = effective.split('/').nth(1).unwrap_or("");
+        let loop_row = {
+            let store = self.inner.store.lock().unwrap();
+            store.find_loop_by_name(level1).ok().flatten()
+        };
+        if let Some(l) = loop_row {
+            let run = {
+                let store = self.inner.store.lock().unwrap();
+                store.run_by_id_or_uuid(&l.uuid, run_id).ok().flatten()
+            };
+            if let Some(run) = run {
+                if run.status != "running" {
+                    return Err(OrcrError::state_conflict(format!(
+                        "run `{level1}/{run_id}` is {} — not accepting new agents",
+                        run.status
+                    ))
+                    .with_details(
+                        json!({ "current_status": run.status, "reason": "run_stopping" }),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The loop data dir for an agent's effective path, if it descends from an active loop run
+    /// (`<loop>/<run_id>/…`), else `None` (spec §5.3 `ORCR_LOOP_DATA_DIR`).
+    fn loop_data_dir_for(&self, effective: &str) -> Option<String> {
+        let level1 = effective.split('/').next().unwrap_or("");
+        // Must be an agent nested under a loop run (≥ 2 segments), not a bare top-level agent.
+        if effective.split('/').count() < 2 {
+            return None;
+        }
+        let active = {
+            let store = self.inner.store.lock().unwrap();
+            store.active_loop_names().unwrap_or_default()
+        };
+        if active.iter().any(|n| n == level1) {
+            Some(
+                self.inner
+                    .home
+                    .data_dir()
+                    .join(level1)
+                    .display()
+                    .to_string(),
+            )
+        } else {
+            None
+        }
+    }
+
     /// The agent's data dir, mirroring its path (§8): `<home>/data/<segs>/<uuid>`.
     fn agent_data_dir(&self, path: &str, uuid: &str) -> PathBuf {
         let mut dir = self.inner.home.data_dir();
@@ -1343,11 +1471,11 @@ fn str_param(params: &Value, key: &str) -> Option<String> {
     params.get(key).and_then(|v| v.as_str()).map(String::from)
 }
 
-/// The caller scope from `caller_path` (an agent's scope = its path minus its name, §5.3).
-fn caller_scope(params: &Value) -> Option<String> {
-    str_param(params, "caller_path")
-        .filter(|s| !s.is_empty())
-        .and_then(|p| path::scope_of_agent(&p))
+/// The caller's resolved scope + lineage (spec §5.3).
+pub(super) struct CallerContext {
+    pub scope: Option<String>,
+    pub parent_id: Option<String>,
+    pub parent_path: Option<String>,
 }
 
 /// A uuid prefix candidate: ≥ 8 chars, all hex (§5.1).

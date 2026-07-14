@@ -12,6 +12,7 @@ mod discovery;
 mod engine;
 mod gc;
 mod log;
+mod loops;
 
 pub use client::{Client, StartOutcome};
 pub use log::ServerLog;
@@ -212,10 +213,12 @@ pub fn run_foreground(home: &Home, config: Config) -> Result<StartOutcome> {
     // Reconcile the store against herdr reality on start (spec §11.5), then start the queue
     // engine (promotion + spawn pipelines + stuck-start guard, §5.5/§11.1).
     server.reconcile_on_start();
+    server.recover_loops_on_start();
     server.start_queue_worker();
     server.start_completion_monitor();
     server.start_gc_engine();
     server.start_unmanaged_discovery();
+    server.start_loop_scheduler();
 
     server.serve(listener);
 
@@ -405,6 +408,51 @@ impl Server {
             }
             "agent.attach.release" => {
                 let out = self.handle_agent_attach_release(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "loop.create" => {
+                let out = self.handle_loop_create(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "loop.pause" => {
+                let out = self.handle_loop_set_paused(&req.params, true);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "loop.resume" => {
+                let out = self.handle_loop_set_paused(&req.params, false);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "loop.rm" => {
+                let out = self.handle_loop_rm(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "loop.ls" => {
+                let out = self.handle_loop_ls(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "loop.logs" => {
+                let out = self.handle_loop_logs(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "loop.run.start" => {
+                let out = self.handle_loop_run_start(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "loop.run.stop" => {
+                let out = self.handle_loop_run_stop(&req.params);
+                let _ = write_to(writer, &respond(&req.id, out));
+                false
+            }
+            "loop.run.ls" => {
+                let out = self.handle_loop_run_ls(&req.params);
                 let _ = write_to(writer, &respond(&req.id, out));
                 false
             }

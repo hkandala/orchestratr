@@ -15,11 +15,11 @@ use chrono_tz::Tz;
 /// A parsed five-field cron expression: `minute hour day-of-month month day-of-week`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cron {
-    minute: FieldSet,     // 0-59
-    hour: FieldSet,       // 0-23
-    dom: FieldSet,        // 1-31
-    month: FieldSet,      // 1-12
-    dow: FieldSet,        // 0-6 (0 = Sunday); 7 normalized to 0
+    minute: FieldSet, // 0-59
+    hour: FieldSet,   // 0-23
+    dom: FieldSet,    // 1-31
+    month: FieldSet,  // 1-12
+    dow: FieldSet,    // 0-6 (0 = Sunday); 7 normalized to 0
     /// True if both day-of-month and day-of-week are restricted (not `*`). Standard cron
     /// semantics: when both are restricted, a match on **either** fires.
     dom_restricted: bool,
@@ -90,11 +90,15 @@ impl Cron {
         const MAX_MINUTES: i64 = 4 * 366 * 24 * 60;
         for _ in 0..MAX_MINUTES {
             let naive = cursor.naive_local();
-            if self.matches(naive.hour(), naive.minute(), naive.day(), naive.month(), {
-                // chrono weekday: Mon=0..Sun=6 via num_days_from_monday; cron uses Sun=0.
-                let wd = naive.weekday().num_days_from_sunday();
-                wd
-            }) {
+            // chrono `num_days_from_sunday`: Sun=0..Sat=6 — exactly cron's day-of-week domain.
+            let dow = naive.weekday().num_days_from_sunday();
+            if self.matches(
+                naive.hour(),
+                naive.minute(),
+                naive.day(),
+                naive.month(),
+                dow,
+            ) {
                 // Convert this local wall-clock minute to UTC. In a spring-forward gap the
                 // local time does not exist → skip it; in a fall-back fold take the earliest.
                 match tz.from_local_datetime(&naive) {

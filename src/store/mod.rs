@@ -2037,7 +2037,11 @@ impl Store {
             let start_now = !at_capacity;
             let ev = append_event_tx(
                 tx,
-                if start_now { "loop.fired" } else { "loop.coalesced" },
+                if start_now {
+                    "loop.fired"
+                } else {
+                    "loop.coalesced"
+                },
                 Some(&loop_uuid),
                 &json!({
                     "loop_uuid": loop_uuid, "run_id": run.run_id, "kind": kind,
@@ -2093,12 +2097,18 @@ impl Store {
         let (run_uuid, status) = (run_uuid.to_string(), status.to_string());
         self.with_immediate_tx(|tx| {
             let now = now_millis();
-            tx.execute(
-                "UPDATE loop_runs SET status=?2, exit_code=?3, signal=?4, ended_at=?5, \
-                 updated_at=?5 WHERE uuid=?1",
-                rusqlite::params![run_uuid, status, exit_code, signal, now],
-            )
-            .map_err(map_sqlite)?;
+            // Only finalize a run that is still running/stopping — makes concurrent finalizers
+            // (the exit monitor vs the stop/timeout path) idempotent (spec §11.3).
+            let n = tx
+                .execute(
+                    "UPDATE loop_runs SET status=?2, exit_code=?3, signal=?4, ended_at=?5, \
+                     updated_at=?5 WHERE uuid=?1 AND status IN ('running','stopping')",
+                    rusqlite::params![run_uuid, status, exit_code, signal, now],
+                )
+                .map_err(map_sqlite)?;
+            if n == 0 {
+                return Ok(0);
+            }
             let run = read_run_row_tx(tx, &run_uuid)?;
             append_event_tx(
                 tx,
@@ -3253,7 +3263,8 @@ mod tests {
     #[test]
     fn loop_name_unique_among_active_reusable_after_end() {
         let mut s = Store::open_in_memory().unwrap();
-        s.create_loop(&new_loop("l1", "nightly", 1, "queue")).unwrap();
+        s.create_loop(&new_loop("l1", "nightly", 1, "queue"))
+            .unwrap();
         // A second active loop with the same name is rejected.
         let e = s
             .create_loop(&new_loop("l2", "nightly", 1, "queue"))
@@ -3262,7 +3273,9 @@ mod tests {
         // End the first; the name is reusable.
         s.set_loop_status("l1", "ended", Some("removed"), "loop.removed")
             .unwrap();
-        assert!(s.create_loop(&new_loop("l3", "nightly", 1, "queue")).is_ok());
+        assert!(s
+            .create_loop(&new_loop("l3", "nightly", 1, "queue"))
+            .is_ok());
         // find_loop_by_name resolves the active one, not the ended.
         let found = s.find_loop_by_name("nightly").unwrap().unwrap();
         assert_eq!(found.uuid, "l3");
@@ -3273,7 +3286,8 @@ mod tests {
     #[test]
     fn run_allocation_capacity_and_coalesce() {
         let mut s = Store::open_in_memory().unwrap();
-        s.create_loop(&new_loop("l1", "nightly", 1, "queue")).unwrap();
+        s.create_loop(&new_loop("l1", "nightly", 1, "queue"))
+            .unwrap();
         // First scheduled fire: a slot is free → start_now.
         let (a1, _) = s.allocate_run("l1", "scheduled", 1000, 1, "queue").unwrap();
         let run1 = match a1 {
@@ -3307,13 +3321,20 @@ mod tests {
         }
         // A manual fire at capacity always allocates its own run (pending).
         let (a4, _) = s.allocate_run("l1", "manual", 3000, 1, "queue").unwrap();
-        assert!(matches!(a4, RunAllocation::Allocated { start_now: false, .. }));
+        assert!(matches!(
+            a4,
+            RunAllocation::Allocated {
+                start_now: false,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn run_allocation_skip_drops_at_capacity() {
         let mut s = Store::open_in_memory().unwrap();
-        s.create_loop(&new_loop("l1", "nightly", 1, "skip")).unwrap();
+        s.create_loop(&new_loop("l1", "nightly", 1, "skip"))
+            .unwrap();
         let (a1, _) = s.allocate_run("l1", "scheduled", 1000, 1, "skip").unwrap();
         let run1 = match a1 {
             RunAllocation::Allocated { run, .. } => run,
@@ -3330,7 +3351,8 @@ mod tests {
     #[test]
     fn run_lifecycle_and_lookup() {
         let mut s = Store::open_in_memory().unwrap();
-        s.create_loop(&new_loop("l1", "nightly", 2, "queue")).unwrap();
+        s.create_loop(&new_loop("l1", "nightly", 2, "queue"))
+            .unwrap();
         let (a, _) = s.allocate_run("l1", "manual", 1000, 2, "queue").unwrap();
         let run = match a {
             RunAllocation::Allocated { run, .. } => run,
@@ -3338,11 +3360,17 @@ mod tests {
         };
         // Lookup by run_id and uuid.
         assert_eq!(
-            s.run_by_id_or_uuid("l1", &run.run_id).unwrap().unwrap().uuid,
+            s.run_by_id_or_uuid("l1", &run.run_id)
+                .unwrap()
+                .unwrap()
+                .uuid,
             run.uuid
         );
         assert_eq!(
-            s.run_by_id_or_uuid("l1", &run.uuid).unwrap().unwrap().run_id,
+            s.run_by_id_or_uuid("l1", &run.uuid)
+                .unwrap()
+                .unwrap()
+                .run_id,
             run.run_id
         );
         s.record_run_start(&run.uuid, 42, 42, 9, now_millis(), None)

@@ -47,6 +47,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "loop.paused",
     "loop.resumed",
     "loop.removed",
+    "loop.ended",
     "loop_run.started",
     "loop_run.ended",
     "loop_run.stopping",
@@ -325,17 +326,17 @@ pub fn methods() -> Vec<MethodDef> {
         false,
     );
 
-    // --- loop namespace (stubs until M5) ---
+    // --- loop namespace (spec §6.2) ---
     add(
         "loop.create",
         "Create a durable cron loop over an argv command.",
         object(json!({
             "name": str_schema(), "cron": str_schema(), "once_at": str_schema(),
             "max_concurrency": int_schema(), "overlap": str_schema(),
-            "timeout": str_schema(), "command": array_of(str_schema()),
+            "timeout": str_schema(), "command": array_of(str_schema()), "cwd": str_schema(),
         })),
         object(json!({ "loop": any_object() })),
-        false,
+        true,
         false,
     );
     add(
@@ -343,7 +344,7 @@ pub fn methods() -> Vec<MethodDef> {
         "Pause loop(s): no new fires.",
         object(json!({ "names": array_of(str_schema()) })),
         any_object(),
-        false,
+        true,
         false,
     );
     add(
@@ -351,15 +352,18 @@ pub fn methods() -> Vec<MethodDef> {
         "Resume paused loop(s).",
         object(json!({ "names": array_of(str_schema()) })),
         any_object(),
-        false,
+        true,
         false,
     );
     add(
         "loop.rm",
         "Remove loop(s); optionally kill active runs.",
-        object(json!({ "names": array_of(str_schema()), "kill_active": bool_schema() })),
+        object(json!({
+            "names": array_of(str_schema()), "kill_active": bool_schema(),
+            "caller_id": str_schema(), "caller_path": str_schema(),
+        })),
         any_object(),
-        false,
+        true,
         false,
     );
     add(
@@ -369,7 +373,7 @@ pub fn methods() -> Vec<MethodDef> {
             json!({ "names": array_of(str_schema()), "status": str_schema(), "all": bool_schema() }),
         ),
         object(json!({ "loops": array_of(any_object()) })),
-        false,
+        true,
         false,
     );
     add(
@@ -380,15 +384,15 @@ pub fn methods() -> Vec<MethodDef> {
             "tail": int_schema(), "follow": bool_schema(),
         })),
         object(json!({ "lines": array_of(any_object()) })),
-        false,
         true,
+        false,
     );
     add(
         "loop.run.start",
         "Manually trigger a loop run.",
         object(json!({ "name": str_schema() })),
         object(json!({ "run": any_object() })),
-        false,
+        true,
         false,
     );
     add(
@@ -396,7 +400,7 @@ pub fn methods() -> Vec<MethodDef> {
         "Stop run(s) of a loop without touching the definition.",
         object(json!({ "name": str_schema(), "run": str_schema() })),
         object(json!({ "stopped": array_of(any_object()), "skipped": array_of(any_object()) })),
-        false,
+        true,
         false,
     );
     add(
@@ -404,7 +408,7 @@ pub fn methods() -> Vec<MethodDef> {
         "List a loop's runs.",
         object(json!({ "name": str_schema(), "status": str_schema(), "all": bool_schema() })),
         object(json!({ "runs": array_of(any_object()) })),
-        false,
+        true,
         false,
     );
 

@@ -77,6 +77,10 @@ pub struct Timings {
     pub gc_tick: Duration,
     pub max_starting: Duration,
     pub attach_lease_ttl: Duration,
+    /// How often the loop scheduler ticks (fire due loops, reap finished runs, §11.3).
+    pub loop_tick: Duration,
+    /// Grace between TERM and KILL when stopping/timing out a loop run's process group.
+    pub run_term_grace: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +111,8 @@ impl Default for Config {
                 gc_tick: Duration::from_secs(30),
                 max_starting: Duration::from_secs(120),
                 attach_lease_ttl: Duration::from_secs(30),
+                loop_tick: Duration::from_secs(1),
+                run_term_grace: Duration::from_secs(10),
             },
             logs: LogsConfig {
                 max_bytes: 10_485_760,
@@ -292,6 +298,8 @@ fn parse_timings(
         "gc_tick",
         "max_starting",
         "attach_lease_ttl",
+        "loop_tick",
+        "run_term_grace",
     ];
     warn_unknown(obj, "timings", KEYS, warnings);
     for (key, slot) in [
@@ -300,6 +308,8 @@ fn parse_timings(
         ("gc_tick", &mut out.gc_tick),
         ("max_starting", &mut out.max_starting),
         ("attach_lease_ttl", &mut out.attach_lease_ttl),
+        ("loop_tick", &mut out.loop_tick),
+        ("run_term_grace", &mut out.run_term_grace),
     ] {
         if let Some(dv) = obj.get(key) {
             let s = as_string(dv, &format!("timings.{key}"))?;
