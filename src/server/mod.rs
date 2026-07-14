@@ -188,6 +188,14 @@ impl Server {
             }
             match listener.accept() {
                 Ok((stream, _addr)) => {
+                    // The listener is nonblocking (for the shutdown poll); accepted
+                    // connections must be blocking, or a large write_all would abort at the
+                    // socket buffer boundary and a read would spuriously see WouldBlock.
+                    if let Err(e) = stream.set_nonblocking(false) {
+                        self.log()
+                            .warn(format!("set connection blocking failed: {e}"));
+                        continue;
+                    }
                     let server = self.clone();
                     std::thread::spawn(move || server.handle_conn(stream));
                 }

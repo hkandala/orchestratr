@@ -252,6 +252,19 @@ mod tests {
     }
 
     #[test]
+    fn large_frame_spanning_many_buffers() {
+        // A frame far larger than BufReader's default 8 KiB capacity must reassemble whole.
+        let big = json!({ "data": "x".repeat(50_000) });
+        let mut out: Vec<u8> = Vec::new();
+        write_frame(&mut out, &big).unwrap();
+        let mut r = BufReader::new(&out[..]);
+        let frame = read_frame(&mut r).unwrap().unwrap();
+        let v: Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(v["data"].as_str().unwrap().len(), 50_000);
+        assert!(read_frame(&mut r).unwrap().is_none());
+    }
+
+    #[test]
     fn blank_lines_skipped() {
         let data = b"\n\n{\"n\":5}\n";
         let mut r = BufReader::new(&data[..]);

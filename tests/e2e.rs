@@ -258,3 +258,74 @@ fn e2e_empty_workspace_auto_removal() {
         "workspace should be auto-removed once its last pane is closed"
     );
 }
+
+/// M1 e2e: the orcr server's `server.status` reports live herdr reachability + integrations
+/// against a **disposable** session. Runs the real `orcr` binary over a throwaway ORCR_HOME.
+#[test]
+fn e2e_server_status_reports_herdr() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    use orchestratr::home::Home;
+    use orchestratr::server::Client;
+    use std::process::{Command, Stdio};
+
+    // A disposable herdr session (torn down by the Harness drop guard).
+    let h = Harness::start();
+
+    // A throwaway orcr home whose config points at the disposable session.
+    let orcr_home = tempfile::tempdir().expect("orcr home");
+    std::fs::write(
+        orcr_home.path().join("config.json"),
+        format!(r#"{{"herdr":{{"session":"{}"}}}}"#, h.session),
+    )
+    .unwrap();
+
+    let orcr = env!("CARGO_BIN_EXE_orcr");
+    let start = Command::new(orcr)
+        .args(["server", "start"])
+        .env("ORCR_HOME", orcr_home.path())
+        .stdin(Stdio::null())
+        .output()
+        .expect("orcr server start");
+    assert!(start.status.success(), "orcr server start should succeed");
+
+    let client = Client::new(Home::at(orcr_home.path()).socket_path());
+    client
+        .wait_for_ready(Duration::from_secs(10))
+        .expect("orcr server ready");
+
+    let status = client
+        .request("server.status", serde_json::json!({}))
+        .expect("server.status");
+
+    // herdr binary reachable; the owned (disposable) session is running and pingable.
+    let herdr = &status["herdr"];
+    assert_eq!(
+        herdr["reachable"], true,
+        "herdr binary should be discovered"
+    );
+    assert_eq!(
+        herdr["session"], h.session,
+        "owned session should be reported"
+    );
+    assert_eq!(
+        herdr["session_running"], true,
+        "disposable session is running"
+    );
+    assert_eq!(herdr["protocol"], 16, "pinged protocol should be 16");
+
+    // Integrations: claude has an orcr built-in and (in this env) a herdr integration.
+    let claude = &status["integrations"]["claude"];
+    assert_eq!(
+        claude["orcr"], true,
+        "claude has an orcr built-in integration"
+    );
+    assert!(claude["herdr"].is_boolean(), "claude herdr layer reported");
+
+    // Counts are all zero for M1 (no agents yet).
+    assert_eq!(status["counts"]["live"], 0);
+
+    let _ = client.request("server.stop", serde_json::json!({}));
+}
