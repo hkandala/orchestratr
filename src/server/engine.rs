@@ -560,6 +560,17 @@ impl Server {
         );
         // The launch token rides in pane env for crash recovery (not part of the contract).
         env.insert("ORCR_LAUNCH_TOKEN".into(), launch_token.clone());
+        // Test-only: the `mock` provider is scriptable via `ORCR_MOCK_*` env. Forward any such
+        // vars from the server's environment into the pane so e2e tests can drive mock behavior
+        // (e.g. `ORCR_MOCK_NO_TRANSCRIPT`) deterministically. The `mock` provider only exists
+        // under `ORCR_ALLOW_MOCK_PROVIDER`, so real providers never see these.
+        if provider == "mock" {
+            for (k, v) in std::env::vars() {
+                if k.starts_with("ORCR_MOCK_") {
+                    env.insert(k, v);
+                }
+            }
+        }
 
         // Write the data dir + launch.json before the durable row so the pipeline (which may
         // promote immediately) always finds the payload; a failed enqueue cleans the dir.
