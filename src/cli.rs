@@ -748,18 +748,24 @@ fn cmd_agent_logs(
     let seen = print_entries(json, &result, 0);
     if follow {
         // Follow is a poll under the hood (§6.1): re-read the transcript and print new entries.
-        // Ignore --json for the live stream (each entry is printed as it arrives).
+        // In `--json` mode each poll batch is emitted as its own NDJSON `{ok:true,result:{…}}`
+        // envelope (rather than switching to human text), so a machine client sees only valid
+        // envelopes — one per line — for the whole stream (§6; only `orcr top` is exempt).
         let build = || {
             let mut p = json!({ "target": target, "last_response": false });
             add_caller(&mut p, &caller_id, &caller_path);
             p
         };
-        follow_poll(
-            "agent.logs",
-            build,
-            |r, seen| print_entries(false, r, seen),
-            seen,
-        );
+        if json {
+            follow_poll("agent.logs", build, print_entries_ndjson, seen);
+        } else {
+            follow_poll(
+                "agent.logs",
+                build,
+                |r, seen| print_entries(false, r, seen),
+                seen,
+            );
+        }
     }
     Ok(())
 }
@@ -802,6 +808,20 @@ fn note_if_ended(json: bool, result: &Value) {
     );
 }
 
+/// Follow-mode `--json` batch printer: emit the entries beyond `skip` as one NDJSON
+/// `{ok:true,result:{entries:[…]}}` envelope line (nothing when there are no new entries),
+/// returning the new total. Keeps the whole `logs --json --follow` stream a sequence of valid
+/// envelopes rather than mixing one envelope with plain-text lines (§6).
+fn print_entries_ndjson(result: &Value, skip: usize) -> usize {
+    let entries = result["entries"].as_array().cloned().unwrap_or_default();
+    let total = entries.len();
+    let fresh: Vec<Value> = entries.into_iter().skip(skip).collect();
+    if !fresh.is_empty() {
+        println!("{}", json!({ "ok": true, "result": { "entries": fresh } }));
+    }
+    total
+}
+
 /// Print transcript entries beyond `skip`; returns the new total count. In `--json` mode the
 /// whole envelope is printed once (skip is ignored).
 fn print_entries(json: bool, result: &Value, skip: usize) -> usize {
@@ -841,7 +861,7 @@ fn cmd_agent_attach(json: bool, target: &str, takeover: bool) -> Result<()> {
     let path = prep["path"].as_str().unwrap_or_default().to_string();
     let lease_id = prep["lease_id"].as_str().unwrap_or_default().to_string();
     let ttl_ms = prep["ttl_ms"].as_u64().unwrap_or(30_000);
-    let command = json_str_array(&prep["command"]);
+    let command = crate::server::params::str_array(&prep["command"]);
     if command.is_empty() {
         return Err(OrcrError::server_error(
             "attach_command",
@@ -972,17 +992,6 @@ fn cmd_agent_ls(
     let result = connect_and_request("agent.ls", params)?;
     emit_success(json, &result, || print_ls_human(&result));
     Ok(())
-}
-
-/// Collect a JSON array value into `Vec<String>` (dropping non-string elements).
-fn json_str_array(v: &Value) -> Vec<String> {
-    v.as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// The effective `--cwd`: the explicit value, else the caller's current directory (§6.1).
@@ -1172,7 +1181,7 @@ fn cmd_loop_create(
     let result = connect_and_request("loop.create", params)?;
     let l = &result["loop"];
     emit_success(json, &result, || {
-        let argv = json_str_array(&l["argv"]);
+        let argv = crate::server::params::str_array(&l["argv"]);
         let tz = l["tz"].as_str().unwrap_or_default();
         println!("loop {} created", l["name"].as_str().unwrap_or_default());
         println!("  command:  {}", argv.join(" "));
@@ -1482,9 +1491,10 @@ fn cmd_server_logs(json: bool, tail: Option<usize>, follow: bool) -> Result<()> 
     let path = home.logs_dir().join("server.log");
 
     if follow {
-        // Stream: print the tail, then keep printing new lines. Ignore --json for the live
-        // stream (each line is already a JSON object).
-        stream_follow(&path, tail)?;
+        // Stream: print the tail, then keep printing new lines. In `--json` mode each line is
+        // wrapped in its own `{ok:true,result:{line:…}}` envelope so the whole follow stream is a
+        // sequence of valid envelopes (§6), one per line.
+        stream_follow(&path, tail, json)?;
         return Ok(());
     }
 
@@ -1710,12 +1720,33 @@ fn read_tail(path: &std::path::Path, tail: Option<usize>) -> Result<Vec<String>>
 }
 
 /// Print the tail of a log file, then keep printing newly-appended lines (`--follow`).
-fn stream_follow(path: &std::path::Path, tail: Option<usize>) -> Result<()> {
+fn stream_follow(path: &std::path::Path, tail: Option<usize>, json: bool) -> Result<()> {
     use std::io::{Seek, SeekFrom};
 
+    // Each server-log line is already a JSON object; in `--json` mode wrap it in an envelope so
+    // the whole follow stream is valid `{ok:true,result:{line:…}}` NDJSON (§6), else print raw.
+    let emit = |line: &str, handle: &mut dyn Write| {
+        if json {
+            let parsed =
+                serde_json::from_str::<Value>(line).unwrap_or_else(|_| json!({ "raw": line }));
+            writeln!(
+                handle,
+                "{}",
+                json!({ "ok": true, "result": { "line": parsed } })
+            )
+            .ok();
+        } else {
+            writeln!(handle, "{line}").ok();
+        }
+    };
+
     // Print the initial tail.
-    for l in read_tail(path, tail)? {
-        println!("{l}");
+    {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        for l in read_tail(path, tail)? {
+            emit(&l, &mut handle);
+        }
     }
     let mut pos: u64 = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let stdout = std::io::stdout();
@@ -1740,7 +1771,7 @@ fn stream_follow(path: &std::path::Path, tail: Option<usize>) -> Result<()> {
                 let line = line.map_err(|e| {
                     OrcrError::server_error("socket_io", format!("log read error: {e}"))
                 })?;
-                writeln!(handle, "{line}").ok();
+                emit(&line, &mut handle);
             }
             handle.flush().ok();
             pos = len;

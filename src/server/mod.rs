@@ -13,7 +13,7 @@ mod engine;
 mod gc;
 mod log;
 mod loops;
-mod params;
+pub(crate) mod params;
 
 pub use client::{Client, StartOutcome};
 pub use log::ServerLog;
@@ -688,21 +688,12 @@ impl Server {
     }
 
     fn counts(&self, drift: &gc::DriftSnapshot) -> Result<Value> {
-        let store = self.inner.store.lock().unwrap();
-        let count =
-            |sql: &str| -> i64 { store.conn().query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
-        let live = count(
-            "SELECT COUNT(*) FROM agents WHERE managed = 1 AND status NOT IN ('ended','lost')",
-        );
-        let queued = count("SELECT COUNT(*) FROM agents WHERE managed = 1 AND status = 'queued'");
-        let blocked = count("SELECT COUNT(*) FROM agents WHERE managed = 1 AND status = 'blocked'");
-        let unmanaged =
-            count("SELECT COUNT(*) FROM agents WHERE managed = 0 AND status != 'ended'");
+        let c = self.inner.store.lock().unwrap().status_counts()?;
         Ok(json!({
-            "live": live,
-            "queued": queued,
-            "blocked": blocked,
-            "unmanaged": unmanaged,
+            "live": c.live,
+            "queued": c.queued,
+            "blocked": c.blocked,
+            "unmanaged": c.unmanaged,
             "unmarked_panes": drift.unmarked_panes,
             "unknown_marked_panes": drift.unknown_marked_panes,
         }))

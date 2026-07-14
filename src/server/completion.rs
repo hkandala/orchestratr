@@ -66,12 +66,8 @@ impl Server {
         // Capture a late-arriving transcript pointer (the gate for `logs`).
         if a.agent_session_value.is_none() {
             if let Some(sess) = &info.agent_session {
-                let kind = match sess.kind {
-                    crate::driver::AgentSessionRefKind::Id => "id",
-                    crate::driver::AgentSessionRefKind::Path => "path",
-                };
                 let mut store = self.inner.store.lock().unwrap();
-                let _ = store.record_agent_session(&a.uuid, kind, &sess.value);
+                let _ = store.record_agent_session(&a.uuid, sess.kind.as_str(), &sess.value);
             }
         }
 
@@ -116,7 +112,7 @@ impl Server {
                         let mut store = self.inner.store.lock().unwrap();
                         store.open_external_turn(&a.uuid, now)
                     };
-                    if let Ok((seq, ev)) = ev {
+                    if let Ok(Some((seq, ev))) = ev {
                         self.publish(ev);
                         self.log().info(format!(
                             "external turn {} for {} (input_seq {seq})",

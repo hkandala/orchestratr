@@ -597,17 +597,30 @@ impl Store {
     /// Deliver an input (spec §5.6): bump `input_seq`, open a turn row, and **re-arm** the
     /// agent to `working` (clearing `idle_since`/`blocked_kind`) so a `wait` issued after
     /// this input cannot be satisfied by a stale idle. `source` is `orcr` or `external`.
-    /// Emits `agent.status_changed`. Returns `(input_seq, event_seq)`.
-    pub fn deliver_input(&mut self, uuid: &str, source: &str, at: i64) -> Result<(i64, i64)> {
+    /// Emits `agent.status_changed`. Returns `Some((input_seq, event_seq))`, or **`None`** if
+    /// the row is already in a terminal state (`ended`/`lost`): the UPDATE is guarded so a
+    /// concurrent `kill`/reconcile/discovery that just ended the agent can never be silently
+    /// revived (ended→working) by a racing spawn/send delivery.
+    pub fn deliver_input(
+        &mut self,
+        uuid: &str,
+        source: &str,
+        at: i64,
+    ) -> Result<Option<(i64, i64)>> {
         let (uuid, source) = (uuid.to_string(), source.to_string());
         self.with_immediate_tx(|tx| {
-            tx.execute(
-                "UPDATE agents SET input_seq = input_seq + 1, status='working', \
-                 blocked_kind=NULL, idle_since=NULL, \
-                 last_status_change_at=?2, updated_at=?2 WHERE uuid=?1",
-                rusqlite::params![uuid, at],
-            )
-            .map_err(map_sqlite)?;
+            let n = tx
+                .execute(
+                    "UPDATE agents SET input_seq = input_seq + 1, status='working', \
+                     blocked_kind=NULL, idle_since=NULL, \
+                     last_status_change_at=?2, updated_at=?2 \
+                     WHERE uuid=?1 AND status NOT IN ('ended','lost')",
+                    rusqlite::params![uuid, at],
+                )
+                .map_err(map_sqlite)?;
+            if n == 0 {
+                return Ok(None);
+            }
             let seq: i64 = tx
                 .query_row("SELECT input_seq FROM agents WHERE uuid=?1", [&uuid], |r| {
                     r.get(0)
@@ -625,15 +638,47 @@ impl Store {
                 Some(&uuid),
                 &json!({ "uuid": uuid, "status": "working", "input_seq": seq }),
             )?;
-            Ok((seq, ev))
+            Ok(Some((seq, ev)))
+        })
+    }
+
+    /// Settle a **primed, prompt-less** agent from `starting` → `idle` at the end of the spawn
+    /// pipeline (§5.6), stamping the idle clock in the same transaction. Guarded on
+    /// `status='starting'` so a concurrent `kill` that already ended the row (ended/lost/canceled)
+    /// is not silently revived to `idle`. Returns the `agent.status_changed` event seq, or `None`
+    /// if the row was no longer `starting`.
+    pub fn settle_primed_idle(&mut self, uuid: &str, at: i64) -> Result<Option<i64>> {
+        let uuid = uuid.to_string();
+        self.with_immediate_tx(|tx| {
+            let n = tx
+                .execute(
+                    "UPDATE agents SET status='idle', idle_since=?2, \
+                     last_status_change_at=?2, updated_at=?2 \
+                     WHERE uuid=?1 AND status='starting'",
+                    rusqlite::params![uuid, at],
+                )
+                .map_err(map_sqlite)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            let ev = append_event_tx(
+                tx,
+                "agent.status_changed",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "status": "idle" }),
+            )?;
+            Ok(Some(ev))
         })
     }
 
     /// Open a synthetic **external** turn (spec §5.6): input orcr didn't deliver, observed as
     /// a `working` transition with no pending turn. Same effect as [`deliver_input`] with
     /// `source=external`, plus `working_seen_at` set (we saw the working that triggered it).
-    pub fn open_external_turn(&mut self, uuid: &str, at: i64) -> Result<(i64, i64)> {
-        let (seq, ev) = self.deliver_input(uuid, "external", at)?;
+    /// Returns `None` if the row is already terminal (same guard as [`deliver_input`]).
+    pub fn open_external_turn(&mut self, uuid: &str, at: i64) -> Result<Option<(i64, i64)>> {
+        let Some((seq, ev)) = self.deliver_input(uuid, "external", at)? else {
+            return Ok(None);
+        };
         let uuid = uuid.to_string();
         self.with_immediate_tx(|tx| {
             tx.execute(
@@ -643,7 +688,7 @@ impl Store {
             .map_err(map_sqlite)?;
             Ok(())
         })?;
-        Ok((seq, ev))
+        Ok(Some((seq, ev)))
     }
 
     /// Complete a turn (spec §5.6): mark `completed_at`, flip public status `working → idle`,
@@ -1605,9 +1650,24 @@ impl Store {
         })
     }
 
-    /// Direct read access for later milestones / tests.
-    pub fn conn(&self) -> &Connection {
-        &self.conn
+    /// The fleet status counts surfaced in `server status` (§6.4): managed live/queued/blocked
+    /// plus active unmanaged. Typed so `server status` doesn't reach past the DAL into raw SQL.
+    pub fn status_counts(&self) -> Result<StatusCounts> {
+        let count = |sql: &str| -> Result<i64> {
+            self.conn
+                .query_row(sql, [], |r| r.get(0))
+                .map_err(map_sqlite)
+        };
+        Ok(StatusCounts {
+            live: count(
+                "SELECT COUNT(*) FROM agents WHERE managed = 1 AND status NOT IN ('ended','lost')",
+            )?,
+            queued: count("SELECT COUNT(*) FROM agents WHERE managed = 1 AND status = 'queued'")?,
+            blocked: count("SELECT COUNT(*) FROM agents WHERE managed = 1 AND status = 'blocked'")?,
+            unmanaged: count(
+                "SELECT COUNT(*) FROM agents WHERE managed = 0 AND status != 'ended'",
+            )?,
+        })
     }
 
     /// Delete an agent row and its turn/attach bookkeeping (test-only, behind the debug
@@ -2494,6 +2554,15 @@ pub struct EventRow {
     pub payload: serde_json::Value,
 }
 
+/// The managed/unmanaged fleet counts for `server status` (spec §6.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusCounts {
+    pub live: i64,
+    pub queued: i64,
+    pub blocked: i64,
+    pub unmanaged: i64,
+}
+
 /// The live location read under the attach-prepare transaction (spec §6.1). `terminal_id` is
 /// globally unique and stable across pane moves, so the exec command addresses it directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3022,9 +3091,26 @@ mod tests {
         assert!(!a.cancel_requested);
         assert!(s.request_cancel("u1").unwrap());
         assert!(s.is_cancel_requested("u1").unwrap());
-        let (seq, _) = s.deliver_input("u1", "orcr", now_millis()).unwrap();
+        let (seq, _) = s
+            .deliver_input("u1", "orcr", now_millis())
+            .unwrap()
+            .unwrap();
         assert_eq!(seq, 1);
-        assert_eq!(s.deliver_input("u1", "orcr", now_millis()).unwrap().0, 2);
+        assert_eq!(
+            s.deliver_input("u1", "orcr", now_millis())
+                .unwrap()
+                .unwrap()
+                .0,
+            2
+        );
+        // A terminal row is never revived: deliver_input refuses (returns None) rather than
+        // flipping ended→working (§5.6 concurrent-kill guard).
+        s.transition_status("u1", "ended", Some("killed")).unwrap();
+        assert!(s
+            .deliver_input("u1", "orcr", now_millis())
+            .unwrap()
+            .is_none());
+        assert_eq!(s.agent_full("u1").unwrap().unwrap().status, "ended");
     }
 
     #[test]
@@ -3082,7 +3168,9 @@ mod tests {
             .unwrap();
         s.record_location(uuid, "orcr", &format!("term_{uuid}"), &format!("w1:{uuid}"))
             .unwrap();
-        s.deliver_input(uuid, "orcr", now_millis()).unwrap();
+        s.deliver_input(uuid, "orcr", now_millis())
+            .unwrap()
+            .unwrap();
         s.complete_turn(uuid, 1, now_millis(), None).unwrap();
         s.set_idle_since(uuid, Some(now_millis())).unwrap();
     }

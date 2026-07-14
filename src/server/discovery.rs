@@ -91,13 +91,10 @@ impl Server {
             }
             seen.insert(info.terminal_id.clone());
             let status = normalize_done(info.agent_status).as_str();
-            let sess = info.agent_session.as_ref().map(|s| {
-                let kind = match s.kind {
-                    crate::driver::AgentSessionRefKind::Id => "id",
-                    crate::driver::AgentSessionRefKind::Path => "path",
-                };
-                (kind, s.value.as_str())
-            });
+            let sess = info
+                .agent_session
+                .as_ref()
+                .map(|s| (s.kind.as_str(), s.value.as_str()));
 
             let existing = {
                 let store = self.inner.store.lock().unwrap();

@@ -301,7 +301,13 @@ impl Server {
             // closes the pane and ends the row `failed` (no leaked provider process).
             let ev = {
                 let mut store = self.inner.store.lock().unwrap();
-                store.deliver_input(uuid, "orcr", now_millis())?.1
+                store.deliver_input(uuid, "orcr", now_millis())?
+            };
+            // A `None` here means a concurrent kill already ended the row in the gap after the
+            // last cancel check (§5.5): don't revive it or send to its (closing) pane — surface
+            // the cancel and let the kill path finish the teardown.
+            let Some((_, ev)) = ev else {
+                return self.bail_if_cancelled(uuid, Some((&driver, &info.pane_id)));
             };
             self.publish(ev);
             driver.pane_send_text(&info.pane_id, prompt)?;
@@ -311,12 +317,14 @@ impl Server {
         } else {
             // No prompt: the agent is primed and waiting for input, not processing. Settle it to
             // `idle` (with an idle clock) so `wait` completes as turn_complete, gc-auto can park
-            // it, and a later `send` re-arms it normally (§5.6).
+            // it, and a later `send` re-arms it normally (§5.6). Guarded on `starting` so a
+            // concurrent kill that already ended the row isn't revived to `idle`.
             let ev = {
                 let mut store = self.inner.store.lock().unwrap();
-                let ev = store.transition_status(uuid, "idle", None)?;
-                store.set_idle_since(uuid, Some(now_millis()))?;
-                ev
+                store.settle_primed_idle(uuid, now_millis())?
+            };
+            let Some(ev) = ev else {
+                return self.bail_if_cancelled(uuid, Some((&driver, &info.pane_id)));
             };
             self.publish(ev);
             "idle"
@@ -358,12 +366,8 @@ impl Server {
         loop {
             if let Ok(pane) = driver.pane_get(pane_id) {
                 if let Some(sess) = pane.agent_session {
-                    let kind = match sess.kind {
-                        crate::driver::AgentSessionRefKind::Id => "id",
-                        crate::driver::AgentSessionRefKind::Path => "path",
-                    };
                     let mut store = self.inner.store.lock().unwrap();
-                    let _ = store.record_agent_session(uuid, kind, &sess.value);
+                    let _ = store.record_agent_session(uuid, sess.kind.as_str(), &sess.value);
                     return;
                 }
             }
@@ -776,13 +780,21 @@ impl Server {
         // herdr send failure then leaves the turn open (agent shows `working`, never completes →
         // visible in `top`) rather than dropping the input silently. An unmanaged agent's turn is
         // tracked as `external` (§5.7): orcr doesn't own its input epochs.
-        let (input_seq, ev) = {
+        let delivered = {
             let mut store = self.inner.store.lock().unwrap();
             if row.managed {
                 store.deliver_input(&row.uuid, "orcr", now_millis())?
             } else {
                 store.open_external_turn(&row.uuid, now_millis())?
             }
+        };
+        // `None` = the row ended concurrently (kill/reconcile/discovery) between the active-check
+        // above and delivery: refuse to revive it (§5.6) — report it as gone rather than sending.
+        let Some((input_seq, ev)) = delivered else {
+            return Err(OrcrError::not_found_target(
+                format!("agent `{target}` is not active (ended concurrently)"),
+                target.clone(),
+            ));
         };
         self.publish(ev);
         driver.pane_send_text(&pane_id, &prompt)?;
@@ -1291,42 +1303,7 @@ impl Server {
         scope: &Option<String>,
         targets: &[String],
     ) -> Result<Vec<AgentFull>> {
-        let store = self.inner.store.lock().unwrap();
-        let active = store.list_agents(&AgentFilter::default())?;
-        let mut out: Vec<AgentFull> = Vec::new();
-        let mut seen = std::collections::BTreeSet::new();
-        // Add an agent iff it is still active and not already collected (dedup by uuid).
-        let push_active =
-            |a: AgentFull,
-             out: &mut Vec<AgentFull>,
-             seen: &mut std::collections::BTreeSet<String>| {
-                if a.status != "ended" && seen.insert(a.uuid.clone()) {
-                    out.push(a);
-                }
-            };
-        for raw in targets {
-            if path::is_pattern(raw) {
-                let resolved = path::resolve_selector(scope.as_deref(), raw)?;
-                let pat = crate::path::Pattern::compile(&resolved)?;
-                for a in active.iter().filter(|a| pat.matches(&a.path)) {
-                    push_active(a.clone(), &mut out, &mut seen);
-                }
-            } else if raw.contains('-') {
-                if let UuidLookup::Found(a) = store.find_by_uuid_or_prefix(raw)? {
-                    push_active(*a, &mut out, &mut seen);
-                }
-            } else {
-                let resolved = path::resolve_selector(scope.as_deref(), raw)?;
-                if let Some(res) = store.find_by_path(&resolved)? {
-                    push_active(res.row().clone(), &mut out, &mut seen);
-                } else if path::looks_like_uuid_selector(raw) {
-                    if let UuidLookup::Found(a) = store.find_by_uuid_or_prefix(raw)? {
-                        push_active(*a, &mut out, &mut seen);
-                    }
-                }
-            }
-        }
-        Ok(out)
+        self.resolve_targets_where(scope, targets, true, |a| a.status != "ended")
     }
 
     /// Exact (path/uuid) targets that resolve only to an **ended** agent (§6.1/§13). Kill uses
@@ -1337,30 +1314,57 @@ impl Server {
         scope: &Option<String>,
         targets: &[String],
     ) -> Result<Vec<AgentFull>> {
+        self.resolve_targets_where(scope, targets, false, |a| a.status == "ended")
+    }
+
+    /// Shared resolver behind [`resolve_targets`]/[`resolve_ended_targets`] (§5.1): walk each
+    /// target (pattern / uuid-with-dash / path-or-uuid-prefix), keep every matched row for which
+    /// `keep` holds, deduplicated by uuid. `allow_patterns=false` skips glob targets entirely (a
+    /// glob ranges over active agents only), so the ended-target path never lists the fleet.
+    fn resolve_targets_where(
+        &self,
+        scope: &Option<String>,
+        targets: &[String],
+        allow_patterns: bool,
+        keep: impl Fn(&AgentFull) -> bool,
+    ) -> Result<Vec<AgentFull>> {
         let store = self.inner.store.lock().unwrap();
+        let active = if allow_patterns {
+            store.list_agents(&AgentFilter::default())?
+        } else {
+            Vec::new()
+        };
         let mut out: Vec<AgentFull> = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
-        let push_ended = |a: AgentFull,
-                          out: &mut Vec<AgentFull>,
-                          seen: &mut std::collections::BTreeSet<String>| {
-            if a.status == "ended" && seen.insert(a.uuid.clone()) {
+        // Add an agent iff `keep` holds and it wasn't already collected (dedup by uuid).
+        let push = |a: AgentFull,
+                    out: &mut Vec<AgentFull>,
+                    seen: &mut std::collections::BTreeSet<String>| {
+            if keep(&a) && seen.insert(a.uuid.clone()) {
                 out.push(a);
             }
         };
         for raw in targets {
             if path::is_pattern(raw) {
-                continue;
+                if !allow_patterns {
+                    continue;
+                }
+                let resolved = path::resolve_selector(scope.as_deref(), raw)?;
+                let pat = crate::path::Pattern::compile(&resolved)?;
+                for a in active.iter().filter(|a| pat.matches(&a.path)) {
+                    push(a.clone(), &mut out, &mut seen);
+                }
             } else if raw.contains('-') {
                 if let UuidLookup::Found(a) = store.find_by_uuid_or_prefix(raw)? {
-                    push_ended(*a, &mut out, &mut seen);
+                    push(*a, &mut out, &mut seen);
                 }
             } else {
                 let resolved = path::resolve_selector(scope.as_deref(), raw)?;
                 if let Some(res) = store.find_by_path(&resolved)? {
-                    push_ended(res.row().clone(), &mut out, &mut seen);
+                    push(res.row().clone(), &mut out, &mut seen);
                 } else if path::looks_like_uuid_selector(raw) {
                     if let UuidLookup::Found(a) = store.find_by_uuid_or_prefix(raw)? {
-                        push_ended(*a, &mut out, &mut seen);
+                        push(*a, &mut out, &mut seen);
                     }
                 }
             }

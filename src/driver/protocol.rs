@@ -49,6 +49,16 @@ pub enum AgentSessionRefKind {
     Path,
 }
 
+impl AgentSessionRefKind {
+    /// The stable string used when persisting the transcript-pointer kind (`id`/`path`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentSessionRefKind::Id => "id",
+            AgentSessionRefKind::Path => "path",
+        }
+    }
+}
+
 /// The transcript pointer herdr reports per pane (spec §5.6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSessionInfo {
