@@ -55,9 +55,14 @@ impl Reporter {
             .or_else(|_| std::env::var("HERDR_PANE_ID"))
             .unwrap_or_default();
         let agent = std::env::var("ORCR_MOCK_AGENT").unwrap_or_else(|_| "mock".to_string());
-        let session_id = std::env::var("ORCR_MOCK_SESSION_ID")
-            .ok()
-            .filter(|s| !s.is_empty());
+        // A non-empty session id by default so herdr reports an `agent_session` pointer
+        // promptly (orcr's spawn pipeline waits for it, §11.1).
+        let session_id = Some(
+            std::env::var("ORCR_MOCK_SESSION_ID")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "mock_session".to_string()),
+        );
         // Only build a driver if we have both a socket and a pane id to report on.
         let driver = match (socket, pane_id.is_empty()) {
             (Some(sock), false) => HerdrDriver::connect(sock).ok(),
@@ -96,6 +101,24 @@ fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
+
+    // Prove the env contract reached the pane (§5.3): dump every ORCR_* var to a file in the
+    // agent's data dir, so e2e can assert it without needing to read pane env over herdr
+    // (which the socket does not expose).
+    if let Ok(dir) = std::env::var("ORCR_AGENT_DATA_DIR") {
+        if !dir.is_empty() {
+            let mut map = serde_json::Map::new();
+            for (k, v) in std::env::vars() {
+                if k.starts_with("ORCR_") {
+                    map.insert(k, serde_json::Value::String(v));
+                }
+            }
+            let _ = std::fs::write(
+                std::path::Path::new(&dir).join("mock_env.json"),
+                serde_json::to_vec_pretty(&serde_json::Value::Object(map)).unwrap_or_default(),
+            );
+        }
+    }
 
     let reporter = Reporter::from_env();
 

@@ -274,7 +274,9 @@ impl Server {
                     return;
                 }
             }
-            if std::time::Instant::now() >= deadline {
+            // A pending cancel makes waiting for the transcript pointer pointless — bail so
+            // the kill resolves promptly.
+            if std::time::Instant::now() >= deadline || self.cancelled(uuid) {
                 return;
             }
             std::thread::sleep(Duration::from_millis(150));
