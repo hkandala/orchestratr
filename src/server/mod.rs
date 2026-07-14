@@ -7,6 +7,7 @@
 //! shared writer. Wakeups ride the [`EventBus`] condvar so nothing busy-polls the store.
 
 pub mod client;
+mod completion;
 mod engine;
 mod log;
 
@@ -198,6 +199,7 @@ pub fn run_foreground(home: &Home, config: Config) -> Result<StartOutcome> {
     // engine (promotion + spawn pipelines + stuck-start guard, §5.5/§11.1).
     server.reconcile_on_start();
     server.start_queue_worker();
+    server.start_completion_monitor();
 
     server.serve(listener);
 

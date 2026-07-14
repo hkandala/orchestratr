@@ -622,6 +622,255 @@ impl Store {
         })
     }
 
+    // --- Turn completion (spec §5.6, §12) ---
+
+    /// The latest turn row for an agent (highest `input_seq`), or `None` if it has none.
+    pub fn latest_turn(&self, uuid: &str) -> Result<Option<TurnRow>> {
+        self.conn
+            .query_row(
+                "SELECT agent_uuid, input_seq, source, delivered_at, working_seen_at, \
+                 completed_at, blocked_kind, transcript_cursor FROM turns \
+                 WHERE agent_uuid=?1 ORDER BY input_seq DESC LIMIT 1",
+                [uuid],
+                read_turn_row,
+            )
+            .optional()
+            .map_err(map_sqlite)
+    }
+
+    /// Record that `working` was observed for a turn (idempotent: only sets `working_seen_at`
+    /// if still null). Also clears `idle_since` since the agent is actively working.
+    pub fn set_working_seen(&mut self, uuid: &str, input_seq: i64, at: i64) -> Result<()> {
+        let uuid = uuid.to_string();
+        self.with_immediate_tx(|tx| {
+            tx.execute(
+                "UPDATE turns SET working_seen_at=?3 \
+                 WHERE agent_uuid=?1 AND input_seq=?2 AND working_seen_at IS NULL",
+                rusqlite::params![uuid, input_seq, at],
+            )
+            .map_err(map_sqlite)?;
+            tx.execute(
+                "UPDATE agents SET idle_since=NULL, updated_at=?2 WHERE uuid=?1",
+                rusqlite::params![uuid, at],
+            )
+            .map_err(map_sqlite)?;
+            Ok(())
+        })
+    }
+
+    /// Set (or clear) `idle_since` — the start of the current idle streak used by the
+    /// stable-idle completion check (§5.6).
+    pub fn set_idle_since(&mut self, uuid: &str, at: Option<i64>) -> Result<()> {
+        let uuid = uuid.to_string();
+        self.with_immediate_tx(|tx| {
+            tx.execute(
+                "UPDATE agents SET idle_since=?2, updated_at=?3 WHERE uuid=?1",
+                rusqlite::params![uuid, at, now_millis()],
+            )
+            .map_err(map_sqlite)?;
+            Ok(())
+        })
+    }
+
+    /// Deliver an input (spec §5.6): bump `input_seq`, open a turn row, and **re-arm** the
+    /// agent to `working` (clearing `idle_since`/`blocked_kind`) so a `wait` issued after
+    /// this input cannot be satisfied by a stale idle. `source` is `orcr` or `external`.
+    /// Emits `agent.status_changed`. Returns `(input_seq, event_seq)`.
+    pub fn deliver_input(&mut self, uuid: &str, source: &str, at: i64) -> Result<(i64, i64)> {
+        let (uuid, source) = (uuid.to_string(), source.to_string());
+        self.with_immediate_tx(|tx| {
+            tx.execute(
+                "UPDATE agents SET input_seq = input_seq + 1, status='working', \
+                 blocked_kind=NULL, idle_since=NULL, \
+                 last_status_change_at=?2, updated_at=?2 WHERE uuid=?1",
+                rusqlite::params![uuid, at],
+            )
+            .map_err(map_sqlite)?;
+            let seq: i64 = tx
+                .query_row("SELECT input_seq FROM agents WHERE uuid=?1", [&uuid], |r| {
+                    r.get(0)
+                })
+                .map_err(map_sqlite)?;
+            tx.execute(
+                "INSERT INTO turns (agent_uuid, input_seq, source, delivered_at) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![uuid, seq, source, at],
+            )
+            .map_err(map_sqlite)?;
+            let ev = append_event_tx(
+                tx,
+                "agent.status_changed",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "status": "working", "input_seq": seq }),
+            )?;
+            Ok((seq, ev))
+        })
+    }
+
+    /// Open a synthetic **external** turn (spec §5.6): input orcr didn't deliver, observed as
+    /// a `working` transition with no pending turn. Same effect as [`deliver_input`] with
+    /// `source=external`, plus `working_seen_at` set (we saw the working that triggered it).
+    pub fn open_external_turn(&mut self, uuid: &str, at: i64) -> Result<(i64, i64)> {
+        let (seq, ev) = self.deliver_input(uuid, "external", at)?;
+        let uuid = uuid.to_string();
+        self.with_immediate_tx(|tx| {
+            tx.execute(
+                "UPDATE turns SET working_seen_at=?3 WHERE agent_uuid=?1 AND input_seq=?2",
+                rusqlite::params![uuid, seq, at],
+            )
+            .map_err(map_sqlite)?;
+            Ok(())
+        })?;
+        Ok((seq, ev))
+    }
+
+    /// Complete a turn (spec §5.6): mark `completed_at`, flip public status `working → idle`,
+    /// and emit `agent.turn_completed` + `agent.status_changed`. No-op (returns 0) if the
+    /// turn is already completed or the agent is no longer `working`. Returns the event seq.
+    pub fn complete_turn(
+        &mut self,
+        uuid: &str,
+        input_seq: i64,
+        at: i64,
+        cursor: Option<&str>,
+    ) -> Result<i64> {
+        let uuid = uuid.to_string();
+        let cursor = cursor.map(|s| s.to_string());
+        self.with_immediate_tx(|tx| {
+            let n = tx
+                .execute(
+                    "UPDATE turns SET completed_at=?3, transcript_cursor=COALESCE(?4, transcript_cursor) \
+                     WHERE agent_uuid=?1 AND input_seq=?2 AND completed_at IS NULL",
+                    rusqlite::params![uuid, input_seq, at, cursor],
+                )
+                .map_err(map_sqlite)?;
+            if n == 0 {
+                return Ok(0);
+            }
+            let updated = tx
+                .execute(
+                    "UPDATE agents SET status='idle', last_status_change_at=?2, updated_at=?2 \
+                     WHERE uuid=?1 AND status='working'",
+                    rusqlite::params![uuid, at],
+                )
+                .map_err(map_sqlite)?;
+            if updated == 0 {
+                // Turn marked complete but the public status was not `working` (e.g. already
+                // idle/parked) — record the turn but emit nothing new.
+                return Ok(0);
+            }
+            append_event_tx(
+                tx,
+                "agent.turn_completed",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "input_seq": input_seq }),
+            )?;
+            let ev = append_event_tx(
+                tx,
+                "agent.status_changed",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "status": "idle" }),
+            )?;
+            Ok(ev)
+        })
+    }
+
+    /// Mark an agent `blocked` (turn-scoped, §5.6): set the public status + `blocked_kind` on
+    /// both the agent and its latest turn. Returns the event seq (0 if already blocked).
+    pub fn mark_blocked(&mut self, uuid: &str, input_seq: i64, kind: &str) -> Result<i64> {
+        let (uuid, kind) = (uuid.to_string(), kind.to_string());
+        let at = now_millis();
+        self.with_immediate_tx(|tx| {
+            let n = tx
+                .execute(
+                    "UPDATE agents SET status='blocked', blocked_kind=?2, idle_since=NULL, \
+                     last_status_change_at=?3, updated_at=?3 WHERE uuid=?1 AND status != 'blocked'",
+                    rusqlite::params![uuid, kind, at],
+                )
+                .map_err(map_sqlite)?;
+            tx.execute(
+                "UPDATE turns SET blocked_kind=?3 WHERE agent_uuid=?1 AND input_seq=?2",
+                rusqlite::params![uuid, input_seq, kind],
+            )
+            .map_err(map_sqlite)?;
+            if n == 0 {
+                return Ok(0);
+            }
+            let ev = append_event_tx(
+                tx,
+                "agent.status_changed",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "status": "blocked", "blocked_kind": kind }),
+            )?;
+            Ok(ev)
+        })
+    }
+
+    /// Force the public status back to `working` (clearing `idle_since`) when the agent is
+    /// observed working again (un-settles an idle/blocked). Returns event seq (0 if no change).
+    pub fn mark_working(&mut self, uuid: &str) -> Result<i64> {
+        let uuid = uuid.to_string();
+        let at = now_millis();
+        self.with_immediate_tx(|tx| {
+            let n = tx
+                .execute(
+                    "UPDATE agents SET status='working', blocked_kind=NULL, idle_since=NULL, \
+                     last_status_change_at=?2, updated_at=?2 \
+                     WHERE uuid=?1 AND status IN ('idle','blocked','parked')",
+                    rusqlite::params![uuid, at],
+                )
+                .map_err(map_sqlite)?;
+            if n == 0 {
+                return Ok(0);
+            }
+            let ev = append_event_tx(
+                tx,
+                "agent.status_changed",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "status": "working" }),
+            )?;
+            Ok(ev)
+        })
+    }
+
+    /// Record the captured transcript locator/cursor for the final response (spec §11.2,
+    /// §12). No response copy is stored. Emits `agent.response_captured`. Returns event seq.
+    pub fn record_capture(&mut self, uuid: &str, locator: &str, cursor: &str) -> Result<i64> {
+        let (uuid, locator, cursor) = (uuid.to_string(), locator.to_string(), cursor.to_string());
+        self.with_immediate_tx(|tx| {
+            tx.execute(
+                "UPDATE agents SET transcript_locator=?2, transcript_cursor=?3, updated_at=?4 \
+                 WHERE uuid=?1",
+                rusqlite::params![uuid, locator, cursor, now_millis()],
+            )
+            .map_err(map_sqlite)?;
+            append_event_tx(
+                tx,
+                "agent.response_captured",
+                Some(&uuid),
+                &json!({ "uuid": uuid, "transcript_locator": locator }),
+            )
+        })
+    }
+
+    /// All active managed agents that have a live pane (for the completion monitor). Status in
+    /// working/idle/blocked/parked with a `pane_id` recorded.
+    pub fn monitorable_agents(&self) -> Result<Vec<AgentFull>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "{AGENT_FULL_SELECT} WHERE managed=1 AND pane_id IS NOT NULL \
+                 AND status IN ('working','idle','blocked','parked')"
+            ))
+            .map_err(map_sqlite)?;
+        let rows = stmt
+            .query_map([], read_agent_full_row)
+            .map_err(map_sqlite)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(map_sqlite)?;
+        Ok(rows)
+    }
+
     /// All agents matching a listing filter (spec §6.1 `ls`). Ordered by path then
     /// `created_at`. `include_ended` adds history (`--all`).
     pub fn list_agents(&self, filter: &AgentFilter) -> Result<Vec<AgentFull>> {
@@ -814,6 +1063,39 @@ pub fn append_event_tx(
     Ok(tx.last_insert_rowid())
 }
 
+/// One row from the `turns` table — the per-input completion bookkeeping (spec §5.6, §12).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnRow {
+    pub agent_uuid: String,
+    pub input_seq: i64,
+    pub source: String,
+    pub delivered_at: Option<i64>,
+    pub working_seen_at: Option<i64>,
+    pub completed_at: Option<i64>,
+    pub blocked_kind: Option<String>,
+    pub transcript_cursor: Option<String>,
+}
+
+impl TurnRow {
+    /// Whether this turn is still open (not yet completed).
+    pub fn is_open(&self) -> bool {
+        self.completed_at.is_none()
+    }
+}
+
+fn read_turn_row(r: &rusqlite::Row) -> rusqlite::Result<TurnRow> {
+    Ok(TurnRow {
+        agent_uuid: r.get(0)?,
+        input_seq: r.get(1)?,
+        source: r.get(2)?,
+        delivered_at: r.get(3)?,
+        working_seen_at: r.get(4)?,
+        completed_at: r.get(5)?,
+        blocked_kind: r.get(6)?,
+        transcript_cursor: r.get(7)?,
+    })
+}
+
 /// One row from the events table.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventRow {
@@ -887,6 +1169,7 @@ pub struct AgentFull {
     pub deadline_at: Option<i64>,
     pub created_at: i64,
     pub starting_at: Option<i64>,
+    pub idle_since: Option<i64>,
     pub last_status_change_at: Option<i64>,
     pub ended_at: Option<i64>,
 }
@@ -939,7 +1222,7 @@ const AGENT_FULL_SELECT: &str =
      gc_mode, cwd, herdr_session, terminal_id, pane_id, launch_token, \
      agent_session_kind, agent_session_value, status, blocked_kind, input_seq, \
      cancel_requested, exit_reason, queue_seq, deadline_at, created_at, starting_at, \
-     last_status_change_at, ended_at FROM agents";
+     idle_since, last_status_change_at, ended_at FROM agents";
 
 /// The same read scoped to one uuid.
 const AGENT_FULL_SELECT_ONE: &str =
@@ -947,7 +1230,7 @@ const AGENT_FULL_SELECT_ONE: &str =
      gc_mode, cwd, herdr_session, terminal_id, pane_id, launch_token, \
      agent_session_kind, agent_session_value, status, blocked_kind, input_seq, \
      cancel_requested, exit_reason, queue_seq, deadline_at, created_at, starting_at, \
-     last_status_change_at, ended_at FROM agents WHERE uuid = ?1";
+     idle_since, last_status_change_at, ended_at FROM agents WHERE uuid = ?1";
 
 /// Deserialize an `AgentFull` from a row selecting [`AGENT_FULL_COLUMNS`] in order.
 fn read_agent_full_row(r: &rusqlite::Row) -> rusqlite::Result<AgentFull> {
@@ -977,8 +1260,9 @@ fn read_agent_full_row(r: &rusqlite::Row) -> rusqlite::Result<AgentFull> {
         deadline_at: r.get(22)?,
         created_at: r.get(23)?,
         starting_at: r.get(24)?,
-        last_status_change_at: r.get(25)?,
-        ended_at: r.get(26)?,
+        idle_since: r.get(25)?,
+        last_status_change_at: r.get(26)?,
+        ended_at: r.get(27)?,
     })
 }
 

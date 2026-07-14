@@ -211,19 +211,17 @@ impl Server {
         // Capture the transcript pointer if herdr reports it (best-effort, §11.1).
         self.capture_agent_session(&driver, uuid, &info.pane_id);
 
-        // Deliver the first prompt (two-call rule) if one was given.
-        if let Some(prompt) = payload.prompt.as_deref().filter(|p| !p.is_empty()) {
-            self.bail_if_cancelled(uuid, Some((&driver, &info.pane_id)))?;
+        // Deliver the first prompt (two-call rule) if one was given, opening turn 1; else
+        // just move `starting → working`. The completion monitor takes over from here (§5.6).
+        self.bail_if_cancelled(uuid, Some((&driver, &info.pane_id)))?;
+        let ev = if let Some(prompt) = payload.prompt.as_deref().filter(|p| !p.is_empty()) {
             driver.pane_send_text(&info.pane_id, prompt)?;
             std::thread::sleep(ENTER_DELAY);
             driver.pane_send_keys(&info.pane_id, &["Enter"])?;
             let mut store = self.inner.store.lock().unwrap();
-            store.bump_input_seq(uuid, "orcr")?;
-        }
-
-        // starting → working (pre-M3: herdr idle/done are held as working, §5.6).
-        self.bail_if_cancelled(uuid, Some((&driver, &info.pane_id)))?;
-        let ev = {
+            let (_seq, ev) = store.deliver_input(uuid, "orcr", now_millis())?;
+            ev
+        } else {
             let mut store = self.inner.store.lock().unwrap();
             store.transition_status(uuid, "working", None)?
         };
@@ -303,7 +301,7 @@ impl Server {
 
     /// End an agent row (`ended` + `exit_reason`) and publish the events. Idempotent-ish:
     /// a missing row is ignored.
-    fn end_agent(&self, uuid: &str, exit_reason: &str) {
+    pub(super) fn end_agent(&self, uuid: &str, exit_reason: &str) {
         let ev = {
             let mut store = self.inner.store.lock().unwrap();
             store.transition_status(uuid, "ended", Some(exit_reason))
@@ -602,10 +600,13 @@ impl Server {
         driver.pane_send_text(&pane_id, &prompt)?;
         std::thread::sleep(ENTER_DELAY);
         driver.pane_send_keys(&pane_id, &["Enter"])?;
-        let input_seq = {
+        // Open a new turn and re-arm to `working` (a `send` cancels any pending block/idle so
+        // a `wait` issued after it cannot be satisfied by a stale idle, §5.6).
+        let (input_seq, ev) = {
             let mut store = self.inner.store.lock().unwrap();
-            store.bump_input_seq(&row.uuid, "orcr")?
+            store.deliver_input(&row.uuid, "orcr", now_millis())?
         };
+        self.publish(ev);
         Ok(json!({
             "uuid": row.uuid,
             "path": row.path,
@@ -703,7 +704,7 @@ impl Server {
 
     /// The per-integration graceful shutdown recipe → pane close (§6.1). Best-effort: the
     /// pane close is the hard guarantee (herdr then clears empty tabs/workspaces).
-    fn graceful_shutdown(&self, driver: &HerdrDriver, a: &AgentFull, pane_id: &str) {
+    pub(super) fn graceful_shutdown(&self, driver: &HerdrDriver, a: &AgentFull, pane_id: &str) {
         if let Some(provider) = &a.agent {
             if let Ok(plan) = launch_plan(provider, None, None) {
                 if let Some(line) = plan.shutdown_line {
