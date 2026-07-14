@@ -10,7 +10,7 @@ to reflect what that milestone added/changed.
 > *why* behind decisions, read the per-milestone `notes.md` files (especially the herdr
 > facts in `m0-foundations/notes.md`, which are load-bearing for the driver).
 
-Current state: **through M3 (completion & logs).**
+Current state: **through M4 (GC & reconciliation).**
 
 ## Crate & binaries
 
@@ -55,8 +55,9 @@ Current state: **through M3 (completion & logs).**
 - `api.rs` — the **method registry** (single source of the socket API): `methods()` lists
   every method (name, summary, params/result JSON-Schema fragments, `implemented`,
   `streaming`); `schema_document()` generates the versioned `api schema`. Live in M1:
-  server.handshake/status/stop, api.schema/snapshot, events.subscribe, watch.open. All
-  agent.*/loop.* registered as stubs. Also `EVENT_KINDS`, `ERROR_CODES`.
+  server.handshake/status/stop, api.schema/snapshot, events.subscribe, watch.open, all
+  `agent.*` (M2–M4: run/ask/send/logs/wait/kill/ls + attach.prepare/heartbeat/release).
+  `loop.*` registered as stubs (M5). Also `EVENT_KINDS`, `ERROR_CODES`.
 - `events.rs` — `EventBus` (mutex+condvar): wakeups for subscriber pumps + retention
   bookkeeping (`oldest_retained_seq` → `cursor_expired`, `is_expired`). The durable cursor
   is the `events` table; the bus is just the in-memory coordination layer.
@@ -64,7 +65,8 @@ Current state: **through M3 (completion & logs).**
   released on process exit, incl. `kill -9`).
 - `cli.rs` — the clap CLI: `agent {run|send|kill|ls}` (M2) + `agent {ask|wait|logs}` (M3:
   `wait` computes the §6.1 exit code and `process::exit`s; `logs --follow` polls; `ask`
-  prints the response on stdout), `server {…}`, `api {…}`, the
+  prints the response on stdout) + `agent attach` (M4: prepare → background heartbeat thread →
+  exec interactive `herdr agent attach` → release on exit), `server {…}`, `api {…}`, the
   `--json` envelope, §13 error→exit-code mapping, TTY detection, log tail/follow. Agent verbs
   forward the caller's `ORCR_ID`/`ORCR_PATH` (lineage+scope), resolve `-p -`/positional `-`
   from stdin, default `--cwd` to the caller's cwd, print `<path> <uuid>` + TTY hints, and do
@@ -77,6 +79,21 @@ Current state: **through M3 (completion & logs).**
     (the flat §6.1 row). **Add new method handlers in `handle_request`** (M2 routes
     `agent.run/send/kill/ls` to `engine.rs`). `ServerInner` now also holds `home`, a cached
     owned-session `driver`, and a `spawn_lock`.
+  - `gc.rs` — **the M4 GC engine + reconciliation** (§5.4, §11.2, §11.5): one thread ticks
+    every `timings.gc_tick` and (a) expires stale attach leases, (b) enforces explicit
+    `--timeout` (`exit_reason: timeout`, all gc modes), (c) **parks** idle-past-`idle_after`
+    `gc auto` agents (two-phase: `begin_move` CAS → `pane.move` to the `idle` workspace →
+    `finish_park`), (d) **reaps** parked-past-`kill_after` agents (`exit_reason: reaped` +
+    pane closed), (e) runs `periodic_reconcile` (recover half-done moves by `terminal_id`,
+    resolve already-`lost` agents, mark newly-vanished panes `lost`, refresh drift counts).
+    Also `unpark_for_send` (two-phase move back to the home workspace, called by `agent.send`
+    before delivery), the attach-lease GC interlock (`lease_fresh`), the `DriftSnapshot`
+    (surfaced in `server status`), and the test-only `ORCR_TEST_PARK_CRASH` fault hook.
+  - `discovery.rs` — **the M4 unmanaged-discovery poller** (§5.7): a 3s-tick thread that
+    fans out over non-owned herdr sessions (per-socket), upserts supported-provider agents as
+    read-only `unmanaged` rows keyed by (session, `terminal_id`) with path
+    `unmanaged/<slug>/<slug>`, and ends rows whose terminal vanished. `ORCR_DISABLE_DISCOVERY=1`
+    suppresses it (deterministic non-M4 tests).
   - `completion.rs` — **the M3 completion monitor**: a background thread (200ms tick) that
     polls the owned session's herdr `agent.list` and drives each monitorable agent's turn
     state machine — verified idle (working-after-delivery or fast-turn grace → stable idle →
@@ -97,7 +114,10 @@ Current state: **through M3 (completion & logs).**
     `settle_of`/`next_hint`/`wait_result` → §6.1 reason tokens + structured `next` +
     `decision_seq`), `handle_agent_ask` (run --gc immediate → wait → last-response),
     `handle_agent_logs` (transcript entries / `--last-response`, both-layers gate); `send` now
-    re-arms to `working` via `deliver_input`; `reconcile_on_start` clears `idle_since` (restart re-arm).
+    re-arms to `working` via `deliver_input`. **M4** adds the attach handlers
+    (`handle_agent_attach_prepare`/`heartbeat`/`release`); `send` calls `unpark_for_send`
+    (from `gc.rs`) before delivery for a parked/mid-move target; `reconcile_on_start` skips
+    move-in-flight agents and calls `reconcile_moves_on_start`.
   - `client.rs` — `Client`: connect+handshake (version-checked), one-shot `request`,
     `open_stream`+`Subscription` for event streams, and `ensure_running` (auto-start: spawn
     a detached `server start --foreground`, wait for readiness). `StartOutcome`.
@@ -119,9 +139,16 @@ Current state: **through M3 (completion & logs).**
     `active_managed_agents`. **M3 turn/completion DAL**: `latest_turn`/`TurnRow`, `deliver_input`
     (bump input_seq + open turn + re-arm working), `open_external_turn`, `set_working_seen`,
     `set_idle_since`, `complete_turn` (→idle) / `complete_turn_row` (gc-immediate, no status flip),
-    `mark_blocked`/`mark_working`, `record_capture`, `monitorable_agents`, `clear_active_idle_since`
-    (restart re-arm); `AgentFull` gained `idle_since`. Store methods that write events append them
-    in-txn and return the seq; the server calls `publish(seq)`.
+    `mark_blocked`/`mark_working`, `record_capture`, `monitorable_agents`; `AgentFull` gained
+    `idle_since`. **M4 GC/attach/reconcile/unmanaged DAL**: `park_candidates`/`reap_candidates`/
+    `timed_out_agents`, the two-phase move CAS (`begin_move`/`finish_park`/`finish_unpark`/
+    `rollback_move`/`agents_in_move`), `lost_agents`, attach leases
+    (`prepare_attach`→`AttachInfo`/`heartbeat_lease`/`release_lease`/`has_fresh_lease`/
+    `expire_leases`), unmanaged upsert (`find_unmanaged`/`insert_unmanaged`/`update_unmanaged`/
+    `active_unmanaged`/`path_active`), and `rearm_idle_clocks_on_restart` (replaces M3's
+    `clear_active_idle_since`: idle→park-clock-reset, working/blocked→clear). `AgentFull` gained
+    `move_state`/`move_token`/`parked_at`. `debug_delete_agent` (test-only, behind the debug gate).
+    Store methods that write events append them in-txn and return the seq; the server calls `publish(seq)`.
 - `driver/` — the herdr socket driver (see `m0-foundations/notes.md` for the verified
   wire facts; **the driver is the riskiest surface — trust the notes**).
   - `protocol.rs` — wire envelopes: request `{protocol,id,method,params}`; success
@@ -186,8 +213,11 @@ Current state: **through M3 (completion & logs).**
 - **e2e tests are gated behind `ORCR_E2E=1`** (so `cargo test` stays fast). Run them
   with `ORCR_E2E=1 cargo test --test e2e` (driver/harness) and
   `ORCR_E2E=1 cargo test --test agent_e2e -- --test-threads=1` (M2 agent core) and
-  `ORCR_E2E=1 cargo test --test completion_e2e -- --test-threads=1` (M3). They
-  exercise real behavior against **live herdr** using the mock provider.
+  `ORCR_E2E=1 cargo test --test completion_e2e -- --test-threads=1` (M3) and
+  `ORCR_E2E=1 cargo test --test gc_e2e -- --test-threads=1` (M4). They
+  exercise real behavior against **live herdr** using the mock provider. Non-M4 e2e
+  harnesses set `ORCR_DISABLE_DISCOVERY=1` so unmanaged discovery doesn't pull the
+  developer's real sessions into their stores.
 - `tests/completion_e2e.rs` (M3) proves: fast turn, slow tool-heavy turn (idle gaps <
   settle window don't complete), blocked-then-send-clears, external input → synthetic turn,
   two consecutive sends (second wait never satisfied by the first idle), gc immediate →
@@ -199,6 +229,14 @@ Current state: **through M3 (completion & logs).**
   concurrent same-path one-winner, kill-during-starting, idle-held-at-working,
   integration-missing, crash-recovery (repair running + close orphan), and the path-model
   conformance table over socket **and** CLI.
+- `tests/gc_e2e.rs` (M4) proves: park→send→un-park (home workspace + clocks reset), reap
+  (`exit_reason: reaped` + pane closed), `gc never` exempt, explicit `--timeout` kill,
+  crash-mid-park-move recovery (completes and rolls back, via the `ORCR_TEST_PARK_CRASH`
+  fault hook), attach defers park/reap (incl. across a restart with a live lease) + resumes
+  on release, unknown-marked-pane reported/never-closed, foreign-shell reported/never-touched,
+  vanished-pane → lost → ended(lost), unmanaged discovery in a second disposable session
+  (appears in `ls`, kill needs `--force`, terminal-gone → ended), and a scaled soak
+  (`ORCR_SOAK_AGENTS`, default 20) asserting no leaked/wrongly-closed panes or workspaces.
 - `tests/conformance_live.rs` diffs the pinned driver contract against live
   `herdr api schema` (guards herdr version drift).
 - **e2e safety pattern (MANDATORY, reuse it):** each e2e test creates a throwaway
