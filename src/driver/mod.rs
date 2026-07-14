@@ -12,7 +12,10 @@ mod integration;
 pub mod protocol;
 mod session;
 
-pub use integration::{IntegrationState, ProviderIntegration};
+pub use integration::{
+    ensure_supported, launch_plan, mock_provider_enabled, IntegrationState, LaunchPlan,
+    ProviderIntegration, MOCK_PROVIDER, ORCR_BUILTIN_PROVIDERS,
+};
 pub use protocol::*;
 pub use session::{HerdrBinary, HerdrSession};
 
