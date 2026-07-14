@@ -64,7 +64,7 @@ export interface LoopCreateOptions {
   cron?: string;
   onceAt?: string;
   maxConcurrency?: number;
-  overlap?: "queue" | "skip" | "allow" | string;
+  overlap?: "queue" | "skip";
   timeout?: string;
   command: string[];
   cwd?: string;

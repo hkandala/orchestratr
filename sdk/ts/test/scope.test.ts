@@ -8,7 +8,7 @@ import { resolveCreate, scopeOfAgent } from "../src/path.js";
 // (agent caller → scope = path minus name; loop-run caller → scope = full path; nested scopes
 // stack prefixes; leading `/` resets to absolute), and we assert the SDK's runScope + currentScope
 // composition matches it over randomized scope stacks and inputs. The live cross-check against
-// the real server is in tests/sdk_e2e.rs.
+// the real server is in tests/recipe_e2e.rs::e2e_sdk_scope_matches_cli.
 
 const noopKill = async () => undefined;
 
