@@ -209,11 +209,12 @@ impl Store {
                 "INSERT INTO agents (
                      uuid, path, managed, origin, parent_id, agent, model, effort,
                      gc_mode, cwd, herdr_session, terminal_id, pane_id, launch_token,
-                     status, queue_seq, enqueued_at, created_at, last_status_change_at, updated_at
+                     status, queue_seq, deadline_at, enqueued_at, created_at,
+                     last_status_change_at, updated_at
                  ) VALUES (
                      ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
                      ?9, ?10, ?11, ?12, ?13, ?14,
-                     'queued', ?15, ?16, ?16, ?16, ?16
+                     'queued', ?15, ?16, ?17, ?17, ?17, ?17
                  )",
                 rusqlite::params![
                     a.uuid,
@@ -231,6 +232,7 @@ impl Store {
                     a.pane_id,
                     a.launch_token,
                     queue_seq,
+                    a.deadline_at,
                     a.created_at,
                 ],
             )
@@ -851,6 +853,8 @@ pub struct NewAgent {
     pub pane_id: Option<String>,
     pub launch_token: Option<String>,
     pub status: String,
+    /// Kill deadline (`created_at + --timeout`), only when `--timeout` was passed (§5.4).
+    pub deadline_at: Option<i64>,
     pub created_at: i64,
 }
 
@@ -1016,6 +1020,7 @@ impl NewAgent {
             pane_id: None,
             launch_token: None,
             status: "queued".to_string(),
+            deadline_at: None,
             created_at: now_millis(),
         }
     }

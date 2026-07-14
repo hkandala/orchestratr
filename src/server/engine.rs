@@ -445,6 +445,11 @@ impl Server {
         let model = str_param(params, "model").filter(|s| !s.is_empty());
         let effort = str_param(params, "effort").filter(|s| !s.is_empty());
         let timeout = str_param(params, "timeout").filter(|s| !s.is_empty());
+        // Validate --timeout up front (units required, §6); persist the deadline durably.
+        let timeout_ms = match &timeout {
+            Some(t) => Some(crate::duration::parse_duration(t)?.as_millis() as i64),
+            None => None,
+        };
         let cwd = str_param(params, "cwd").filter(|s| !s.is_empty());
         let prompt = str_param(params, "prompt");
 
@@ -528,6 +533,7 @@ impl Server {
             pane_id: None,
             launch_token: Some(launch_token.clone()),
             status: "queued".into(),
+            deadline_at: timeout_ms.map(|ms| now_millis() + ms),
             created_at: now_millis(),
         };
         let ev = {
