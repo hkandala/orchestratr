@@ -12,8 +12,10 @@
 //! - `ORCR_MOCK_TURN_MS`        — ms to "work" per turn (default 0).
 //! - `ORCR_MOCK_ONCE`           — if set, process exactly one turn then exit.
 //! - `ORCR_MOCK_EXIT_AFTER`     — exit after this many turns (0 = never; default 0).
-//! - `ORCR_MOCK_HERDR_SOCKET`   — herdr session socket to report state on (optional).
-//! - `ORCR_MOCK_PANE_ID`        — this pane's id, for state reporting (optional).
+//! - `ORCR_MOCK_HERDR_SOCKET`   — herdr session socket (optional; falls back to
+//!   the herdr-injected `HERDR_SOCKET_PATH`).
+//! - `ORCR_MOCK_PANE_ID`        — this pane's id (optional; falls back to the
+//!   herdr-injected `HERDR_PANE_ID`).
 //! - `ORCR_MOCK_AGENT`          — provider name to report as (default "mock").
 //! - `ORCR_MOCK_SESSION_ID`     — agent_session id to report (optional).
 //!
@@ -33,10 +35,25 @@ struct Reporter {
 
 impl Reporter {
     fn from_env() -> Reporter {
+        // Opt out of self-reporting (tests that drive state explicitly avoid a
+        // competing reporter).
+        if std::env::var("ORCR_MOCK_NO_REPORT").is_ok() {
+            return Reporter {
+                driver: None,
+                pane_id: String::new(),
+                agent: String::new(),
+                session_id: None,
+            };
+        }
+        // Prefer an explicit override, else use herdr's own injected pane env
+        // (HERDR_SOCKET_PATH / HERDR_PANE_ID) so no wiring from orcr is needed.
         let socket = std::env::var("ORCR_MOCK_HERDR_SOCKET")
+            .or_else(|_| std::env::var("HERDR_SOCKET_PATH"))
             .ok()
             .filter(|s| !s.is_empty());
-        let pane_id = std::env::var("ORCR_MOCK_PANE_ID").unwrap_or_default();
+        let pane_id = std::env::var("ORCR_MOCK_PANE_ID")
+            .or_else(|_| std::env::var("HERDR_PANE_ID"))
+            .unwrap_or_default();
         let agent = std::env::var("ORCR_MOCK_AGENT").unwrap_or_else(|_| "mock".to_string());
         let session_id = std::env::var("ORCR_MOCK_SESSION_ID")
             .ok()

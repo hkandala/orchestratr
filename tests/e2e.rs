@@ -1,0 +1,260 @@
+//! End-to-end driver + harness tests against a **live herdr** and the mock provider.
+//!
+//! Gated behind `ORCR_E2E=1` so unit runs stay fast. Every test runs in an isolated
+//! `ORCR_HOME` tempdir and a **disposable** herdr session named `orcr_test_<rand>`,
+//! torn down (`session stop` + `session delete`) by a drop guard. The user's `default`
+//! herdr session is never touched.
+//!
+//! Run with:  `ORCR_E2E=1 cargo test --test e2e -- --nocapture`
+
+use orchestratr::driver::{normalize_done, AgentStatus, HerdrBinary, HerdrDriver, PaneAgentState};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+fn e2e_enabled() -> bool {
+    std::env::var("ORCR_E2E").as_deref() == Ok("1")
+}
+
+/// The mock-agent binary built by cargo for this integration test.
+fn mock_agent_bin() -> String {
+    env!("CARGO_BIN_EXE_orcr-mock-agent").to_string()
+}
+
+/// A disposable herdr session + bound driver, cleaned up on drop.
+struct Harness {
+    bin: HerdrBinary,
+    session: String,
+    driver: HerdrDriver,
+    _home: tempfile::TempDir,
+}
+
+impl Harness {
+    fn start() -> Harness {
+        let home = tempfile::tempdir().expect("tempdir");
+        let bin = HerdrBinary::discover(None).expect("herdr binary on PATH");
+        // Fully random suffix — UUIDv7's leading hex is a slow-changing timestamp and
+        // collides across near-simultaneous tests, so use v4 here.
+        let rand = uuid::Uuid::new_v4().simple().to_string();
+        let session = format!("orcr_test_{}", &rand[..12]);
+        // Bootstrap + connect can fail; ensure teardown even before the struct (and its
+        // Drop guard) exists, so a partially-started session never leaks.
+        let started = (|| {
+            let socket = bin.ensure_session(&session)?;
+            HerdrDriver::connect(&socket)
+        })();
+        let driver = match started {
+            Ok(d) => d,
+            Err(e) => {
+                let _ = bin.session_stop(&session);
+                let _ = bin.session_delete(&session);
+                panic!("bootstrap disposable session failed: {e}");
+            }
+        };
+        Harness {
+            bin,
+            session,
+            driver,
+            _home: home,
+        }
+    }
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        // Best-effort teardown; never touches the user's default session.
+        let _ = self.bin.session_stop(&self.session);
+        let _ = self.bin.session_delete(&self.session);
+    }
+}
+
+/// Poll `f` until it returns true or the deadline elapses.
+fn wait_until(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if f() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn e2e_handshake_and_enumeration() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    let h = Harness::start();
+
+    // Handshake succeeded at connect; protocol is the one we require.
+    assert_eq!(h.driver.protocol(), 16);
+    let pong = h.driver.ping().unwrap();
+    assert_eq!(pong.protocol, 16);
+
+    // Our disposable session is enumerable via the binary.
+    let sessions = h.bin.session_list().unwrap();
+    assert!(
+        sessions.iter().any(|s| s.name == h.session),
+        "disposable session should be listed"
+    );
+    // The default session must still be present and untouched.
+    assert!(
+        sessions.iter().any(|s| s.name == "default"),
+        "default session should be present"
+    );
+
+    // Session-scoped reads round-trip.
+    let ws = h.driver.workspace_list().unwrap();
+    assert!(!ws.is_empty(), "a fresh session has at least one workspace");
+    let _snap = h.driver.session_snapshot().unwrap();
+}
+
+#[test]
+fn e2e_bootstrap_is_idempotent() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    let h = Harness::start();
+    // Re-ensuring the same session returns the same running socket, no new server.
+    let again: PathBuf = h.bin.ensure_session(&h.session).unwrap();
+    assert_eq!(again, h.driver.socket_path());
+}
+
+#[test]
+fn e2e_agent_lifecycle_and_state_reporting() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    let h = Harness::start();
+    let d = &h.driver;
+
+    // Create a dedicated workspace and start the mock agent in it.
+    let created = d
+        .workspace_create(Some("e2e"), None, &BTreeMap::new())
+        .unwrap();
+    let ws = created.workspace.workspace_id.clone();
+
+    let mut env = BTreeMap::new();
+    env.insert("ORCR_ID".to_string(), "e2e-agent".to_string());
+    // Silence the mock's own state reports so this test's explicit reports are the only
+    // source driving pane state (deterministic).
+    env.insert("ORCR_MOCK_NO_REPORT".to_string(), "1".to_string());
+    let params = orchestratr::driver::AgentStartParams {
+        name: "worker".into(),
+        argv: vec![mock_agent_bin()],
+        cwd: None,
+        env,
+        focus: false,
+        split: None,
+        tab_id: None,
+        workspace_id: Some(ws.clone()),
+    };
+    let agent = d.agent_start(&params).unwrap();
+    let pane = agent.pane_id.clone();
+    assert!(!agent.terminal_id.is_empty());
+
+    // The pane shows up in pane.list / pane.get and agent.list.
+    assert!(wait_until(Duration::from_secs(5), || {
+        d.pane_list(Some(&ws))
+            .unwrap()
+            .iter()
+            .any(|p| p.pane_id == pane)
+    }));
+    let got = d.pane_get(&pane).unwrap();
+    assert_eq!(got.pane_id, pane);
+    assert!(d.agent_list().unwrap().iter().any(|a| a.pane_id == pane));
+
+    // Input delivery (two-call rule) round-trips to the live pane.
+    d.pane_send_text(&pane, "hello").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    d.pane_send_keys(&pane, &["Enter"]).unwrap();
+
+    // Close the agent pane; the workspace still has its root shell pane.
+    d.pane_close(&pane).unwrap();
+    assert!(wait_until(Duration::from_secs(5), || {
+        !d.pane_list(Some(&ws))
+            .unwrap()
+            .iter()
+            .any(|p| p.pane_id == pane)
+    }));
+
+    // State reporting through herdr's integration mechanism round-trips. Use a quiet
+    // pane so herdr's own screen-detection doesn't compete with the reports.
+    let quiet = orchestratr::driver::AgentStartParams {
+        name: "quiet".into(),
+        argv: vec!["sh".into(), "-c".into(), "sleep 120".into()],
+        cwd: None,
+        env: BTreeMap::new(),
+        focus: false,
+        split: None,
+        tab_id: None,
+        workspace_id: Some(ws.clone()),
+    };
+    let qpane = d.agent_start(&quiet).unwrap().pane_id;
+    for state in [
+        PaneAgentState::Working,
+        PaneAgentState::Idle,
+        PaneAgentState::Blocked,
+    ] {
+        d.pane_report_agent(&qpane, "orcr:test", "mock", state, Some("sess-1"))
+            .unwrap();
+        // herdr surfaces a working→idle transition as `done` (its turn-complete signal),
+        // which orcr normalizes to `idle` (spec §5.6). Compare on the normalized value.
+        let want = match state {
+            PaneAgentState::Working => AgentStatus::Working,
+            PaneAgentState::Idle => AgentStatus::Idle,
+            PaneAgentState::Blocked => AgentStatus::Blocked,
+            PaneAgentState::Unknown => AgentStatus::Unknown,
+        };
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                d.pane_get(&qpane)
+                    .map(|p| normalize_done(p.agent_status) == want)
+                    .unwrap_or(false)
+            }),
+            "reported {:?} state should be visible (normalized)",
+            state
+        );
+    }
+    d.pane_close(&qpane).unwrap();
+}
+
+#[test]
+fn e2e_empty_workspace_auto_removal() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    let h = Harness::start();
+    let d = &h.driver;
+
+    // Create a workspace (herdr gives it a root pane) and confirm it exists.
+    let created = d
+        .workspace_create(Some("scratch"), None, &BTreeMap::new())
+        .unwrap();
+    let ws = created.workspace.workspace_id.clone();
+    let root = created.root_pane.pane_id.clone();
+    assert!(d
+        .workspace_list()
+        .unwrap()
+        .iter()
+        .any(|w| w.workspace_id == ws));
+
+    // Close its only pane → herdr removes the now-empty workspace (spec §5.2).
+    d.pane_close(&root).unwrap();
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            !d.workspace_list()
+                .unwrap()
+                .iter()
+                .any(|w| w.workspace_id == ws)
+        }),
+        "workspace should be auto-removed once its last pane is closed"
+    );
+}
