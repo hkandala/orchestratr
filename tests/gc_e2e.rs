@@ -33,6 +33,11 @@ const FAST_GC: &str = r#""concurrency":{"max":30},"timings":{"idle_after":"1s","
 /// fault hook, and reap never interferes.
 const CRASH_GC: &str = r#""concurrency":{"max":30},"timings":{"idle_after":"2s","kill_after":"60s","gc_tick":"400ms","attach_lease_ttl":"3s","max_starting":"60s"},"integrations":{"mock":{"fast_turn_grace_ms":1500,"idle_stable_ms":500,"transcript_settle_ms":0,"shutdown_grace_ms":150}}"#;
 
+/// Un-park drill: idle_after is still short enough to park within the initial wait, but wide
+/// enough (and reap far off) that the post-un-park "back home" window stays observable for
+/// seconds — so a load-starved test thread can't miss it before the pane idle-re-parks.
+const PARK_GC: &str = r#""concurrency":{"max":30},"timings":{"idle_after":"5s","kill_after":"60s","gc_tick":"400ms","attach_lease_ttl":"60s","max_starting":"60s"},"integrations":{"mock":{"fast_turn_grace_ms":1500,"idle_stable_ms":500,"transcript_settle_ms":0,"shutdown_grace_ms":150}}"#;
+
 struct TestServer {
     home: tempfile::TempDir,
     bin: HerdrBinary,
@@ -270,13 +275,13 @@ macro_rules! skip_unless_e2e {
 #[test]
 fn e2e_park_send_unpark() {
     skip_unless_e2e!();
-    let ts = TestServer::start();
+    let ts = TestServer::start_cfg(PARK_GC);
     let uuid = ts.run("park/worker", Some("@turn_ms=0 hi"), Some("auto"));
     assert!(
         ts.wait_status(&uuid, "idle", Duration::from_secs(20)),
         "should go idle"
     );
-    // idle_after 1s + gc_tick → parks.
+    // idle_after 5s + gc_tick → parks.
     assert!(
         ts.wait_status(&uuid, "parked", Duration::from_secs(15)),
         "should park after idle_after"
@@ -294,7 +299,16 @@ fn e2e_park_send_unpark() {
         )
         .expect("send");
     assert_eq!(sent["delivered_while"], json!("parked"));
-    // Back in the home workspace + a fresh completion settles.
+    // Un-park moves the pane back to its home workspace. Observe this promptly — before the
+    // turn completes and the (now-idle) pane can re-park to `idle` — so the assertion stays
+    // robust under load rather than racing a single-shot read against re-parking.
+    assert!(
+        wait_until(Duration::from_secs(15), || {
+            ts.workspace_label_of(&uuid).as_deref() == Some("park")
+        }),
+        "un-parked pane returns to its home workspace"
+    );
+    // A fresh completion then settles.
     let done = ts
         .request(
             "agent.wait",
@@ -302,11 +316,6 @@ fn e2e_park_send_unpark() {
         )
         .unwrap();
     assert_eq!(done["targets"][0]["reason"], json!("turn_complete"));
-    assert_eq!(
-        ts.workspace_label_of(&uuid).as_deref(),
-        Some("park"),
-        "un-parked pane returns to its home workspace"
-    );
     let _ = ts.request("agent.kill", json!({ "targets": [uuid] }));
 }
 
@@ -580,6 +589,15 @@ fn e2e_unmanaged_discovery() {
             .unwrap_or(false)
     });
     assert!(found, "hand-started agent should appear as unmanaged");
+    // Counts split (§5.6): discovered unmanaged agents surface under `unmanaged`, never `live`.
+    // We created no managed agents, so `live` stays 0 even though discovery tracks live panes.
+    let status = ts.request("server.status", json!({})).unwrap();
+    let counts = &status["counts"];
+    assert_eq!(counts["live"], 0, "unmanaged agents must not count as live");
+    assert!(
+        counts["unmanaged"].as_i64().unwrap_or(0) >= 1,
+        "discovered mock should be counted as unmanaged"
+    );
     // Grab OUR mock row specifically (the user's `default` session may also surface real agents
     // — discovery tracks every non-owned session, §5.7). Mock has no native transcript, so logs
     // → transcript_unavailable, but the path resolves (not integration_missing).
