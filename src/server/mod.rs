@@ -677,10 +677,16 @@ impl Server {
             .filter(|a| a.status == "queued")
             .map(|a| json!({ "uuid": a.uuid, "path": a.path, "agent": a.agent }))
             .collect();
+        let loops: Vec<Value> = store
+            .list_loops(&[], None, false)
+            .unwrap_or_default()
+            .iter()
+            .map(loops::loop_row_json)
+            .collect();
         let snap = json!({
             "snapshot_seq": seq,
             "agents": agents,
-            "loops": [],
+            "loops": loops,
             "queue": queue,
         });
         (seq, snap)

@@ -1129,7 +1129,7 @@ fn names_param(params: &Value) -> Result<Vec<String>> {
 }
 
 /// A `loops` JSON row (spec §13).
-fn loop_row_json(l: &LoopRow) -> Value {
+pub(super) fn loop_row_json(l: &LoopRow) -> Value {
     json!({
         "uuid": l.uuid,
         "name": l.name,
