@@ -180,7 +180,7 @@ impl Server {
                             .unwrap_or(false);
                     let stable = now.saturating_sub(idle_since) >= tuning.idle_stable_ms as i64;
                     if (working_ok || fast_ok) && stable && self.transcript_settled(a, &tuning) {
-                        self.complete(driver, a, t.input_seq, &tuning);
+                        self.complete(driver, a, t.input_seq);
                     }
                 }
                 // idle with no open turn (e.g. a no-prompt agent, or an already-completed
@@ -193,8 +193,7 @@ impl Server {
     }
 
     /// Complete an open turn, then run `gc immediate` teardown if applicable (§11.2).
-    fn complete(&self, driver: &HerdrDriver, a: &AgentFull, input_seq: i64, tuning: &TuningParams) {
-        let _ = tuning;
+    fn complete(&self, driver: &HerdrDriver, a: &AgentFull, input_seq: i64) {
         // Capture the transcript locator/cursor *before* any teardown so a waiting `ask`
         // (and post-kill `logs`) can read the response from the native file (§11.2).
         let (locator, cursor) = self.capture(a);
