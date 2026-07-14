@@ -10,7 +10,7 @@ to reflect what that milestone added/changed.
 > *why* behind decisions, read the per-milestone `notes.md` files (especially the herdr
 > facts in `m0-foundations/notes.md`, which are load-bearing for the driver).
 
-Current state: **through M2 (agent core).**
+Current state: **through M3 (completion & logs).**
 
 ## Crate & binaries
 
@@ -41,7 +41,8 @@ Current state: **through M2 (agent core).**
   path-related about the orcr home lives here.
 - `config.rs` — `~/.orcr/config.json` load + strict validation (§14): unknown keys warn
   with a nearest-name suggestion (Levenshtein), durations require units & must be
-  positive, `concurrency.max ≥ 1`, per-provider caps clamped. Defaults built in.
+  positive, `concurrency.max ≥ 1`, per-provider caps clamped. Defaults built in. **M3**:
+  optional `integrations.<provider>.*` completion-tuning overrides (`IntegrationTuning`, ms).
 - `duration.rs` — human duration parsing/formatting (`45s`, `20m`, `3h`); units required.
 - `path.rs` — **the §5.1 grammar in one place**: segment/path validation, depth+reserved
   checks, `{rand}` expansion, `--name`/`--path` scope resolution (`resolve_create`), selector
@@ -61,7 +62,9 @@ Current state: **through M2 (agent core).**
   is the `events` table; the bus is just the in-memory coordination layer.
 - `lock.rs` — `InstanceLock`: exclusive `flock` guard on `orcr.lock` (single-instance;
   released on process exit, incl. `kill -9`).
-- `cli.rs` — the clap CLI: `agent {run|send|kill|ls}` (M2), `server {…}`, `api {…}`, the
+- `cli.rs` — the clap CLI: `agent {run|send|kill|ls}` (M2) + `agent {ask|wait|logs}` (M3:
+  `wait` computes the §6.1 exit code and `process::exit`s; `logs --follow` polls; `ask`
+  prints the response on stdout), `server {…}`, `api {…}`, the
   `--json` envelope, §13 error→exit-code mapping, TTY detection, log tail/follow. Agent verbs
   forward the caller's `ORCR_ID`/`ORCR_PATH` (lineage+scope), resolve `-p -`/positional `-`
   from stdin, default `--cwd` to the caller's cwd, print `<path> <uuid>` + TTY hints, and do
@@ -74,14 +77,25 @@ Current state: **through M2 (agent core).**
     (the flat §6.1 row). **Add new method handlers in `handle_request`** (M2 routes
     `agent.run/send/kill/ls` to `engine.rs`). `ServerInner` now also holds `home`, a cached
     owned-session `driver`, and a `spawn_lock`.
-  - `engine.rs` — **the M2 agent engine**: the owned-session driver (`owned_driver`,
+  - `completion.rs` — **the M3 completion monitor**: a background thread (200ms tick) that
+    polls the owned session's herdr `agent.list` and drives each monitorable agent's turn
+    state machine — verified idle (working-after-delivery or fast-turn grace → stable idle →
+    transcript settled → `working→idle`), external-turn detection (herdr `working` with no
+    open turn → synthetic `source=external` turn), blocked tracking, transcript capture, and
+    `gc immediate` teardown (`working→ended(completed)` with no transient public idle). Also
+    `agent_transcript` (locate via the provider adapter). Reads tuning from `driver::tuning_for`.
+  - `engine.rs` — **the M2 agent engine + M3 wait/ask/logs**: the owned-session driver (`owned_driver`,
     lazy-connect+cache), the **queue worker** thread (FIFO promotion + stuck-start sweep,
     `QUEUE_TICK`), the **spawn pipeline** (`run_pipeline`: ensure workspace → `agent.start`
     → record location → capture `agent_session` → two-call first prompt → `working`, with
     `cancel_requested` checks between steps), start-up **reconciliation** (`reconcile_on_start`
     — confirm/repair/lost/orphan-close), and the `agent.run/send/kill/ls` handlers +
     resolution helpers (path-first then uuid-prefix). `LaunchPayload` = the `launch.json`
-    shape (§12).
+    shape (§12). **M3** adds `handle_agent_wait` (snapshot-then-subscribe on the event bus,
+    `settle_of`/`next_hint`/`wait_result` → §6.1 reason tokens + structured `next` +
+    `decision_seq`), `handle_agent_ask` (run --gc immediate → wait → last-response),
+    `handle_agent_logs` (transcript entries / `--last-response`, both-layers gate); `send` now
+    re-arms to `working` via `deliver_input`; `reconcile_on_start` clears `idle_since` (restart re-arm).
   - `client.rs` — `Client`: connect+handshake (version-checked), one-shot `request`,
     `open_stream`+`Subscription` for event streams, and `ensure_running` (auto-start: spawn
     a detached `server start --foreground`, wait for readiness). `StartOutcome`.
@@ -100,8 +114,12 @@ Current state: **through M2 (agent core).**
     `UuidLookup`), `record_location`/`record_agent_session`, `transition_status`,
     `request_cancel`/`is_cancel_requested`, `bump_input_seq` (+turn row), `list_agents`
     (`AgentFilter`; glob applied in Rust, never SQL LIKE), `queue_position`, `stuck_starting`,
-    `active_managed_agents`. Store methods that write events append them in-txn and return the
-    seq; the server calls `publish(seq)`.
+    `active_managed_agents`. **M3 turn/completion DAL**: `latest_turn`/`TurnRow`, `deliver_input`
+    (bump input_seq + open turn + re-arm working), `open_external_turn`, `set_working_seen`,
+    `set_idle_since`, `complete_turn` (→idle) / `complete_turn_row` (gc-immediate, no status flip),
+    `mark_blocked`/`mark_working`, `record_capture`, `monitorable_agents`, `clear_active_idle_since`
+    (restart re-arm); `AgentFull` gained `idle_since`. Store methods that write events append them
+    in-txn and return the seq; the server calls `publish(seq)`.
 - `driver/` — the herdr socket driver (see `m0-foundations/notes.md` for the verified
   wire facts; **the driver is the riskiest surface — trust the notes**).
   - `protocol.rs` — wire envelopes: request `{protocol,id,method,params}`; success
@@ -126,7 +144,15 @@ Current state: **through M2 (agent core).**
     integration (M2): `launch_plan(provider, model, effort)` → argv (bypass flags +
     model/effort mapping) for claude/codex (and the test-only `mock` provider under
     `ORCR_ALLOW_MOCK_PROVIDER=1`), and `ensure_supported` (both-layers-required →
-    `integration_missing` naming the missing layer + install command, §11.4).
+    `integration_missing` naming the missing layer + install command, §11.4). **M3**:
+    `TuningParams` + `tuning_for(provider, &config.integrations)` (completion tuning defaults
+    per provider + config overrides).
+  - `transcript.rs` — **M3 transcript adapters** (§11.4): `locate_transcript` (claude:
+    `~/.claude/projects/<cwd-slug>/<session_id>.jsonl`; codex:
+    `~/.codex/sessions/**/rollout-*-<session_id>.jsonl`) with the **identity gate**
+    (ambiguous candidates → `transcript_unavailable`), `TranscriptLocator::{read_entries,
+    last_response,mtime_ms}` → common `TranscriptEntry` shape, and `transcript_fresh` (the
+    freshness-gate helper). orcr keeps no response copies — reads always hit the native file.
   - `contract.rs` — the driver conformance table (§11.7) pinned to named herdr methods
     with fixed shapes; checked against a fixture generated from live `herdr api schema`
     (`tests/conformance_live.rs`), so herdr version drift fails CI.
@@ -143,7 +169,9 @@ Current state: **through M2 (agent core).**
   it also **dumps its `ORCR_*` env to `$ORCR_AGENT_DATA_DIR/mock_env.json`** (how e2e asserts
   the §5.3 env contract reached the pane) and defaults its reported `agent_session` id so the
   spawn pipeline's session-capture returns promptly. Spawned as provider `mock` via
-  `$ORCR_MOCK_AGENT_BIN` when the server runs with `ORCR_ALLOW_MOCK_PROVIDER=1`.
+  `$ORCR_MOCK_AGENT_BIN` when the server runs with `ORCR_ALLOW_MOCK_PROVIDER=1`. **M3**: it
+  parses per-turn `@`-directives from the prompt (`@turn_ms`, `@tool_gaps`, `@gap_ms`,
+  `@block`) so e2e can drive turn shape per agent (fast / tool-heavy idle gaps / blocked).
 
 ## Tests & the e2e harness
 
@@ -155,8 +183,14 @@ Current state: **through M2 (agent core).**
   no gaps/dups and `cursor_expired` → re-snapshot; `server logs --follow` streams live.
 - **e2e tests are gated behind `ORCR_E2E=1`** (so `cargo test` stays fast). Run them
   with `ORCR_E2E=1 cargo test --test e2e` (driver/harness) and
-  `ORCR_E2E=1 cargo test --test agent_e2e -- --test-threads=1` (M2 agent core). They
+  `ORCR_E2E=1 cargo test --test agent_e2e -- --test-threads=1` (M2 agent core) and
+  `ORCR_E2E=1 cargo test --test completion_e2e -- --test-threads=1` (M3). They
   exercise real behavior against **live herdr** using the mock provider.
+- `tests/completion_e2e.rs` (M3) proves: fast turn, slow tool-heavy turn (idle gaps <
+  settle window don't complete), blocked-then-send-clears, external input → synthetic turn,
+  two consecutive sends (second wait never satisfied by the first idle), gc immediate →
+  ended(completed), restart mid-turn re-arms, and logs → transcript_unavailable on the mock.
+  Uses `integrations.mock.*` config to shorten completion windows.
 - `tests/agent_e2e.rs` (M2) runs a real `orcr` server over a throwaway `ORCR_HOME` +
   disposable session (`TestServer` harness, drop-guard teardown) and proves the M2
   acceptance: run/send/kill lifecycle + env contract, 50-at-cap-5 FIFO/never-over-cap/drain,
