@@ -17,15 +17,14 @@ exists so loops fire after a reboot).
   auto-generated loop names); always root-level (never inherits a creator agent's
   scope); unique among active loops; internal uuid so removed names are reusable
   without history collisions.
-- `--max-concurrency` (default 1), `--overlap queue|skip`, `--timeout` (no default),
-  `--cwd <dir>` (recorded run cwd; default = creation cwd — lets a loop point at
-  its scaffolded workflow project, §6.6/§8).
+- `--max-concurrency` (default 1), `--overlap queue|skip`, `--timeout` (no default).
 
 ### Runs & identity (spec §6.2, §12)
 - Every run: uuid + **run_id** (`r` + 5 alnum, e.g. `r82c9s`, unique per loop); path
   `<loop_name>/<run_id>`; `due_at` = scheduled fire time.
 - Own process group (pid/pgid recorded); env = §5.3 contract (run uuid + run path);
-  cwd = loop's recorded cwd (`--cwd`, default creation cwd); stdin `/dev/null`;
+  cwd = loop's creation cwd (the workspace its agents inherit — scaffolded scripts
+  are invoked by absolute path, spec §6.6/§8); stdin `/dev/null`;
   stdout/stderr captured line-tagged,
   size-capped + rotated.
 - Path scope from run context: agents spawned inside a run resolve relative paths

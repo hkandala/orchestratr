@@ -771,7 +771,7 @@ Two levels, deliberately: verbs on the **loop** (the definition) and verbs on it
 ```
 orcr loop create <name> ("<cron>" | --once-at <time>)
                  [--max-concurrency <n>] [--overlap queue|skip]
-                 [--timeout <dur>] [--cwd <dir>] [--json] -- <command…>
+                 [--timeout <dur>] [--json] -- <command…>
 orcr loop pause  <name>... [--json]
 orcr loop resume <name>... [--json]
 orcr loop rm     <name>... [--kill-active] [-y] [--json]
@@ -842,8 +842,10 @@ DSL.
   includes history (with `run_uuid` + `loop_uuid` in JSON); `--status <s>` filters
   (e.g. `--status failed` across history).
 - **Run process rules** (POSIX — process groups/signals; Windows lands with Windows
-  support, §17): cwd = the loop's recorded cwd (`--cwd`, default: the creation cwd —
-  point it at the loop's scaffolded project, §6.6/§8); env = server env +
+  support, §17): cwd = the loop's recorded **creation cwd** — deliberately the
+  *workspace*, not the script's folder: agents the command spawns inherit it as
+  their default cwd. A script living elsewhere (the scaffolded project, §6.6/§8) is
+  invoked by **absolute path**; env = server env +
   the §5.3 contract (run uuid/path); stdin = `/dev/null`; stdout/stderr captured
   line-tagged to the run's log (size-capped with rotation); exit code and terminating
   signal recorded and mapped to run status (`ok` on exit 0, else `failed`; `timeout`
@@ -1108,9 +1110,9 @@ for await (const ev of sub) { /* typed events: agent.status_changed, queue.promo
 // durable scheduling
 await orcr.loop.create({ cron: "*/30 * * * *", name: "burn_down",
                          maxConcurrency?, overlap?, timeout?,
-                         cwd?,      // default caller's cwd — point at the loop's
-                                    // scaffolded project (§6.6/§8)
-                         command: ["npx", "tsx", "burn-down.ts"] });
+                         // cwd = caller's cwd (the workspace agents inherit);
+                         // a script living elsewhere goes by absolute path
+                         command: [`${WF}/node_modules/.bin/tsx`, `${WF}/burn-down.ts`] });
 const run = await orcr.loop.run.start("burn_down");
 // → { uuid, path: "burn_down/r82c9s", runId, loop, status, dataDir }
 await orcr.loop.run.stop("burn_down", { runId? });
@@ -1192,9 +1194,14 @@ reusable workflow / loop  → ~/.orcr/workflows/<name>/           (the shared li
 ```
 
 Code vs state cleanly split: remove and recreate a loop and its script survives;
-two loops can share one project; `loop ls --json` (recorded cwd + command) always
-points at a loop's code. Like the data tree, this is convention — the CLI never
-enforces where a project lives; the skill (§10) teaches it.
+two loops can share one project; a loop's recorded command (absolute script path)
+always points at its code — `loop ls --json` shows it. One rule keeps the pieces
+straight: a loop's **cwd stays the workspace** (its creation cwd — that's what its
+agents inherit as their default cwd), so a script living here is invoked by
+absolute path (`<project>/node_modules/.bin/tsx <project>/x.ts`; Node finds the
+project's dependencies by walking up from the script file). Like the data tree,
+this is convention — the CLI never enforces where a project lives; the skill (§10)
+teaches it.
 
 ---
 
@@ -1429,11 +1436,13 @@ while (queueSize() > 0 && stillCheap()) await workOneItem();   // §9.1-style in
 if (queueSize() > 0) {
   // the loop's script lives in a scaffolded project (§6.6) at the reusable home:
   //   orcr scaffold ~/.orcr/workflows/burn_down   → write resume.ts there
-  // cwd points the loop at that project, so "npx tsx resume.ts" resolves there
+  // the loop keeps *this* cwd (the repo — the workspace its agents inherit);
+  // the script is invoked by absolute path, and Node resolves its imports from
+  // the project's own node_modules by walking up from the script file
+  const wf = `${process.env.HOME}/.orcr/workflows/burn_down`;
   await orcr.loop.create({
     name: "burn_down", cron: "*/30 * * * *", timeout: "25m",
-    cwd: `${process.env.HOME}/.orcr/workflows/burn_down`,
-    command: ["npx", "tsx", "resume.ts"],
+    command: [`${wf}/node_modules/.bin/tsx`, `${wf}/resume.ts`],
   });
   console.log("handed off to loop burn_down");                 // safe to exit now
 }
