@@ -819,10 +819,30 @@ impl Server {
 
         let matched = self.resolve_targets(&scope, &targets)?;
         if matched.is_empty() {
-            return Err(OrcrError::not_found_target(
-                format!("no active agents matched {targets:?}"),
-                json!(targets),
-            ));
+            // §6.1/§13: an exact (path/uuid) target that resolves only to an already-ended
+            // agent is a "matched but skipped" case (reason: ended) → exit 7, not a no-match
+            // (exit 6). Globs range over active agents only, so this is exact targets alone.
+            let ended = self.resolve_ended_targets(&scope, &targets)?;
+            if ended.is_empty() {
+                return Err(OrcrError::not_found_target(
+                    format!("no active agents matched {targets:?}"),
+                    json!(targets),
+                ));
+            }
+            if preview {
+                let rows: Vec<Value> = ended
+                    .iter()
+                    .map(|a| {
+                        json!({ "uuid": a.uuid, "path": a.path, "status": a.status, "managed": a.managed })
+                    })
+                    .collect();
+                return Ok(json!({ "preview": true, "targets": rows }));
+            }
+            let skipped: Vec<Value> = ended
+                .iter()
+                .map(|a| json!({ "uuid": a.uuid, "path": a.path, "reason": "ended" }))
+                .collect();
+            return Ok(json!({ "killed": [], "skipped": skipped, "all_killed": false }));
         }
 
         if preview {
@@ -1275,33 +1295,72 @@ impl Server {
         let active = store.list_agents(&AgentFilter::default())?;
         let mut out: Vec<AgentFull> = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
+        // Add an agent iff it is still active and not already collected (dedup by uuid).
+        let push_active =
+            |a: AgentFull,
+             out: &mut Vec<AgentFull>,
+             seen: &mut std::collections::BTreeSet<String>| {
+                if a.status != "ended" && seen.insert(a.uuid.clone()) {
+                    out.push(a);
+                }
+            };
         for raw in targets {
             if path::is_pattern(raw) {
                 let resolved = path::resolve_selector(scope.as_deref(), raw)?;
                 let pat = crate::path::Pattern::compile(&resolved)?;
                 for a in active.iter().filter(|a| pat.matches(&a.path)) {
-                    if seen.insert(a.uuid.clone()) {
-                        out.push(a.clone());
-                    }
+                    push_active(a.clone(), &mut out, &mut seen);
                 }
             } else if raw.contains('-') {
                 if let UuidLookup::Found(a) = store.find_by_uuid_or_prefix(raw)? {
-                    if a.status != "ended" && seen.insert(a.uuid.clone()) {
-                        out.push(*a);
-                    }
+                    push_active(*a, &mut out, &mut seen);
                 }
             } else {
                 let resolved = path::resolve_selector(scope.as_deref(), raw)?;
                 if let Some(res) = store.find_by_path(&resolved)? {
-                    let a = res.row().clone();
-                    if a.status != "ended" && seen.insert(a.uuid.clone()) {
-                        out.push(a);
-                    }
+                    push_active(res.row().clone(), &mut out, &mut seen);
                 } else if path::looks_like_uuid_selector(raw) {
                     if let UuidLookup::Found(a) = store.find_by_uuid_or_prefix(raw)? {
-                        if a.status != "ended" && seen.insert(a.uuid.clone()) {
-                            out.push(*a);
-                        }
+                        push_active(*a, &mut out, &mut seen);
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Exact (path/uuid) targets that resolve only to an **ended** agent (§6.1/§13). Kill uses
+    /// this when no active agent matched, to emit `skipped:[{reason:"ended"}]` (exit 7) instead
+    /// of a no-match (exit 6). Patterns are excluded — a glob ranges over active agents only.
+    fn resolve_ended_targets(
+        &self,
+        scope: &Option<String>,
+        targets: &[String],
+    ) -> Result<Vec<AgentFull>> {
+        let store = self.inner.store.lock().unwrap();
+        let mut out: Vec<AgentFull> = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let push_ended = |a: AgentFull,
+                          out: &mut Vec<AgentFull>,
+                          seen: &mut std::collections::BTreeSet<String>| {
+            if a.status == "ended" && seen.insert(a.uuid.clone()) {
+                out.push(a);
+            }
+        };
+        for raw in targets {
+            if path::is_pattern(raw) {
+                continue;
+            } else if raw.contains('-') {
+                if let UuidLookup::Found(a) = store.find_by_uuid_or_prefix(raw)? {
+                    push_ended(*a, &mut out, &mut seen);
+                }
+            } else {
+                let resolved = path::resolve_selector(scope.as_deref(), raw)?;
+                if let Some(res) = store.find_by_path(&resolved)? {
+                    push_ended(res.row().clone(), &mut out, &mut seen);
+                } else if path::looks_like_uuid_selector(raw) {
+                    if let UuidLookup::Found(a) = store.find_by_uuid_or_prefix(raw)? {
+                        push_ended(*a, &mut out, &mut seen);
                     }
                 }
             }
