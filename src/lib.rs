@@ -1,10 +1,9 @@
 //! orchestratr (`orcr`) — a cross-provider orchestrator for AI coding agents, built on
 //! [herdr](https://herdr.dev).
 //!
-//! This crate is the `orcr` binary's library: server, CLI, herdr driver, store, and
-//! integrations. M0 ("foundations") ships the plumbing everything else stands on: the
-//! home layout, config, the store, and the herdr socket driver. No user-facing agent
-//! features live here yet.
+//! This crate is the `orcr` binary's library: the single-writer server behind the socket
+//! API, the thin CLI client, the herdr socket driver, the sqlite store, provider
+//! integrations, the durable loop scheduler, and the `top` monitoring TUI.
 
 pub mod api;
 pub mod cli;

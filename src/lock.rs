@@ -13,13 +13,12 @@ use crate::error::{OrcrError, Result};
 use serde_json::json;
 use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// An held exclusive instance lock. Dropping it (or the process exiting) releases the lock.
 #[derive(Debug)]
 pub struct InstanceLock {
     _file: File,
-    path: PathBuf,
 }
 
 impl InstanceLock {
@@ -42,7 +41,7 @@ impl InstanceLock {
         // SAFETY: flock on a valid fd; LOCK_EX|LOCK_NB is non-blocking.
         let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if rc == 0 {
-            Ok(Some(InstanceLock { _file: file, path }))
+            Ok(Some(InstanceLock { _file: file }))
         } else {
             let err = std::io::Error::last_os_error();
             match err.raw_os_error() {
@@ -54,10 +53,6 @@ impl InstanceLock {
                 .with_details(json!({ "cause": "store_locked" }))),
             }
         }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 }
 
