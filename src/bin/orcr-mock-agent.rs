@@ -23,6 +23,13 @@
 //! - `ORCR_MOCK_GAP_MS`         — ms of each mid-turn idle gap (default 600).
 //! - `ORCR_MOCK_BLOCK`          — if set, report `blocked` (not idle) at end of turn until the
 //!   next input arrives (the `blocked` matrix case).
+//! - `ORCR_MOCK_NO_TRANSCRIPT`  — if set, don't write/report a transcript (tests that assert
+//!   `transcript_unavailable`).
+//!
+//! Per-turn `@`-directives in the prompt: `@turn_ms=` `@tool_gaps=` `@gap_ms=` `@block`
+//! `@say=<word>` (the exact response text) `@write=<relpath>` (also write the response to
+//! `$ORCR_AGENT_DATA_DIR/<relpath>` — the file convention, §8). It writes a claude-format
+//! `transcript.jsonl` into its data dir so `logs`/`ask` resolve (§11.4 `mock` adapter).
 //!
 //! The line `/quit` (or EOF) ends the process. Every response ends with the sentinel
 //! `DONE` so file-convention-style callers have a stable marker.
@@ -36,8 +43,8 @@ struct Reporter {
     pane_id: String,
     agent: String,
     session_id: Option<String>,
-    /// A claude-format transcript the mock writes so `logs`/`ask` have a readable file
-    /// (reported to herdr as a `path`-kind `agent_session`). `None` when no data dir.
+    /// A claude-format transcript the mock writes into its data dir so `logs`/`ask` have a
+    /// readable file (orcr's `mock` locator reads it from the data dir). `None` when no data dir.
     transcript_path: Option<String>,
 }
 
@@ -65,29 +72,40 @@ impl Reporter {
             .unwrap_or_default();
         let agent = std::env::var("ORCR_MOCK_AGENT").unwrap_or_else(|_| "mock".to_string());
         // A non-empty session id by default so herdr reports an `agent_session` pointer
-        // promptly (orcr's spawn pipeline waits for it, §11.1).
+        // promptly (orcr's spawn pipeline waits for it, §11.1). herdr surfaces this as an
+        // `id`-kind pointer which orcr captures reliably; orcr's `mock`-provider transcript
+        // locator then reads the transcript from the agent's data dir (below).
         let session_id = Some(
             std::env::var("ORCR_MOCK_SESSION_ID")
                 .ok()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "mock_session".to_string()),
         );
+        // The transcript file in the agent's data dir (claude-format JSONL the mock appends to),
+        // so recipe/SDK e2e can exercise `logs`/`ask` — self-contained, never touching a real
+        // provider's home. Created up front so the first `logs` read finds a file.
+        // `ORCR_MOCK_NO_TRANSCRIPT` suppresses it (for tests that assert transcript_unavailable).
+        let transcript_path = std::env::var("ORCR_MOCK_NO_TRANSCRIPT")
+            .is_err()
+            .then(|| {
+                std::env::var("ORCR_AGENT_DATA_DIR")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            })
+            .flatten()
+            .map(|dir| {
+                let p = std::path::Path::new(&dir).join("transcript.jsonl");
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&p);
+                p.to_string_lossy().to_string()
+            });
         // Only build a driver if we have both a socket and a pane id to report on.
         let driver = match (socket, pane_id.is_empty()) {
             (Some(sock), false) => HerdrDriver::connect(sock).ok(),
             _ => None,
         };
-        // A transcript file in the agent's data dir, reported as a `path` pointer so `ask`/
-        // `logs --last-response` resolve (herdr surfaces it as `agent_session.kind = "path"`).
-        let transcript_path = std::env::var("ORCR_AGENT_DATA_DIR")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(|dir| {
-                std::path::Path::new(&dir)
-                    .join("transcript.jsonl")
-                    .to_string_lossy()
-                    .to_string()
-            });
         Reporter {
             driver,
             pane_id,
@@ -99,13 +117,14 @@ impl Reporter {
 
     fn report(&self, state: PaneAgentState) {
         if let Some(d) = &self.driver {
-            let _ = d.pane_report_agent_full(
+            // Report a short `id`-kind session pointer (herdr captures it reliably); orcr's
+            // `mock`-provider transcript locator reads the transcript from the agent's data dir.
+            let _ = d.pane_report_agent(
                 &self.pane_id,
                 "orcr:mock",
                 &self.agent,
                 state,
                 self.session_id.as_deref(),
-                self.transcript_path.as_deref(),
             );
         }
     }
@@ -127,7 +146,11 @@ impl Reporter {
             "timestamp": now,
             "message": { "role": "assistant", "content": response },
         });
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
             let _ = writeln!(f, "{user}");
             let _ = writeln!(f, "{asst}");
         }
@@ -142,6 +165,9 @@ struct Directives {
     block: bool,
     /// `@say=<word>` — the exact response text to emit (single token; default echoes the prompt).
     say: Option<String>,
+    /// `@write=<relpath>` — also write the response to `$ORCR_AGENT_DATA_DIR/<relpath>` (the
+    /// file convention, §8), so fan-out/generate recipes can read a guaranteed-format answer.
+    write: Option<String>,
 }
 
 impl Directives {
@@ -152,6 +178,7 @@ impl Directives {
             gap_ms,
             block,
             say: None,
+            write: None,
         };
         for tok in prompt.split_whitespace() {
             let tok = tok.trim_start_matches('@');
@@ -169,6 +196,8 @@ impl Directives {
                 }
             } else if let Some(v) = tok.strip_prefix("say=") {
                 d.say = Some(v.to_string());
+            } else if let Some(v) = tok.strip_prefix("write=") {
+                d.write = Some(v.to_string());
             } else if tok == "block" {
                 d.block = true;
             }
@@ -263,6 +292,14 @@ fn main() {
             None => format!("RESPONSE: {prompt}\nDONE"),
         };
         reporter.append_transcript(prompt, &response);
+        // The file convention (§8): write the response to a data-dir file on request.
+        if let Some(rel) = &d.write {
+            if let Ok(dir) = std::env::var("ORCR_AGENT_DATA_DIR") {
+                if !dir.is_empty() {
+                    let _ = std::fs::write(std::path::Path::new(&dir).join(rel), &response);
+                }
+            }
+        }
         println!("{response}");
         let _ = std::io::stdout().flush();
         // Turn complete: idle (or blocked, until the next input clears it).

@@ -33,10 +33,15 @@ struct TestServer {
     bin: HerdrBinary,
     session: String,
     driver: HerdrDriver,
+    extra_env: Vec<(String, String)>,
 }
 
 impl TestServer {
     fn start() -> TestServer {
+        TestServer::start_with_env(&[])
+    }
+
+    fn start_with_env(extra_env: &[(&str, &str)]) -> TestServer {
         let home = tempfile::tempdir().expect("home");
         let bin = HerdrBinary::discover(None).expect("herdr on PATH");
         let rand = uuid::Uuid::new_v4().simple().to_string();
@@ -64,21 +69,27 @@ impl TestServer {
             bin,
             session,
             driver,
+            extra_env: extra_env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
         };
         ts.spawn_server();
         ts
     }
 
     fn spawn_server(&self) {
-        let out = Command::new(orcr_bin())
-            .args(["server", "start"])
+        let mut cmd = Command::new(orcr_bin());
+        cmd.args(["server", "start"])
             .env("ORCR_HOME", self.home.path())
             .env("ORCR_ALLOW_MOCK_PROVIDER", "1")
             .env("ORCR_DISABLE_DISCOVERY", "1")
             .env("ORCR_MOCK_AGENT_BIN", mock_agent_bin())
-            .stdin(Stdio::null())
-            .output()
-            .expect("orcr server start");
+            .stdin(Stdio::null());
+        for (k, v) in &self.extra_env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().expect("orcr server start");
         assert!(
             out.status.success(),
             "server start failed: {}",
@@ -410,7 +421,8 @@ fn e2e_logs_transcript_unavailable_for_mock() {
         eprintln!("skipping (set ORCR_E2E=1)");
         return;
     }
-    let ts = TestServer::start();
+    // Suppress the mock's transcript so this exercises the genuinely-no-transcript path.
+    let ts = TestServer::start_with_env(&[("ORCR_MOCK_NO_TRANSCRIPT", "1")]);
     let uuid = ts.run("log/worker", Some("@turn_ms=0 hi"), None);
     assert_eq!(
         target(&ts.wait(&["log/worker"], "20s"), "log/worker")["reason"],

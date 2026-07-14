@@ -263,7 +263,10 @@ fn npm_install(dir: &Path) -> Result<()> {
         .current_dir(dir)
         .status()
         .map_err(|e| {
-            OrcrError::environment("npm_install_failed", format!("failed to run npm install: {e}"))
+            OrcrError::environment(
+                "npm_install_failed",
+                format!("failed to run npm install: {e}"),
+            )
         })?;
     if !status.success() {
         return Err(OrcrError::environment(

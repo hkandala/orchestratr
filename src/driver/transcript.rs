@@ -91,6 +91,7 @@ impl TranscriptLocator {
 /// Locate a provider's native transcript for an agent, applying the identity gate (spec
 /// §11.4). `session_kind`/`session_value` come from the pane's `agent_session`; `cwd` and
 /// `created_at_ms` narrow/disambiguate candidates.
+#[allow(clippy::too_many_arguments)]
 pub fn locate_transcript(
     provider: &str,
     session_kind: Option<&str>,
@@ -99,7 +100,31 @@ pub fn locate_transcript(
     created_at_ms: i64,
     uuid: &str,
     status: &str,
+    data_dir: Option<&str>,
 ) -> Result<TranscriptLocator> {
+    // The test-only `mock` provider (under `ORCR_ALLOW_MOCK_PROVIDER`) writes a claude-format
+    // `transcript.jsonl` into its own data dir, so recipe/SDK e2e can exercise `logs`/`ask`
+    // without touching a real provider's home. Its `agent_session` is a normal `id` pointer
+    // (which orcr captures reliably); the readable transcript lives in the data dir.
+    if provider == "mock" {
+        let dir = data_dir.filter(|s| !s.is_empty()).ok_or_else(|| {
+            transcript_unavailable(uuid, status, "no_session", "mock agent has no data dir")
+        })?;
+        let p = PathBuf::from(dir).join("transcript.jsonl");
+        if p.is_file() {
+            return Ok(TranscriptLocator {
+                provider: provider.to_string(),
+                path: p,
+            });
+        }
+        return Err(transcript_unavailable(
+            uuid,
+            status,
+            "not_found",
+            format!("mock transcript `{}` does not exist", p.display()),
+        ));
+    }
+
     let value = session_value.filter(|s| !s.is_empty()).ok_or_else(|| {
         transcript_unavailable(
             uuid,

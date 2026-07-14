@@ -304,6 +304,12 @@ impl Server {
     /// identity gate; returns `transcript_unavailable` when it can't be resolved.
     pub(super) fn agent_transcript(&self, a: &AgentFull) -> Result<TranscriptLocator> {
         let provider = a.agent.as_deref().unwrap_or_default();
+        // The agent's data dir mirrors its path (§8) — used by the `mock` transcript adapter.
+        let mut data_dir = self.inner.home.data_dir();
+        for seg in a.path.split('/') {
+            data_dir.push(seg);
+        }
+        data_dir.push(&a.uuid);
         locate_transcript(
             provider,
             a.agent_session_kind.as_deref(),
@@ -312,6 +318,7 @@ impl Server {
             a.created_at,
             &a.uuid,
             &a.status,
+            data_dir.to_str(),
         )
     }
 }

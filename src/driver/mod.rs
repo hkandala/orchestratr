@@ -231,21 +231,6 @@ impl HerdrDriver {
         state: PaneAgentState,
         agent_session_id: Option<&str>,
     ) -> Result<()> {
-        self.pane_report_agent_full(pane_id, source, agent, state, agent_session_id, None)
-    }
-
-    /// Like [`pane_report_agent`] but also reports an `agent_session_path` — a `path`-kind
-    /// transcript pointer herdr surfaces as `agent_session.kind = "path"` (§5.6). Used by the
-    /// mock agent to expose a readable transcript so `logs`/`ask` work in recipe e2e.
-    pub fn pane_report_agent_full(
-        &self,
-        pane_id: &str,
-        source: &str,
-        agent: &str,
-        state: PaneAgentState,
-        agent_session_id: Option<&str>,
-        agent_session_path: Option<&str>,
-    ) -> Result<()> {
         let r = self.call(
             "pane.report_agent",
             json!({
@@ -254,7 +239,6 @@ impl HerdrDriver {
                 "agent": agent,
                 "state": state.as_str(),
                 "agent_session_id": agent_session_id,
-                "agent_session_path": agent_session_path,
             }),
         )?;
         expect_ack(&r)
