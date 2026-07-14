@@ -554,6 +554,17 @@ fn resolve_prompt(p: Option<&str>) -> Result<Option<String>> {
     }
 }
 
+/// Naming is mandatory for `agent run`/`ask`: exactly one of `--name` or `--path` (§6.1).
+fn require_name_xor_path(name: &Option<String>, path: &Option<String>) -> Result<()> {
+    if name.is_some() == path.is_some() {
+        return Err(OrcrError::invalid_request(
+            "naming is mandatory: pass exactly one of --name or --path",
+            "name_required",
+        ));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_agent_run(
     json: bool,
@@ -567,12 +578,7 @@ fn cmd_agent_run(
     cwd: &Option<String>,
     timeout: &Option<String>,
 ) -> Result<()> {
-    if name.is_some() == path.is_some() {
-        return Err(OrcrError::invalid_request(
-            "naming is mandatory: pass exactly one of --name or --path",
-            "name_required",
-        ));
-    }
+    require_name_xor_path(name, path)?;
     let prompt = resolve_prompt(prompt.as_deref())?;
     let cwd = default_cwd(cwd);
     let mut params = build_spawn_params(name, path, agent, &prompt, model, effort, &cwd, timeout);
@@ -591,10 +597,11 @@ fn cmd_agent_run(
         // `<path> <uuid>` on one stdout line (cut-friendly, §5.1).
         println!("{agent_path} {uuid}");
         if stdout_is_tty() {
-            let name = agent_path.rsplit('/').next().unwrap_or(&agent_path);
+            // Hints use the FULL path (§6.1) so copy-pasted commands resolve correctly
+            // regardless of the current caller scope.
             eprintln!(
-                "wait: orcr agent wait {name} · response: orcr agent logs {name} \
-                 --last-response · attach: orcr agent attach {name}"
+                "wait: orcr agent wait {agent_path} · response: orcr agent logs {agent_path} \
+                 --last-response · attach: orcr agent attach {agent_path}"
             );
         }
     });
@@ -641,12 +648,7 @@ fn cmd_agent_ask(
     cwd: &Option<String>,
     timeout: &Option<String>,
 ) -> Result<()> {
-    if name.is_some() == path.is_some() {
-        return Err(OrcrError::invalid_request(
-            "naming is mandatory: pass exactly one of --name or --path",
-            "name_required",
-        ));
-    }
+    require_name_xor_path(name, path)?;
     let prompt = resolve_prompt(prompt.as_deref())?;
     let cwd = default_cwd(cwd);
     let params = build_spawn_params(name, path, agent, &prompt, model, effort, &cwd, timeout);
