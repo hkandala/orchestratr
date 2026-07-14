@@ -409,9 +409,11 @@ export interface ServerStatusResult {
   integrations?: Record<string, unknown>;
   loops?: Record<string, unknown>[];
   loops_firing?: boolean;
+  pid?: number;
   protocol?: number;
   socket?: string;
   store?: string;
+  uptime_ms?: number;
   version?: string;
   [key: string]: unknown;
 }

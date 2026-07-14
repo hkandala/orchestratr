@@ -128,6 +128,8 @@ pub fn methods() -> Vec<MethodDef> {
         object(json!({
             "version": str_schema(),
             "protocol": int_schema(),
+            "pid": int_schema(),
+            "uptime_ms": int_schema(),
             "socket": str_schema(),
             "store": str_schema(),
             "herdr": any_object(),

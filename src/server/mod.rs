@@ -654,7 +654,6 @@ impl Server {
     /// binary is discovered and, if the owned session is already running, pinged — status
     /// never *starts* a herdr server.
     fn status_result(&self) -> Value {
-        let cfg = &self.inner.config;
         let herdr = self.herdr_health();
         let integrations = self.integration_state();
 
@@ -684,11 +683,6 @@ impl Server {
                 "repaired": self.inner.repaired.load(Ordering::SeqCst),
                 "unknown_marked_panes": drift.unknown_marked_panes,
                 "unmarked_panes": drift.unmarked_panes,
-            },
-            "config": {
-                "defaults": { "agent": cfg.defaults.agent, "model": cfg.defaults.model, "effort": cfg.defaults.effort },
-                "concurrency": { "max": cfg.concurrency.max },
-                "herdr_session": cfg.herdr.session,
             },
         })
     }
