@@ -11,7 +11,7 @@ to reflect what that milestone added/changed.
 > facts in `m0-foundations/notes.md`, which are load-bearing for the driver).
 
 Current state: **through M7 (SDK & skill)** + the comprehensive spec-vs-impl review phase
-(consolidating-verifier changes are logged in `spec/impl/review-phase-notes.md`).
+(consolidating-verifier changes are logged in `spec/_impl/review-phase-notes.md`).
 
 ## Crate & binaries
 
