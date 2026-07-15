@@ -40,11 +40,11 @@ check result too.
 
 | id | title | provider | priority | verdict | severity | exit | area |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| E01 | `agent ask` real claude (known-issue #2 repro→fix) | claude | critical | **BLOCKED** (env; orcr correct) | low | 3 (`timeout`) | agent · ask · transcript adapter · gc-immediate ordering |
+| E01 | `agent ask` real claude (known-issue #2 repro→fix) | claude | critical | **BLOCKED** (env; orcr correct) · re-check 2026-07-14: **PARTIAL** (3/3 flake) | low | 3 (`timeout`) | agent · ask · transcript adapter · gc-immediate ordering |
 | E02 | `agent ask` real codex | codex | critical | **PARTIAL** | medium | 0 / 3→0 | agent · ask · codex transcript adapter · pane submit-confirm |
-| E03 | claude lifecycle run→wait→logs→send→wait | claude | high | **BLOCKED** (env; orcr correct) | medium (env) | mixed | agent · run/wait/logs/send · env contract · completion |
+| E03 | claude lifecycle run→wait→logs→send→wait | claude | high | **BLOCKED** (env; orcr correct) · re-check 2026-07-14: **PARTIAL** (3/3 flake) | medium (env) | mixed | agent · run/wait/logs/send · env contract · completion |
 | E04 | codex lifecycle run→send→logs→kill | codex | high | **PASS** | none | 0 | agent · codex driver/integration · send while idle |
-| E05 | claude logs --tail/--follow/--last-response freshness | claude | high | **BLOCKED** (env; orcr correct) | low | 1 | agent · logs · transcript adapter · streaming |
+| E05 | claude logs --tail/--follow/--last-response freshness | claude | high | **BLOCKED** (env; orcr correct) · re-check 2026-07-14: **PARTIAL** (3/3 flake) | low | 1 | agent · logs · transcript adapter · streaming |
 | E06 | identity/paths/globs/scope (deterministic) | mock | high | **PASS** | none | 0/1/7 | core · §5.1 identity/path/glob · reserved names · {rand} |
 | E07 | queue + concurrency caps (FIFO, never over cap) | mock | high | **PARTIAL** | medium | mixed | core · §5.5 queue/concurrency (kill-during-promotion pane leak) |
 | E08 | gc auto park→send→unpark→reap | mock | high | **PASS** | none | 0 | core · §5.4/§11.2 GC engine · two-phase moves |
@@ -66,6 +66,34 @@ check result too.
 **Totals:** 22 planned · **15 PASS** · **4 PARTIAL** (E02, E07, E18, E21) · **3 BLOCKED**
 (E01, E03, E05 — real-claude env limitation, orcr behavior correct) · **0 FAIL** · **0 critical
 orcr bugs open** (E01 known-issue #2 fixed + confirmed active this run).
+
+### Re-check of previously-blocked tests (2026-07-14, post-E07 fix)
+
+The three previously-BLOCKED real-claude tests (E01 `agent ask`, E03 lifecycle, E05 `logs` variants)
+were **re-run on current code** to determine whether they pass now that the E07 fix has landed and given
+the `open-issues.md` diagnosis (claude transcripts DO persist and the adapter works; the "blocked"
+real-claude paths were caused by an **intermittent submit-Enter boot flake** — the boot-time `Enter` is
+sometimes dropped, so the prompt never submits, the turn never runs, and `ask`/`wait` time out). Per the
+retry policy each scenario was run up to 3 fresh times (throwaway `ORCR_HOME` + disposable
+`orcr_rechk_<rand>` session each attempt, all torn down and scoped leak-checked clean).
+
+| test | attempts | flake hits | passing attempt | response confirmed | transcript `--last-response` confirmed | verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| E01 | 3 | 3 | none | no | no (not reachable) | **PARTIAL** (flake-only) |
+| E03 | 3 | 3 | none | no | no (not reachable) | **PARTIAL** (flake-only) |
+| E05 | 3 | 3 | none | no | no (not reachable) | **PARTIAL** (flake-only) |
+
+**Finding:** real-claude `ask`/`logs`/lifecycle could **NOT** be demonstrated to work this run — the
+submit-Enter boot flake bit on **every single attempt (9/9 across the three tests)**, so no successful
+claude turn was obtained and the transcript-adapter locate/parse (`--last-response`) was never exercised.
+Every failure was the **same documented flake** (`submit-confirm: pane … still idle after 8000ms — prompt
+may not have been accepted by the provider TUI` → turn never starts → `wait`/`ask` times out); **no
+genuine non-flake orcr defect was observed** in any attempt (the adapter/transcript logic was never
+reached). Because all attempts failed the same flake way with no genuine failure, all three are **PARTIAL
+(flake-only)**, not FAIL. The E07 fix did not eliminate the boot flake, which appears aggravated by the
+loaded box (many parallel real-claude agents shrinking the effective 8s submit-confirm window). To turn
+these PASS, the deferred submit-confirm hardening (more re-send attempts / adaptive `submit_confirm_ms`,
+see `open-issues.md` E02) is still needed for slow real-provider boots.
 
 ## Detailed findings
 
@@ -94,6 +122,21 @@ orcr bugs open** (E01 known-issue #2 fixed + confirmed active this run).
   Claude Code session (`7dd684e0`) + its workflow subagents — **no** new transcript UUID file was
   created for the spawned `quick_check`/`quick_check2` panes (started 15:23 / 15:26 PDT), confirming
   the enterprise claude TUI persisted no transcript for those panes.
+
+- **RE-CHECK (2026-07-14, post-E07 fix, current code) — still PARTIAL/flake-blocked.** Re-ran the E01
+  scenario (`agent ask -a claude -p "Reply with exactly the word PONG and nothing else." --timeout 3m`)
+  **3 fresh times** (throwaway `ORCR_HOME` + disposable sessions `orcr_rechk_f1f7f092`,
+  `orcr_rechk_365e4a45`, `orcr_rechk_e659f763`; each torn down, scoped leak-check clean).
+  **3/3 attempts hit the intermittent submit-Enter boot flake** — every attempt logged `submit-confirm:
+  pane w2:p2 still idle after 8000ms — prompt may not have been accepted by the provider TUI`, the turn
+  never started, and `ask` hit `--timeout` (exit 3). **0 passing attempts**, so no real response was
+  produced and the transcript `--last-response` path could NOT be exercised this run. This is
+  **flake-only** (the adapter/transcript logic was never reached), NOT a genuine non-flake regression —
+  likely aggravated by a loaded box (many parallel real-claude agents) making the 8s submit-confirm
+  re-send window insufficient on every boot. Verdict per the retry policy: **PARTIAL** (3/3 same flake,
+  no genuine failure, but functionality not demonstrated to pass). The deferred submit-confirm hardening
+  (more re-send attempts / adaptive `submit_confirm_ms`, see `open-issues.md` E02) is still needed for
+  slow real-provider boots.
 
 ### E01 — FIXER root-cause + fix (retained; landed prior to this run)
 
@@ -179,6 +222,15 @@ limitation. Both fixes are present and active in this run (see server logs above
   completion detection never fires so `wait` never settles and `logs` stays `transcript_unavailable`.
   orcr's spawn, env contract, ls, and kill all behaved correctly.
 
+- **RE-CHECK (2026-07-14, post-E07 fix, current code) — still PARTIAL/flake-blocked.** Re-ran the E03
+  lifecycle **3 fresh times** (disposable throwaway `ORCR_HOME` + `orcr_rechk_*` sessions, each torn down
+  and scoped leak-checked clean). `agent run` succeeded every time (rc=0, printed path+uuid), but the
+  first turn (`Say READY now.`) never started: **3/3 attempts hit the submit-Enter boot flake** — the
+  pane sat idle, the prompt was never submitted, and the first `agent wait worker --timeout 4m` returned
+  `wait_timeout` (exit 3) on all three. **0 passing attempts**, so the logs/transcript verification steps
+  (including `--last-response`) were never reached. Flake-only (not a genuine orcr defect); verdict
+  **PARTIAL** — functionality not demonstrated to pass, but no genuine failure observed either.
+
 ### E04 — Full managed lifecycle on REAL codex: run → send → logs → kill — **PASS**
 
 - **provider:** codex (real)
@@ -218,6 +270,17 @@ limitation. Both fixes are present and active in this run (see server logs above
 - **disk confirmation:** no new claude `.jsonl` transcript under `~/.claude/projects/-Users-hkandala-code-orchestratr/`
   for the spawned agent in the last 15 min (only the parent Claude Code session `7dd684e0` + subagents).
   orcr does not fabricate output; the failures are honest, spec-correct given no transcript exists.
+
+- **RE-CHECK (2026-07-14, post-E07 fix, current code) — still PARTIAL/flake-blocked.** Re-ran the E05
+  `logs`-variants scenario **3 fresh times** (disposable throwaway `ORCR_HOME` + `orcr_rechk_*` sessions
+  `orcr_rechk_3adac1aa`, `orcr_rechk_691802a2`, `orcr_rechk_c01591ff`; each torn down and scoped
+  leak-checked clean). The talker agent spawned every time (`run` exit 0, uuid assigned) but the very
+  first turn never completed: **3/3 attempts hit the submit-Enter boot flake** — server logged
+  `submit-confirm: pane w2:p2 still idle after 8000ms — prompt may not have been accepted by the provider
+  TUI`, the agent stayed `status=working` (idle_since set), and `agent wait talker` never settled (hit the
+  300s cap, exit 124) each time. **0 passing attempts**, so `--tail`/`--follow`/`--last-response` and the
+  transcript-adapter locate/parse could NOT be verified this run. Flake-only (not a genuine logs/adapter
+  bug); verdict **PARTIAL** — the E07 fix did NOT eliminate the boot flake for E05.
 
 ### E06 — Identity, paths, globs, scope resolution (deterministic) — **PASS**
 
