@@ -33,9 +33,12 @@ jobs:
           fi
           echo "version=$tag" >> "$GITHUB_OUTPUT"
 
-  # Build orcr release binaries and attach them (plus .sha256) to the GitHub Release.
+  # Build orcr release binaries per platform and upload each as a workflow artifact.
+  # (Assets are attached to the Release once, by the `release` job below — building here
+  # and releasing there avoids the duplicate release notes you get when every matrix
+  # job creates/updates the release.)
   binaries:
-    name: binary · ${{ matrix.target }}
+    name: binary · ${{ matrix.name }}
     needs: guard
     runs-on: ${{ matrix.os }}
     strategy:
@@ -44,10 +47,13 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
+            name: macos-arm64
           - target: x86_64-apple-darwin
             os: macos-latest
+            name: macos-x64
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            name: linux-x64
     steps:
       - uses: actions/checkout@v4
 
@@ -66,27 +72,43 @@ jobs:
         run: cargo build --release --bin orcr --target ${{ matrix.target }}
 
       - name: Package
-        id: package
         shell: bash
         run: |
           version="${{ needs.guard.outputs.version }}"
-          name="orcr-${version}-${{ matrix.target }}"
-          tar -czf "${name}.tar.gz" -C "target/${{ matrix.target }}/release" orcr
+          name="orcr-${version}-${{ matrix.name }}"
+          mkdir -p dist
+          tar -czf "dist/${name}.tar.gz" -C "target/${{ matrix.target }}/release" orcr
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+            (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
           else
-            shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+            (cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
           fi
-          echo "asset=${name}.tar.gz" >> "$GITHUB_OUTPUT"
 
-      - name: Upload to release
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orcr-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Create the GitHub Release ONCE, attaching every platform's binary + checksum.
+  release:
+    name: publish release
+    needs: [guard, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           draft: false
           generate_release_notes: true
-          files: |
-            ${{ steps.package.outputs.asset }}
-            ${{ steps.package.outputs.asset }}.sha256
+          files: dist/*
 
   # Publish the orchestratr crate to crates.io — only when CARGO_REGISTRY_TOKEN is set.
   # (secrets can't be used in job-level `if`, so we surface it via env and guard on that.)
@@ -125,9 +147,6 @@ jobs:
     name: publish · npm
     needs: [guard, binaries]
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: sdk/ts
     env:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
@@ -150,19 +169,20 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
-          cache: npm
-          cache-dependency-path: sdk/ts/package-lock.json
 
       - name: Install dependencies
         if: steps.gate.outputs.enabled == 'true'
+        working-directory: sdk/ts
         run: npm ci
 
       - name: Build
         if: steps.gate.outputs.enabled == 'true'
+        working-directory: sdk/ts
         run: npm run build
 
       - name: Publish
         if: steps.gate.outputs.enabled == 'true'
+        working-directory: sdk/ts
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
