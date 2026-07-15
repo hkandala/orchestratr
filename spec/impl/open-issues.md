@@ -84,6 +84,28 @@ the TUI was ready to accept input at all.
     **on this specific box**; codex proves the pipeline itself is correct. Fix direction (future,
     separate task): herdr claude-integration screen-detection for the Avocado wrapper + transcript
     location.
+- **Final validation (PASS) — before/after flake rate.** `agent ask -p "reply with exactly: PONG"
+  --timeout 3m`, 6× per provider, each on a fresh disposable `ORCR_HOME` + disposable
+  `orcr_sc_<rand>` herdr session, torn down + leak-verified after each. **Before:** the submit-Enter
+  flake was intermittent — E02 timed out at 8s on one `--json` ask (passed on retry) and E01 timed
+  out both times in one run; a clean baseline showed claude's prompt sitting unsubmitted in the input
+  box for 60s. **After:** **0 submit-Enter flakes across all 12 runs** — every run submitted the
+  prompt and started the turn (all codex panes went `working`; a monitored claude run showed the box
+  cleared and `⏺ PONG` produced in-pane). codex returned `PONG` 4/6 (exit 0, ~15–18s); the 2 non-PONG
+  codex runs and all 6 claude runs failed only for the two *downstream, non-submit* reasons below
+  (turn started, completion never detected). Recovery logic (re-deliver dropped `send_text`, re-send
+  dropped `Enter`) fired as designed. Only the user's `default` herdr session remained afterward.
+
+### Remaining downstream issues (NOT the submit-confirm flake, separate follow-ups)
+1. **claude completion-detection blocker on this enterprise box** — herdr's claude integration returns
+   empty `agent list` / no `agent_status: working` for the Avocado/MetaCode-wrapped claude, so orcr
+   never detects the turn completing and `logs` can't resolve the transcript; the prompt submits and
+   claude answers `PONG` in-pane (proven), but `ask`/`wait` time out. Needs a herdr-side integration
+   fix or validation on a non-enterprise claude box. This is the sole remaining cause of the claude
+   E01/E03/E05/E18 legs.
+2. **codex intermittent completion timeout** — 2/6 codex runs went `working` (submit confirmed) but
+   `turn 1 complete` was never observed within 3m; a downstream completion-detection / codex-slowness
+   intermittency worth a separate look, unrelated to submit.
 
 ### E21 — `wait` exit code for an agent's-own `--timeout`  ·  low  ·  DEFERRED (spec nit)
 Impl returns exit **5** for a target that ended via its own `--timeout` when observed
