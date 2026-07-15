@@ -8,11 +8,7 @@ vocabulary.
 
 ## install
 
-```sh
-curl -fsSL https://orchestratr.dev/install.sh | sh
-```
-
-or grab a prebuilt `orcr` from [GitHub releases](../../releases) — macOS (`macos-arm64`,
+grab a prebuilt `orcr` from [GitHub releases](../../releases) — macOS (`macos-arm64`,
 `macos-x64`) and Linux (`linux-x64`); each `orcr-<version>-<platform>.tar.gz` ships a `.sha256`:
 
 ```sh
@@ -27,11 +23,12 @@ cargo install orchestratr    # installs the `orcr` binary
 cargo build --release        # → target/release/orcr
 ```
 
-the SDK is on npm: `npm i @orchestratr/sdk`.
+the SDK isn't on npm yet — `orcr scaffold` sets up a project with `@orchestratr/sdk`
+pre-installed (pinned to the CLI's version); see [quickstart (SDK)](#quickstart-sdk).
 
 `orcr` needs a running herdr on your PATH with the claude/codex integrations installed
 (`orcr server status` shows what's available). only `orcr scaffold` and the SDK need Node
-(≥ 20). see [`docs/RELEASING.md`](docs/RELEASING.md) for the release process.
+(≥ 20).
 
 ## quickstart (CLI)
 
@@ -90,15 +87,6 @@ orcr loop ls
 - **the skill** — [`skill/SKILL.md`](skill/SKILL.md) teaches any agent the orcr vocabulary
   (decision ladder, hot path, guard rails, provider routing).
 
-## layout
-
-```
-src/            the orcr Rust crate (server · CLI · driver · store · top)
-sdk/ts/         @orchestratr/sdk — the TypeScript SDK + §9 recipe fixtures
-skill/          SKILL.md + references/ (cli · sdk · patterns · loops · files)
-spec/spec.md    the complete design
-```
-
 ## development
 
 ```sh
@@ -109,9 +97,7 @@ ORCR_E2E=1 cargo test -- --test-threads=1   # e2e against live herdr + the mock 
 ```
 
 the SDK installs locally via `orcr scaffold` (which pins `@orchestratr/sdk` to the CLI's own
-version) — set `ORCR_SDK_SPEC` to a local `file:`/tarball path for offline installs. to cut a
-release, use [`scripts/release.sh`](scripts/release.sh) (`scripts/release.sh minor`); see
-[`docs/RELEASING.md`](docs/RELEASING.md).
+version) — set `ORCR_SDK_SPEC` to a local `file:`/tarball path for offline installs.
 
 ## license
 
