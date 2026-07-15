@@ -28,12 +28,23 @@ pub struct TuningParams {
     pub transcript_freshness_timeout_ms: u64,
     /// Grace after the graceful-shutdown recipe before the pane is force-closed.
     pub shutdown_grace_ms: u64,
-    /// After the two-call delivery, keep re-sending the submitting Enter for up to this long
-    /// until the pane leaves `idle` (submitted). Real-provider TUIs (claude) can drop the first
-    /// Enter if it lands before the TUI is interactive (boot race), leaving the prompt
-    /// unsubmitted so the agent never works (known-issues #2). `0` disables it (the mock, whose
-    /// line-based stdin accepts the first Enter reliably).
+    /// Before the first prompt, wait up to this long for the provider TUI to become ready to
+    /// accept input (herdr reports the pane's agent state, or the rendered pane content settles).
+    /// This avoids the `send_text` itself being dropped mid-boot — the deeper half of the E02
+    /// flake. `0` disables the readiness wait (the mock, ready on its first idle report).
+    pub submit_ready_ms: u64,
+    /// After the two-call delivery, keep verifying submission (re-driving the delivery) for up
+    /// to this long until a turn is underway. This is the total adaptive budget spread across
+    /// [`submit_attempts`] full re-deliveries — generous enough for slow enterprise boots.
+    /// Real-provider TUIs (claude) can drop the first Enter *or* the first `send_text` if it
+    /// lands before the TUI is interactive (boot race), leaving the prompt unsubmitted so the
+    /// agent never works (known-issues #2). `0` disables it (the mock's line-based stdin accepts
+    /// the first Enter reliably).
     pub submit_confirm_ms: u64,
+    /// Max full re-deliveries (`send_text` + `Enter`) within [`submit_confirm_ms`] when the pane
+    /// read shows the earlier `send_text` was dropped (empty input box). Between re-deliveries
+    /// orcr nudges with a bare `Enter` when the prompt is still sitting in the box.
+    pub submit_attempts: u32,
 }
 
 impl TuningParams {
@@ -48,7 +59,9 @@ impl TuningParams {
                 transcript_settle_ms: 0,
                 transcript_freshness_timeout_ms: 3000,
                 shutdown_grace_ms: 400,
+                submit_ready_ms: 0,
                 submit_confirm_ms: 0,
+                submit_attempts: 0,
             },
             _ => TuningParams {
                 fast_turn_grace_ms: 2500,
@@ -56,7 +69,12 @@ impl TuningParams {
                 transcript_settle_ms: 1500,
                 transcript_freshness_timeout_ms: 15000,
                 shutdown_grace_ms: 5000,
-                submit_confirm_ms: 8000,
+                // Adaptive submit-confirm: wait for readiness, then verify + re-deliver across a
+                // long window with several full re-sends, for slow (enterprise) provider boots
+                // (§5.6, known-issues #2 / E02).
+                submit_ready_ms: 8000,
+                submit_confirm_ms: 20000,
+                submit_attempts: 6,
             },
         }
     }
@@ -77,8 +95,14 @@ impl TuningParams {
         if let Some(v) = o.shutdown_grace_ms {
             self.shutdown_grace_ms = v;
         }
+        if let Some(v) = o.submit_ready_ms {
+            self.submit_ready_ms = v;
+        }
         if let Some(v) = o.submit_confirm_ms {
             self.submit_confirm_ms = v;
+        }
+        if let Some(v) = o.submit_attempts {
+            self.submit_attempts = v;
         }
     }
 }
