@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Fail fast if the tag (minus the leading 'v') doesn't match Cargo.toml's version.
+  guard:
+    name: version guard
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches Cargo.toml version
+        id: check
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+          echo "tag=$tag crate=$crate"
+          if [ "$tag" != "$crate" ]; then
+            echo "::error::tag v$tag does not match Cargo.toml version $crate"
+            exit 1
+          fi
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+
+  # Build orcr release binaries and attach them (plus .sha256) to the GitHub Release.
+  binaries:
+    name: binary · ${{ matrix.target }}
+    needs: guard
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install 1.89 --profile minimal
+          rustup default 1.89
+          rustup target add ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --bin orcr --target ${{ matrix.target }}
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          version="${{ needs.guard.outputs.version }}"
+          name="orcr-${version}-${{ matrix.target }}"
+          tar -czf "${name}.tar.gz" -C "target/${{ matrix.target }}/release" orcr
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          else
+            shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          fi
+          echo "asset=${name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          generate_release_notes: true
+          files: |
+            ${{ steps.package.outputs.asset }}
+            ${{ steps.package.outputs.asset }}.sha256
+
+  # Publish the orchestratr crate to crates.io — only when CARGO_REGISTRY_TOKEN is set.
+  # (secrets can't be used in job-level `if`, so we surface it via env and guard on that.)
+  crates:
+    name: publish · crates.io
+    needs: [guard, binaries]
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - name: Check for token
+        id: gate
+        run: |
+          if [ -n "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CARGO_REGISTRY_TOKEN not set — skipping crates.io publish."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.enabled == 'true'
+
+      - name: Install Rust toolchain
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          rustup toolchain install 1.89 --profile minimal
+          rustup default 1.89
+
+      - name: Publish
+        if: steps.gate.outputs.enabled == 'true'
+        run: cargo publish
+
+  # Publish @orchestratr/sdk to npm — only when NPM_TOKEN is set.
+  npm:
+    name: publish · npm
+    needs: [guard, binaries]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/ts
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - name: Check for token
+        id: gate
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::NPM_TOKEN not set — skipping npm publish."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.enabled == 'true'
+
+      - name: Setup Node
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: sdk/ts/package-lock.json
+
+      - name: Install dependencies
+        if: steps.gate.outputs.enabled == 'true'
+        run: npm ci
+
+      - name: Build
+        if: steps.gate.outputs.enabled == 'true'
+        run: npm run build
+
+      - name: Publish
+        if: steps.gate.outputs.enabled == 'true'
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
