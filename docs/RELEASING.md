@@ -121,8 +121,6 @@ at a stable URL. The domain is on Cloudflare, so the simplest options:
 - **Redirect Rule** — Rules → Redirect Rules: 302 `orchestratr.dev/install.sh` →
   the raw GitHub URL. Simplest, but only works once the raw file is public.
 
-> **Private-repo caveat.** `curl … | sh` only works for the public once the release
-> **assets are downloadable without auth** — i.e. the repo (or at least its releases)
-> is **public**. While the repo is private, both the raw `install.sh` and the release
-> binaries require a token, so the installer only works with `GITHUB_TOKEN` set
-> (the script honors it). Make the repo public before advertising the one-liner.
+> **Note.** The repo is public, so the release binaries and raw `install.sh` are
+> downloadable without auth and the `curl … | sh` one-liner works for everyone. (If a
+> repo is ever made private, the assets need a token — the script honors `GITHUB_TOKEN`.)
