@@ -57,7 +57,7 @@ check result too.
 | E15 | server start/stop/status/logs + auto-start race | mock | high | **PASS** | none | 0 | server · §6.4/§11.6 lifecycle, single-instance, auto-start |
 | E16 | TS SDK scope/ask/watch/run/loop | mock | high | **PASS** | none | 0 | sdk · §8 client |
 | E17 | scaffold + run workflow.ts | mock | high | **PASS** | none | 0/7/2 | scaffold · §6.6 · SDK integration |
-| E18 | §9 recipes (fan-out + tournament) real provider | claude+codex | high | **PARTIAL** | low | 0 (codex) / 124 (claude) | recipes · §9 patterns (fan-out §9.2 + tournament §9.6) |
+| E18 | §9 recipes (fan-out + tournament) real provider | claude+codex | high | **PARTIAL** · re-check 2026-07-14: **PARTIAL** (claude leg 3/3 flake) | low | 0 (codex) / 124 (claude) | recipes · §9 patterns (fan-out §9.2 + tournament §9.6) |
 | E19 | skill hot path drill | claude+codex | normal | **PASS** | none | 0 | skill · §10 · end-to-end "any agent gains orcr powers" |
 | E20 | config validation + env contract + ORCR_HOME | mock | normal | **PASS** | none | 0/2 | config · §14 · §5.3 env contract |
 | E21 | error codes & exit-code mapping sweep | mock | normal | **PARTIAL** | low | sweep | cli · §13 error enum + exit codes |
@@ -604,6 +604,40 @@ Queue + concurrency caps work correctly; **the pane-leak defect on the kill-duri
   PARTIAL because E18 explicitly requires claude and claude cannot complete here; the recipes/orcr code
   itself is proven correct via codex.
 
+- **RE-CHECK (2026-07-14, post-E07 fix, current code) — still PARTIAL/flake-blocked (claude leg).** Re-ran
+  a cost-bounded CLI representation of E18's **claude leg** (the previously-blocked path) — 2 fan-out
+  claude reviewers under an isolated scope `orcr_e2e_review/fanout/*` (would have added a tournament
+  claude judge) — **3 fresh times** (throwaway `ORCR_HOME=/tmp/orcr_rechk.*` + disposable sessions
+  `orcr_rechk_1b27e771`, `orcr_rechk_970ea971`, `orcr_rechk_88a0f6f6`; each torn down and scoped
+  leak-checked clean; `server status` healthy each attempt — herdr reachable=true, integrations
+  claude/orcr/herdr ok). The orcr-side plumbing (spawn, scope isolation under
+  `orcr_e2e_review/fanout/**`, async run + pattern `agent wait`, gc:immediate, `--timeout` kill, clean
+  teardown) all behaved correctly. But **every real-claude turn hit the intermittent submit-Enter boot
+  flake (E02 root) — effectively persistent this run, 5/5 real-claude agents across all 3 attempts**:
+  - **Attempt 1** (concurrent fan-out, `orcr_rechk_1b27e771`): r1 `019f630a-3c4c-…` + r2
+    `019f630a-3d7e-…`, both `-a claude --gc immediate --timeout 3m`; `agent wait --json
+    "orcr_e2e_review/fanout/*" --timeout 4m` → `all_ok:false`, both `exit_reason:"timeout"`, exit 5.
+    Server logs: `submit-confirm: pane w2:p2 still idle after 8000ms — prompt may not have been accepted
+    by the provider TUI` (and w2:p3) → `--timeout expired … killing`. FLAKE.
+  - **Attempt 2** (concurrent fan-out, `orcr_rechk_970ea971`): r1 `019f630d-cd33-…` + r2
+    `019f630d-d079-…`; wait → both `exit_reason:"timeout"`, exit 5; identical `submit-confirm … still idle
+    after 8000ms` signature for w2:p2 + w2:p3 then `--timeout … killing`. FLAKE.
+  - **Attempt 3** (single sequential `agent ask` to reduce boot contention, `orcr_rechk_88a0f6f6`):
+    `019f6311-8d8d-…` → `{"ok":false,"error":{"code":"timeout","message":"ask timed out waiting for
+    completion",…}}`, exit 3; logs `submit-confirm: pane w2:p2 still idle after 8000ms` then stuck
+    `working`. FLAKE (same root; not concurrency-specific).
+
+  **0 passing attempts**, so no real claude response text was ever produced (`FINDING-A-OK`/`FINDING-B-OK`
+  never emitted) and the transcript path `agent logs <t> --last-response`
+  (`~/.claude/projects/<slug>/<session>.jsonl`) could NOT be exercised this run. No genuine non-flake
+  failure was seen (no crash, no `transcript_unavailable`, no orcr logic error). Verdict per the retry
+  policy: **PARTIAL** (flake-only, environment-limited) — not FAIL and not PASS. Note: this exercised the
+  claude leg only (codex was never the blocked part, so it was not re-run) via a CLI representation rather
+  than the full TS SDK recipe. Root matches `open-issues.md` E02 / §"Not orcr bugs — BLOCKED": the
+  submit-confirm robustness (`submit_confirm_ms=8000ms`) — firing on every real-claude boot on this box
+  this run. The deferred submit-confirm hardening (more re-send attempts / adaptive `submit_confirm_ms`)
+  is still needed for slow real-provider boots.
+
 ### E19 — skill hot path drill — **PASS**
 
 - **provider:** claude (drill actor) + codex (delegate target); skill doc-tests provider-agnostic
@@ -796,6 +830,35 @@ kill-during-promotion race (E07)** and an **intermittent codex submit-confirm fl
   agent-timeout-via-wait exit-code spec inconsistency (low); E06 `{rand}`-selector reason nit (low).
 - **Open (not orcr bugs — env):** real-claude `ask`/`wait`/`logs` return path on this enterprise box (no
   native transcript) — E01/E03/E05 and the claude leg of E18.
+
+### Re-check of previously-blocked tests (2026-07-14, post-E07 fix, current code)
+
+The real-claude paths that were BLOCKED at the manual-e2e run (E01, E03, E05, and the claude leg of E18)
+were re-run against **current code** (the E07 pane-leak fix having landed) to determine whether the
+diagnosis in `open-issues.md` holds — namely that claude transcripts DO persist and the adapter works,
+and the "blocked" real-claude paths were caused by the **intermittent submit-Enter boot flake** (the
+prompt sometimes isn't submitted, so the turn never runs → timeout), NOT an orcr logic/transcript defect.
+Each re-check used a unique throwaway `ORCR_HOME` + disposable `orcr_rechk_<rand>` session, retried the
+scenario up to 3 fresh times to separate a flaky boot from a real failure, and tore down + scoped
+leak-checked each attempt.
+
+- **Outcome:** on this box the submit-Enter flake was **effectively persistent** during the re-check
+  window — it bit **3/3 attempts for every re-checked test** (E01, E03, E05, and the E18 claude leg —
+  5/5 real-claude agents across E18's 3 attempts). Every failure was the SAME flake signature
+  (`submit-confirm: pane … still idle after 8000ms — prompt may not have been accepted by the provider
+  TUI`; the turn never started; `ask`/`wait` hit `--timeout`). **No genuine non-flake failure** was
+  observed on any attempt (no crash, no `transcript_unavailable`, no orcr logic error), and the orcr-side
+  plumbing (spawn, scope isolation, async run + pattern wait, gc modes, `--timeout` kill, teardown) was
+  correct throughout.
+- **Consequence:** because **0 claude turns ever completed** across all re-checks, no real response text
+  was produced, so the transcript return path (`agent logs <t> --last-response` reading
+  `~/.claude/projects/<slug>/<session>.jsonl`) could **not** be exercised/confirmed this run. Whether
+  real-claude `ask`/`logs`/lifecycle work end-to-end therefore remains **unproven on this box** — but
+  demonstrably blocked only at the boot-submit step, upstream of the adapter.
+- **Verdict:** all four re-checked paths stay **PARTIAL (flake-only, environment-limited)** — not
+  upgraded to PASS (functionality not demonstrated), not FAIL (no genuine defect). The fix still needed
+  is the deferred submit-confirm hardening (more Enter re-send attempts / adaptive `submit_confirm_ms`
+  for slow real-provider boots), tracked in `open-issues.md` E02.
 
 ### Final green check (2026-07-14, post-run)
 
