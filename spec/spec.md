@@ -69,7 +69,7 @@ attach over SSH. Everything below is verified against the installed herdr (0.7.x
 
 | capability | herdr primitive | orcr's use |
 | --- | --- | --- |
-| Socket API | `~/.config/herdr/herdr.sock` — versioned JSON protocol with a published schema (`herdr api schema`); every herdr CLI verb is a thin client of it | orcr's herdr driver speaks this directly (§4) |
+| Socket API | **per-session sockets** (discovered via `herdr session list --json`) — versioned JSON protocol with a published schema (`herdr api schema`); every herdr CLI verb is a thin client of it | orcr's herdr driver speaks this directly (§4) |
 | Launch an agent in a pane | agent-start with argv, cwd, per-pane **env** | the spawn primitive; env carries orcr's identity contract |
 | Send input | pane send-text + send-keys | prompting and steering (two calls, never one) |
 | Lifecycle state | per-pane `agent_status: working \| idle \| blocked \| unknown` | completion and blocked detection — **reported by herdr's per-provider integrations** (`herdr integration install claude` etc.); without that integration installed, status is `unknown` |
@@ -156,13 +156,15 @@ you / a script / another agent
   server isn't running it is auto-started first. If the server cannot start, commands
   exit 2 with `server_start_failed`.
 - **herdr driver** — the server speaks **herdr's own socket API directly**
-  (`~/.config/herdr/herdr.sock`; JSON protocol, versioned, schema published by
-  `herdr api schema`) — no shelling of herdr CLI subcommands for runtime operations.
-  On connect it handshakes the protocol version and fails with a clear
+  (JSON protocol, versioned, schema published by `herdr api schema`;
+  **sockets are per-session** — discovered from `herdr session list --json`, not a
+  single global socket) — no shelling of herdr CLI subcommands for pane lifecycle or
+  mutations. On connect it handshakes the protocol version and fails with a clear
   `herdr_unreachable`/version-skew error rather than guessing. The herdr *binary* is
-  still discovered for the two things a socket can't do: bootstrapping the owned
-  session's herdr server headless, and `orcr agent attach` (which execs
-  `herdr agent attach` in the user's terminal).
+  still discovered for the things a socket can't do: bootstrapping the owned
+  session's herdr server headless, `orcr agent attach` (which execs
+  `herdr agent attach` in the user's terminal), and — since sockets are per-session —
+  enumerating sessions via `herdr session list --json`.
 - **Integrations** — one orcr module per agent provider (named after herdr's own
   integrations): launch argv (bypass flags, model/effort mapping), startup recipe,
   completion-detection parameters, graceful-shutdown recipe, transcript adapter.
@@ -321,8 +323,9 @@ config `herdr.session`). The user's daily herdr session never sees a subagent pa
   the current terminal from anywhere — no session switching.
 - **Ownership marker**: every pane orcr creates carries `ORCR_ID` in its env (plus an
   internal launch token, §11.1) and has a matching store row. Reconciliation (§11.5)
-  closes panes only when marker **and** store row agree; a marked pane with no
-  matching row (the store was moved/reset under a live session) is **reported in
+  closes panes only when it can positively tie a live pane to its store row (by herdr
+  label, §11.1); a herdr-reported agent pane with no matching row (the store was
+  moved/reset under a live session) is **reported in
   `server status` and left alone** — clean it up through herdr directly. Unmarked
   panes in the owned session (a shell you opened while debugging) are reported and
   never touched either.
@@ -334,7 +337,7 @@ and a process.)
 | herdr level | orcr's use |
 | --- | --- |
 | workspace | = the path's **level-1 segment** when the path has one (everything under `refactor/**` → workspace `refactor`; each loop → its own workspace); **scope-less agents** (a single-segment path like `worker`) → workspace **`default`**, so stray one-offs don't each spawn a workspace. GC-parked agents → workspace `idle`. |
-| tab | one per agent; label = **the path after the first segment**: path `refactor/phase_1/review/worker` → workspace `refactor`, tab `phase_1/review/worker`. |
+| tab | one per agent; label = **the agent's full path**: path `refactor/phase_1/review/worker` → workspace `refactor`, tab `refactor/phase_1/review/worker`. herdr requires each agent's `name` (which is also its tab label) to be **unique across the whole session**; a path-after-first-segment label collides across distinct level-1 scopes (`review_a/fanout/file_0` and `review_b/fanout/file_0` would both map to `fanout/file_0`), so orcr uses the full effective path, which is unique among active agents by construction. |
 | pane | the agent's TUI; cwd = caller's cwd or `--cwd`. A pane's location ids are **not agent identifiers**: GC moves agents across panes/workspaces over their lifetime. The store tracks the agent's *current* pane as a location column, nothing more. |
 
 herdr removes a workspace automatically once it has no panes — so orcr always **closes
@@ -755,7 +758,9 @@ an internal **barrier kill**: a tombstone on the pattern's scope rejects/cancels
 new `agent run`s landing under it while the kill loops until a final snapshot under
 the write lock shows no active matches.
 
-**ls** — active agents (managed and unmanaged) rendered as the path tree. TTY
+**ls** — active agents (managed and unmanaged) as a **flat table sorted by path**
+(ancestors before descendants, grouped by level-1 segment, so it reads in tree order
+and stays greppable); the indented tree view is `orcr top` (§7). TTY
 columns:
 `PATH UUID STATUS AGENT AGE` (uuid shown as a short prefix). Filters: a pattern or
 uuid, `-a <provider>`, `--status <s>` (`--status blocked` = who needs a
@@ -807,7 +812,9 @@ DSL.
   `orcr loop pause nightly daily`.
 - **Cadence**: five-field cron — stored **with the creating timezone** and evaluated
   in it (DST-correct: "9am weekdays" stays 9am), each occurrence persisted as a UTC
-  `next_fire_at` · or `--once-at <time>` (fires once then ends). There is no
+  `next_fire_at` · or `--once-at <time>` (a relative duration like `30m`, an RFC3339
+  timestamp, or a local wall-clock `YYYY-MM-DD[ T]HH:MM[:SS]`, resolved to a single UTC
+  fire; fires once then ends). There is no
   `--every` — intervals are cron expressions (`*/30 * * * *`). Fires missed while the
   machine slept or the server was down are skipped and logged, never replayed.
 - **Runs & run ids**: every run — scheduled or manual — gets a **run id**:
@@ -1127,7 +1134,7 @@ await orcr.loop.rm(orcr.loopNameFrom(process.env.ORCR_PATH!));  // self-terminat
 // server & api are covered too; attach is terminal-mediated — no fake
 // interactive method:
 const at = await orcr.agent.prepareAttach("review/worker", { takeover?: false });
-// → { command: string[], leaseId, uuid, path, terminalId } — exec command yourself;
+// → { command: string[], leaseId, uuid, path, ttlMs } — exec command yourself;
 //   the SDK heartbeats the lease while the child process lives, releases on exit
 await orcr.server.status(); await orcr.api.snapshot();
 ```
@@ -1556,8 +1563,11 @@ says so explicitly), keeping the always-on footprint minimal.
    **one `BEGIN IMMEDIATE` transaction** — validates grammar/limits, allocates the
    uuid, allocates or validates the name against the partial unique index, and
    inserts the agent row with the full launch payload and status `queued`. The
-   identity is now durable — the verb returns `<path> <uuid>`. The agent's data dir
-   (§8) is created.
+   agent's data dir and its `launch.json` audit payload (§8, §12) are written
+   **before** this insert — the queue worker can promote and begin the pipeline
+   (which reads `launch.json`) within one tick, so the payload must already exist; a
+   failed insert (e.g. `path_in_use`) removes the just-created data dir. Once the row
+   is inserted the identity is durable — the verb returns `<path> <uuid>`.
 2. Queue promotion (§5.5) picks it up (`queued → starting`, stuck-start guard armed):
    ensure the owned session's herdr server; ensure the level-1 workspace; start the
    agent in a new tab over herdr's socket API — integration argv, env contract
@@ -1568,10 +1578,16 @@ says so explicitly), keeping the always-on footprint minimal.
    for `logs`; §11.4). Progress markers reset the stuck-start guard.
 4. Deliver the first prompt (turn 1; two-call rule). Status `starting → working`.
 
-Crash safety: recovery matches panes to rows by `ORCR_ID` **and launch token** —
-never by location guessing. A `starting` row whose guard expired with no pane →
-`failed`; a marked pane whose row lacks late fields → the row is repaired; a pane
-whose token matches no live attempt → closed.
+Crash safety: herdr's socket exposes no pane env, so `ORCR_ID`/launch token can't be
+read back off a live pane — recovery instead matches a pane to its row by herdr's
+**label** (the agent's full path), which the active-path-uniqueness invariant (§5.1)
+makes unambiguous, not location guessing. The launch token stays injected in pane env
+and persisted (row + `launch.json`) as the correctness anchor, ready for a future
+herdr that exposes pane env. A row with a recorded `pane_id` is confirmed against the
+live snapshot (present → repaired, `starting`→`working`; gone → `failed` if it was
+`starting`, else `lost`). A `starting` row that never recorded a `pane_id` → `failed`;
+a matching orphan pane, found by label, is closed. No duplicate pane survives either
+way.
 
 ### 11.2 GC engine (server)
 
@@ -1664,10 +1680,11 @@ and periodically: managed agents whose panes vanished → `lost` (path reserved)
 `lost` agent resolves to `ended (lost)` once herdr is reachable and one following
 poll still doesn't show the terminal (or on an explicit kill) — a herdr outage alone
 never frees names, but there is no indefinite quarantine either;
-panes carrying an `ORCR_ID` marker with **no matching store
-row** (store moved/reset under a live session, or a crashed duplicate attempt) →
-**counted and reported in `server status` as unknown marked panes, never touched**
-(clean up via herdr); unmarked panes in the owned session → counted and reported, never touched; half-done
+owned-session panes with **no matching store row** — since herdr's socket can't read
+the `ORCR_ID` marker back off a live pane, an orphan pane herdr reports as running an
+**agent** (store moved/reset under a live session, or a crashed duplicate attempt) is
+**counted and reported in `server status` as an orphan agent pane, never touched**
+(clean up via herdr); a plain shell (no agent) is an unmarked pane → counted and reported, never touched; half-done
 park/un-park moves (`move_state` set) → completed or rolled back. In the user's other
 sessions, herdr-detected agents are discovered into the store as unmanaged rows keyed
 by (session, `terminal_id`) (§5.7) and kept current while the server runs; rows whose
@@ -1707,7 +1724,7 @@ terminal disappears are marked `ended`.
   response_captured / location_changed / ended`, `queue.promoted` (queue membership
   is otherwise derived from `agent.created` / `agent.ended` / `queue.promoted`),
   `attach.started / ended`, `loop.created / fired / coalesced / skipped / paused /
-  resumed / removed`, `loop_run.started / ended`; every payload carries enough
+  resumed / removed / ended`, `loop_run.started / ended / stopping`; every payload carries enough
   fields to update an `api snapshot` state incrementally. Subscriptions accept
   `since_seq`; snapshots carry `snapshot_seq`; **`watch.open` creates snapshot +
   subscription under one server-side cursor pin**, so high churn can't expire
@@ -1718,17 +1735,18 @@ terminal disappears are marked `ended`.
 ### 11.7 The herdr driver contract (M0 deliverable)
 
 The driver's operation set is pinned to **named herdr socket methods with fixed
-shapes**, not reverse-engineered at implementation time. An appendix table —
-generated against the installed herdr's `api schema` and kept as a conformance
-fixture in the repo (version drift fails CI) — maps every operation orcr uses:
+shapes**, not reverse-engineered at implementation time. An in-code contract table —
+whose methods and result types are checked against the installed herdr's live
+`api schema` (version drift fails the conformance check) — maps every operation orcr uses:
 `agent.start {name, argv, cwd?, env?, workspace_id?, focus:false}` (herdr creates
 the tab + pane; **orcr does not pre-create tabs** — the returned
 workspace/tab/pane/terminal ids are authoritative and recorded per §11.1),
 `pane.move` (destination forms for park/un-park), `pane.close`, `pane.send-text` /
 `pane.send-keys`, `pane.list` / `agent.list` (status, `agent_session`,
-`terminal_id` reads), `workspace.create`, session enumeration (herdr's single
-socket manages all sessions — the driver lists sessions and reads per-session
-snapshots through it; verified in M0), notification, and herdr integration-state
+`terminal_id` reads), `workspace.create`, session enumeration (**sessions are
+per-socket** — each herdr session has its own `socket_path`; the driver discovers
+them via `herdr session list --json` and fans out over each session's socket for
+cross-session reads; verified in M0), notification, and herdr integration-state
 reads (which method reports whether a provider's integration is installed — pinned
 in the same table). Minimum herdr protocol version is declared and handshake-checked.
 
@@ -1868,7 +1886,7 @@ loop ls          {loops:[{uuid,name,status,ended_reason?,cadence,tz,next_fire_at
 loop logs        {lines:[{run,source:"orcr|command",ts,text}]}
 server status    {version,protocol,socket,store,herdr:{bin,version,socket,session},
                   integrations:{claude:{orcr:true,herdr:true}, …},
-                  counts:{live,queued,blocked,unmanaged,unmarked_panes},
+                  counts:{live,queued,blocked,unmanaged,orphan_agent_panes,unmarked_panes},
                   loops_firing:bool, loops:[{name,status,next_fire_at}],
                   drift:{lost,repaired}}
 ```
@@ -1884,8 +1902,10 @@ state_conflict   {current_status, reason?}  wrong state for the verb;   → 7
                                             reason:"force_required" for
                                             unmanaged kills
 blocked          {blocked_kind}                                         → 4
-timeout          {elapsed}                  an agent's/run's own        → 3
-                                            deadline — never a wait's (§6)
+timeout          {elapsed}                  a direct command's own      → 3
+                                            deadline; wait-aggregate
+                                            outcomes follow §6's table
+                                            (a dead target → 5)
 integration_missing {provider, missing:[orcr|herdr], install}           → 2
 transcript_unavailable {uuid, status, cause?}  incl. ambiguous/stale    → 1
 environment_error {cause, …}                server/store/herdr/home/    → 2
@@ -1925,15 +1945,23 @@ server_error     {cause, …}                 internal failures (spawn/    → 1
     "kill_after": "10m",      // parked this long → reaped
     "gc_tick": "30s",         // GC engine cadence
     "max_starting": "2m",     // stuck-start guard (§5.5)
-    "attach_lease_ttl": "30s" // heartbeat expiry for attach leases
+    "attach_lease_ttl": "30s", // heartbeat expiry for attach leases
+    "loop_tick": "1s",        // loop scheduler tick cadence
+    "run_term_grace": "10s"   // loop-run stop/timeout TERM→KILL grace
   },
-  "logs": { "max_bytes": 10485760, "max_files": 5 }    // server + loop-run logs
+  "logs": { "max_bytes": 10485760, "max_files": 5 },   // server + loop-run logs
+  "integrations": {           // per-provider completion-tuning overrides (defaults ship in-integration)
+    "claude": { "idle_stable_ms": 1200 }  // any of fast_turn_grace_ms/idle_stable_ms/transcript_settle_ms/transcript_freshness_timeout_ms/shutdown_grace_ms
+  }
 }
 ```
 
 (Per-provider completion tuning — `fast_turn_grace_ms`, `idle_stable_ms`,
-`transcript_settle_ms`, … — is **integration logic**, shipped inside each
-integration, not user config.)
+`transcript_settle_ms`, `transcript_freshness_timeout_ms`, `shutdown_grace_ms` — is
+**integration logic**: sensible defaults ship inside each integration, but any of them
+may be overridden per provider via an optional `integrations.<provider>.*` section.
+`integrations` is a known config key, validated like the rest — not an unknown-key
+warning.)
 
 Validation happens at server start (and on reload): **unknown keys warn and are
 ignored** (with the nearest valid name suggested — forward/backward compatible for
@@ -1942,7 +1970,8 @@ must be positive, `concurrency.max ≥ 1`, per-provider caps are clamped to `max
 a warning, `herdr.session` must be a valid session name. Precedence: CLI flag → config →
 built-in default. Env: `ORCR_HOME` relocates `~/.orcr` (store, socket, lock, config,
 logs, data — tests/sandboxes; pair it with a distinct `herdr.session`);
-`ORCR_HERDR_BIN` overrides herdr discovery.
+`ORCR_HERDR_BIN` overrides herdr discovery; `ORCR_HERDR_SESSION` overrides
+`herdr.session` (empty = config/default).
 
 ## 15 · Edge cases & failure modes
 
@@ -1975,7 +2004,8 @@ The cases most likely to bite, and the specified behavior for each:
   panes and half-done moves on server start.
 - **herdr restart / crash** — the driver reconnects with backoff; agents keep running
   (panes are herdr-server-side); a herdr that comes back with different pane ids is
-  re-matched by `ORCR_ID` + launch token, never by location.
+  re-matched by herdr **label** (the agent's full path — unambiguous under active-path
+  uniqueness, §11.1), never by location.
 - **Version skew** — both sockets are version-negotiated: orcr client ↔ orcr server
   (`unsupported_version`), orcr server ↔ herdr (herdr protocol number; clear error
   naming the required herdr version). Two orcr versions sharing one store: schema
@@ -1989,7 +2019,7 @@ The cases most likely to bite, and the specified behavior for each:
 Each milestone is independently buildable, testable, and verifiable — unit tests plus
 an e2e gate (real herdr + a scriptable mock provider in isolated `ORCR_HOME` +
 disposable herdr sessions) must pass before the next begins. Each milestone has a
-detailed plan in [`spec/milestones/`](milestones/).
+detailed plan archived under `spec/_impl/`.
 
 | milestone | ships | verify |
 | --- | --- | --- |
