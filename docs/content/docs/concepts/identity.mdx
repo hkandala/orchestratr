@@ -1,0 +1,127 @@
+---
+title: "Identity: paths and uuids"
+description: The two identifiers every agent carries, the path and glob model that addresses them, and the rules for naming, resolution, and reservation.
+---
+
+Every agent has two identifiers, and every command accepts either. The path is the address you read, write, and target by. The uuid is the permanent identity that never changes and never repeats. You address every agent with one model you already know: filesystem-style paths and globs.
+
+## uuid vs path
+
+- **uuid**: a UUIDv7, generated at creation, the agent's permanent identity and the store's primary key. Never reused, unique across all history. Any unambiguous uuid prefix of 8 or more hex characters is accepted (git-style); when a prefix is ambiguous, `not_found` lists the shortest disambiguating prefixes.
+- **path**: the agent's address, slash-separated exactly like a filesystem path. **The last segment is the agent's name.** Every path orcr *reports* (`run` output, env vars, JSON, `ls`, `top`) is the absolute path. Relative forms exist only as input.
+
+```text
+review/fanout/file_1        an agent named file_1, living under review/fanout
+nightly/r82c9s/triage       an agent named triage inside a run of loop nightly
+```
+
+Persist the **uuid** when you mean this exact historical agent. Use **paths and patterns** for the current live roles. Both exist precisely because ended paths become reusable while the uuid stays unique forever.
+
+## Naming is mandatory
+
+Every agent-creating verb (`run` and `ask` alike) requires exactly one of:
+
+- `--name <name>`: the agent lands directly in your scope, and `<name>` is its name.
+- `--path <path>`: the last segment is the name, the rest is where it lives.
+
+There are no auto-generated agent names, no exceptions. `agent run` prints `<path> <uuid>` on one stdout line, space-separated so `cut` works; JSON carries both fields.
+
+## Relative by default, leading slash for absolute
+
+Every path you write (creating or targeting) is interpreted **relative to your scope**, exactly like file paths:
+
+- Inside the SDK's `orcr.scope("review")` or inside a managed agent, `--path fanout/file_1` means `review/fanout/file_1`.
+- A leading `/` anchors to the root: `--path /verify/file_1` means exactly `verify/file_1`.
+- At a plain shell there is no scope, so relative and absolute are the same thing.
+
+## What a scope is
+
+An agent is a **file**; its scope is its **directory**: its path minus its name. `review/fanout/file_1` acts in scope `review/fanout`. A loop run is a **directory**; its scope is its **full run path**. A run at `nightly/r82c9s` acts in scope `nightly/r82c9s`, so agents it spawns land *inside* it. A plain shell or script has no scope.
+
+This files-vs-directories rule is why a child spawned by an agent lands as a *sibling* by default, while a child spawned by a loop-run command lands *inside* the run. See [agents and lineage](/docs/concepts/agents-and-lineage) for how scope is derived from the environment.
+
+## Glob patterns
+
+Targeting is exact unless you use a wildcard, and wildcards are whole segments only. That is the entire pattern language:
+
+- `*` stands for one whole segment.
+- `**` stands for any number of segments (one or more).
+
+So `review/*` matches agents directly under `review` (one level), and `review/**` matches everything under `review` at any depth (never the agent named `review` itself; self plus subtree is `kill review "review/**"`). Both wildcards may appear anywhere and more than once: `a/b/*`, `a/*/b`, `a/**`, `a/**/b`, `*/review/*` are all legal. There are no partial-segment forms like `phase_*`. A trailing bare slash (`review/`) is invalid syntax.
+
+Patterns are accepted only by the **bulk verbs** (`wait`, `kill`, `ls`, and `top`'s filter). The exact-target verbs (`send`, `logs`, `attach`) reject wildcards. Quote patterns in the shell (`kill "review/**"`) so your shell does not expand them against real files first.
+
+Matching is anchored against the full path, resolved against the caller's scope first (a leading `/` skips that). `review/*` can never match `reviewer/x`. The stored matcher preserves exactly these semantics: no raw string-prefix scans, no SQL `LIKE`, because `_` is a legal name character and a `LIKE` wildcard.
+
+## The grammar
+
+Every surface (CLI validation, SDK, socket schema) derives from this one block:
+
+```text
+segment   = [a-z0-9_]{1,64}
+path      = segment ("/" segment)*        # ≤ 8 segments, ≤ 256 chars total;
+                                          # the last segment is the name
+abs_path  = "/" path                      # anchored to the root
+pattern   = path where any segment may    # wildcards are whole segments only:
+            be "*" or "**"                # a/b/*, a/*/b, a/**, a/**/b, no
+                                          # partial forms (phase_*); bulk verbs
+                                          # only; a trailing bare "/" is invalid
+{rand}    = creation-only placeholder     # replaced with 5 random [a-z0-9] chars
+                                          # anywhere in --name/--path values
+loop name = segment                       # one segment, mandatory
+run id    = "r" + 5 [a-z0-9]              # r82c9s, generated, never user-chosen
+run path  = loop_name "/" run_id
+```
+
+The full grammar and matching rules also live in the [path grammar reference](/docs/reference/path-grammar).
+
+## The `{rand}` placeholder
+
+Same path means same agent slot, by definition. There is no silent auto-suffixing. When you genuinely want a fresh path each run, use the explicit `{rand}` placeholder: anywhere in a `--name` or `--path` value, `{rand}` is replaced with a random 5-character lowercase alphanumeric string before validation.
+
+```text
+--path "review_{rand}/file_1"   →  review_u38c8/file_1  this run
+                                   review_o90j8/file_1  the next
+```
+
+`{rand}` is creation-only. It never appears in a selector.
+
+## Path uniqueness
+
+A full path must be unique among **active** agents (any non-ended status, including `lost`, which reserves its path until reconciliation confirms the terminal is gone). This is enforced by a partial unique index; validation and row insertion happen in one `BEGIN IMMEDIATE` transaction, so concurrent spawns can never double-allocate. Paths of ended agents are reusable.
+
+An active-path collision returns `state_conflict` with `details.reason: "path_in_use"` and the occupying `{uuid, path, status}`. Retry after that agent ends and the path is free again. Recipes lean on this deliberately: a second concurrent copy of a workflow fails fast rather than two of them fighting over one repo.
+
+## Resolution: path-first, then uuid-prefix
+
+A full uuid contains dashes, which names never do, so it resolves to its row directly, active or ended; this is how history is addressed. A bare target is tried **as a path first** (the active agent, else the most recent ended agent with that path); only if nothing matches as a path is it tried as a uuid prefix of 8 or more hex characters.
+
+So `send deadbeef` means the agent *named* `deadbeef` when one is active, else the uuid lookup. Deterministic, path-first. For an older reuse of a path, use the uuid from `ls --all`.
+
+Results always say which one you got. JSON carries `resolved: "active" | "latest_ended"`, and a TTY command that lands on an ended agent prints a stderr note (`resolved to an ended agent created 14:02; use the uuid for a specific one`). `send`, `attach`, and `kill` act on **active agents only**.
+
+## Reserved level-1 names
+
+Some top-level path segments are owned by orcr:
+
+| level-1 segment | you may create paths here? | owned by | what it is |
+| --- | --- | --- | --- |
+| `idle` | no | orcr | the parking workspace (GC) |
+| `unmanaged` | no | orcr | agents you started by hand, auto-tracked |
+| an **active** loop's name | only from inside that loop's runs | the loop | its runs and their agents |
+| an **ended** loop's name | yes | free again | history stays reachable by uuid |
+
+Reserved names apply at **level 1 only** (inside a scope, `--name idle` resolving to `review/idle` is fine) and are also rejected as loop names. Loop protection applies to creation only: observing agents under an active loop (`ls`, `wait`, `logs`, `top`) always works, and `kill "/nightly/**"` works too, with the normal confirmation, as the escape hatch for a runaway loop. While loop `nightly` is active, nothing outside its own runs can create an agent anywhere under `nightly/**`, whether via a relative path or an absolute `/nightly/…`. Agents land under an active loop only as descendants of one of its runs.
+
+## Enforcement order
+
+Every check runs on the **effective** path (the relative input already resolved against the caller's scope), in this order:
+
+1. **parse** the input.
+2. **resolve** against the caller's scope, unless the path is absolute.
+3. **validate grammar and depth**: `invalid_request`, `details.reason: "path_too_deep"` with the effective path and count.
+4. **reserved level-1 check**: `details.reason: "reserved_name"`.
+5. **active-loop ownership.**
+6. **active path uniqueness**: `state_conflict`, `details.reason: "path_in_use"`.
+
+Steps 3 through 6 happen in the one insertion transaction, which is what makes concurrent spawns safe.

@@ -1,0 +1,48 @@
+---
+title: Agent lifecycle and GC
+description: How --gc parks, reaps, or keeps agent panes alive, why moves are two-phase and crash-safe, and the one known caveat with background subagents.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+A heavy TUI holds real memory. Left running, dozens of idle agents would take a machine down. GC (garbage collection) is how orcr reclaims panes it no longer needs, on one policy you set per agent: `--gc auto | immediate | never`.
+
+`--gc` governs **pane lifetime only**. History in the store is never affected: an ended agent's row, path, uuid, turns, and transcript locator all remain queryable under `ls --all`. GC applies only to [managed](/docs/concepts/managed-vs-unmanaged) agents; orcr never touches an unmanaged agent's pane.
+
+## The three modes
+
+| mode | behavior |
+| --- | --- |
+| `auto` (default) | turn-complete and idle for `timings.idle_after` (5m) moves the pane to the `idle` workspace (status `parked`). `timings.kill_after` (10m) more triggers a graceful kill and releases the memory. An inbound `send` at any point moves the agent back to its home workspace and resets both clocks. |
+| `immediate` | the pane closes as soon as the first turn completes **and its final response has been captured** (stable idle, then transcript settled, then response recorded, then kill). The agent ends with `exit_reason: completed`. |
+| `never` | exempt from parking and reaping; lives until an explicit `agent kill`. For pinned long-livers such as heartbeat agents, or a worker you keep talking to across many turns. |
+
+Under `auto`, a reaped agent ends with `exit_reason: reaped`: it had finished its turns and sat parked past `kill_after`, so nothing was cut short. Under `immediate`, the final response is verified readable from the transcript before the pane dies, so a waiting `ask` can read it. See [status model and completion](/docs/concepts/status-and-completion) for how completion is verified.
+
+## There is no default timeout
+
+An agent never times out unless the caller passed an explicit `--timeout <dur>`; on expiry it is killed with `exit_reason: timeout`. A stuck-working agent otherwise stays alive and visible (`blocked` or `working` in `ls` and `top`) until a human or a script acts. The internal stuck-start guard is a separate thing: it only catches spawns that never produce a pane, and it is not a turn timeout. See [queue and concurrency](/docs/concepts/queue-and-concurrency#stuck-start-guard).
+
+## Park and un-park are two-phase and crash-safe
+
+Moving a pane between workspaces is not atomic at the herdr layer, so orcr tracks it as a lease. An internal `move_state` field (`parking` or `unparking`) acts as an **exclusive move lease** (a `move_token`, a start time, the source terminal, and the destination) recorded alongside the agent's **home workspace**.
+
+The public status flips to `parked` (or returns to `idle` on un-park) only once the store and the actual herdr pane location agree. If the server crashes mid-move, the reconciler completes or rolls back the half-done move on restart. A `send` that arrives mid-move completes or rolls back *that exact move* (by token) before delivering, and delivery always addresses the live `terminal_id` after the location is confirmed, never a pre-move pane id. Un-park recreates the tab in the home workspace, labeled from the path, if the original tab is gone.
+
+The GC engine ticks about every `timings.gc_tick` (30s), and every transition is one store transaction. Because all status transitions are serialized through the single-writer server, the interlocks hold:
+
+- `send` cancels a pending park or reap atomically *before* delivering input.
+- Completion capture and GC-kill are ordered: the response is recorded before the pane dies.
+- GC never moves or reaps a pane with an **active attach**. Attach sessions are persisted as leases (agent, mode, connection, start time, heartbeat), so the guard survives a server restart; leases are cleaned up on socket disconnect or heartbeat expiry.
+
+See [durability and recovery](/docs/concepts/durability) for reconciliation, and [configuration](/docs/guides/configuration) for the `timings.*` knobs.
+
+## Known caveat: background subagents
+
+<Callout type="warn">
+Use `--gc never` for agents you know will fan out background work.
+</Callout>
+
+Claude Code sometimes reports its main turn idle while background subagents are still running, and herdr then reports `idle`. Under `gc auto` the agent may be parked. When the subagents return (typically within 15 minutes) it goes `working` again and is un-parked back to its home workspace, so work is not lost. But a `kill_after` shorter than the subagents' runtime could reap it mid-flight.
+
+Detecting in-flight background subagents from the transcript is future work. Until then, `--gc never` for those agents avoids the reap window entirely.

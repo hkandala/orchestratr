@@ -1,0 +1,16 @@
+{
+  "title": "Guides",
+  "pages": [
+    "run-agents",
+    "attach-and-steer",
+    "monitor-with-top",
+    "loops",
+    "sdk-workflows",
+    "scopes-and-fanout",
+    "providers-and-models",
+    "the-skill",
+    "run-as-a-service",
+    "server",
+    "configuration"
+  ]
+}

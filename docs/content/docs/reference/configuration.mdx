@@ -1,0 +1,125 @@
+---
+title: Configuration reference
+description: Every config.json key, its default, and its validation rule, plus precedence, unknown-key handling, and the environment overrides.
+---
+
+orcr reads `~/.orcr/config.json` (strict JSON, no comments in the real file). Every key is optional; the defaults below apply when a key is absent. Validation happens at server start and on reload.
+
+```jsonc
+// ~/.orcr/config.json: comments are illustrative; defaults shown
+{
+  "defaults": {
+    "agent": "claude",        // default provider (used when -a is omitted)
+    "model": "",              // empty = provider default
+    "effort": ""
+    // no default timeout: agents never time out unless --timeout is passed
+  },
+  "herdr": {
+    "bin": "",                // empty = $ORCR_HERDR_BIN → $PATH
+    "session": "orcr"         // the owned session; user sessions are never touched
+  },
+  "concurrency": {
+    "max": 25,                // global ceiling (RAM protection)
+    "claude": 10              // per-provider caps beneath it (any provider is a key)
+  },
+  "timings": {                // every duration knob in one place
+    "idle_after": "5m",       // turn-complete + idle this long → parked
+    "kill_after": "10m",      // parked this long → reaped
+    "gc_tick": "30s",         // GC engine cadence
+    "max_starting": "2m",     // stuck-start guard
+    "attach_lease_ttl": "30s", // heartbeat expiry for attach leases
+    "loop_tick": "1s",        // loop scheduler tick cadence
+    "run_term_grace": "10s"   // loop-run stop/timeout TERM→KILL grace
+  },
+  "logs": { "max_bytes": 10485760, "max_files": 5 },   // server + loop-run logs
+  "integrations": {           // per-provider completion-tuning overrides
+    "claude": { "idle_stable_ms": 1200 }
+  }
+}
+```
+
+## defaults
+
+| key | default | constraint |
+| --- | --- | --- |
+| `defaults.agent` | `"claude"` | the provider used when `-a` is omitted |
+| `defaults.model` | `""` | empty means the provider default |
+| `defaults.effort` | `""` | empty means the provider default |
+
+There is no default timeout. An agent never times out unless `--timeout` is passed.
+
+## herdr
+
+| key | default | constraint |
+| --- | --- | --- |
+| `herdr.bin` | `""` | empty means discover via `$ORCR_HERDR_BIN`, then `$PATH` |
+| `herdr.session` | `"orcr"` | must be a valid herdr session name; this owned session is never the user's daily session |
+
+## concurrency
+
+| key | default | constraint |
+| --- | --- | --- |
+| `concurrency.max` | `25` | must be at least 1; the global ceiling that protects RAM |
+| `concurrency.<provider>` | (none) | any provider name is a key; caps that provider's concurrent agents; clamped to `max` with a warning if larger |
+
+Promotion from the queue needs a free slot in both the global cap and the per-provider cap. See [queue and concurrency](/docs/concepts/queue-and-concurrency).
+
+## timings
+
+Every value is a duration and must carry a unit (`5m`, `30s`) and be positive.
+
+| key | default | what it controls |
+| --- | --- | --- |
+| `timings.idle_after` | `5m` | turn-complete and idle this long, then the agent is parked |
+| `timings.kill_after` | `10m` | parked this long, then the agent is reaped |
+| `timings.gc_tick` | `30s` | the GC engine tick cadence |
+| `timings.max_starting` | `2m` | the stuck-start guard: a `starting` agent making no progress this long is failed |
+| `timings.attach_lease_ttl` | `30s` | heartbeat expiry for attach leases |
+| `timings.loop_tick` | `1s` | the loop scheduler tick cadence |
+| `timings.run_term_grace` | `10s` | the TERM-to-KILL grace for `loop run stop` and per-run timeout |
+
+See [lifecycle and GC](/docs/concepts/lifecycle) for `idle_after`/`kill_after`, and [loops](/docs/concepts/loops) for the run grace.
+
+## logs
+
+| key | default | what it controls |
+| --- | --- | --- |
+| `logs.max_bytes` | `10485760` (10 MiB) | rotation size for the server log and each loop-run log |
+| `logs.max_files` | `5` | how many rotated files to keep |
+
+## integrations
+
+Per-provider completion tuning. Defaults ship inside each integration; any of the parameters below may be overridden per provider under `integrations.<provider>.*` (values in milliseconds). `integrations` is a known key, validated like the rest, not treated as an unknown-key warning.
+
+| parameter | what it controls |
+| --- | --- |
+| `fast_turn_grace_ms` | treat delivery-then-idle within this window as a completed fast turn |
+| `idle_stable_ms` | the minimum idle duration before stable idle |
+| `transcript_settle_ms` | how long the transcript must go without new writes |
+| `transcript_freshness_timeout_ms` | how long to wait for the transcript to advance past the observed completion before reporting `transcript_unavailable` |
+| `shutdown_grace_ms` | the graceful-shutdown grace for `kill` |
+
+See [status and completion](/docs/concepts/status-and-completion) for how these parameters drive verified idle.
+
+## Validation
+
+At server start and on reload:
+
+- **Unknown keys warn and are ignored**, with the nearest valid name suggested. This keeps config forward- and backward-compatible for early users.
+- **Known keys are validated strictly**: durations require units and must be positive, `concurrency.max` must be at least 1, per-provider caps are clamped to `max` with a warning, and `herdr.session` must be a valid session name.
+
+An invalid known value surfaces as `environment_error` (`cause: config_invalid`).
+
+## Precedence
+
+CLI flag over config over built-in default. For example, `-a codex` on the command line overrides `defaults.agent` in config, which overrides the built-in `claude`.
+
+## Environment overrides
+
+| variable | effect |
+| --- | --- |
+| `ORCR_HOME` | relocates `~/.orcr` (store, socket, lock, config, logs, data). Use it for tests and sandboxes; pair it with a distinct `herdr.session`. |
+| `ORCR_HERDR_BIN` | overrides herdr binary discovery |
+| `ORCR_HERDR_SESSION` | overrides `herdr.session` (empty means fall back to config or default) |
+
+The full environment contract, including the variables injected into agents and loop-run commands, is on the [environment variables reference](/docs/reference/environment).

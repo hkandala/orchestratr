@@ -1,0 +1,67 @@
+---
+title: Run orcr as a service
+description: Register the server to start at login so loops fire after a reboot.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+`orcr server enable` registers the server to start at login. This matters mainly for loops: a scheduled loop can only fire while the server is running, so if the machine reboots and nothing runs an orcr command, a loop that was due would miss its fire until the next command auto-starts the server. Registering the server closes that gap.
+
+```text
+orcr server enable
+orcr server disable
+```
+
+- `enable` registers the platform unit **and** starts the server.
+- `disable` removes the registration. A running server and the store are left untouched.
+
+<Callout type="info">
+Auto-start-on-demand works regardless. Any CLI or SDK call starts the server if it is not running, so one-off agent work never needs the service. Enabling it only guarantees the server is up before any command runs, which is what loops need after a reboot.
+</Callout>
+
+## Per platform
+
+`enable` writes an absolute-path unit that runs `orcr server start --foreground`, propagates your `ORCR_HOME` and `ORCR_HERDR_BIN`, and redirects logs. It picks the platform for you.
+
+### macOS: launchd
+
+Creates a launchd agent:
+
+```text
+~/Library/LaunchAgents/dev.orchestratr.orcr.plist
+  label:  dev.orchestratr.orcr
+  argv:   orcr server start --foreground
+  RunAtLoad, KeepAlive on crash
+```
+
+### Linux: systemd
+
+Creates a systemd user unit:
+
+```text
+~/.config/systemd/user/orcr.service
+  Restart=on-failure
+```
+
+### Windows: not yet
+
+Windows support lands together with general Windows support. `enable` on Windows will create a Task Scheduler logon task (`schtasks /create … /sc onlogon`); until then, and on any other platform, `enable` fails with `unsupported_platform` (exit 2).
+
+## Verify it
+
+`enable` echoes the created unit path and the exact platform command to verify the registration. The typical forms are:
+
+```sh
+# Linux
+systemctl --user status orcr.service
+
+# macOS
+launchctl list | grep dev.orchestratr.orcr
+```
+
+Use the command `enable` printed; it is the authoritative one for your platform.
+
+## Next
+
+- [Manage the server](/docs/guides/server): start, stop, status, and logs.
+- [Schedule work with loops](/docs/guides/loops): the reason to register the server.

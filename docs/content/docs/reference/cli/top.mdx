@@ -1,0 +1,44 @@
+---
+title: orcr top
+description: "The live, view-only monitoring TUI: its synopsis, filters, layout, and why it is live-only by design."
+---
+
+`orcr top` is the live dashboard: a view-only tree of all active agents arranged by their paths, with parent-to-child lineage edges and statuses updating in real time. It is a status display, not a control surface: acting on an agent stays in the CLI verbs (`attach`, `send`, `kill`) and `herdr --session orcr`.
+
+```text
+orcr top [<pattern|uuid>] [-a <provider>] [--status <s>]
+         [--managed|--unmanaged] [--loops]
+```
+
+This is the one command with no `--json`. Machine-readable live state comes from [`orcr api snapshot`](/docs/reference/cli/api) or [`orcr agent ls --json`](/docs/reference/cli/agent).
+
+## Filters
+
+The optional positional target is a pattern or uuid (path grammar, resolved against the caller's scope). The flags pre-scope the tree, matching the equivalent `agent ls` query byte-for-byte:
+
+- `-a <provider>`: one provider.
+- `--status <s>`: one status.
+- `--managed` / `--unmanaged`: one kind.
+- `--loops`: loops only.
+
+```sh
+orcr top "refactor/**"
+orcr top --status blocked
+orcr top --loops
+```
+
+## Layout
+
+The tree is drawn by paths: every agent appears exactly once, at its path. Level-1 segments are the top nodes (matching herdr workspaces); loops appear with their active runs as subtrees; parked agents collapse into an `Idle` node; unmanaged agents sit under their session.
+
+Lineage from `ORCR_PARENT_*` is shown as a row annotation, never a second placement. A row whose parent lives elsewhere in the tree gets a `↖ <parent path>` annotation, and selecting a row highlights its parent and children wherever they sit. Rows show name, status glyph and status, provider and model (with the blocked kind when relevant), and age.
+
+Glyphs: `●` working, `○` idle, `◐` blocked (which floats upward, the "needs a human" queue), `⟳` a loop run in flight; queued and starting agents are dimmed with their queue position.
+
+## Keys
+
+Interaction is navigation only: `/` filters by path pattern, arrows collapse/expand, `q` quits.
+
+## Live-only by design
+
+`top` shows active agents only. `--all` is intentionally unsupported: for history, use [`orcr agent ls --all`](/docs/reference/cli/agent). Rendering rides the snapshot-then-subscribe protocol (see the [socket API reference](/docs/reference/socket-api)), so the tree cannot miss or double-apply an update. For the full layout mock and reading guide, see the [monitor with top guide](/docs/guides/monitor-with-top).

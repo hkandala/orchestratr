@@ -1,0 +1,15 @@
+{
+  "title": "Reference",
+  "pages": [
+    "cli",
+    "sdk",
+    "socket-api",
+    "configuration",
+    "environment",
+    "status-model",
+    "errors",
+    "path-grammar",
+    "store-schema",
+    "glossary"
+  ]
+}

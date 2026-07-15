@@ -8,3 +8,10 @@
 node_modules/
 sdk/ts/dist/
 *.tsbuildinfo
+
+# fumadocs docs site (docs/)
+docs/.next/
+docs/.source/
+docs/.vercel/
+.vercel
+.env*

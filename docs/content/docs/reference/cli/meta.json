@@ -1,0 +1,4 @@
+{
+  "title": "CLI reference",
+  "pages": ["index", "agent", "loop", "server", "api", "top", "scaffold"]
+}

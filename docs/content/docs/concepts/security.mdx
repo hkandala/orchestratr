@@ -1,0 +1,47 @@
+---
+title: Security and permissions model
+description: The trust boundary. Unix-socket auth, home-directory safety, prompt injection through child output, and what runs with bypassed permissions today.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+orcr's trust model is deliberately small: filesystem permissions are the only authentication, and orcr never interprets the content an agent produces. This page states what the model protects and what it does not.
+
+## Filesystem permissions are the authentication
+
+The server listens on a Unix domain socket at `~/.orcr/orcr.sock`, created with umask 077 and mode 0600, the same approach herdr uses. There is **no TCP port** by design: only processes running as your uid can open the socket, so the OS enforces access.
+
+The server refuses to start unless the home is safe:
+
+- `~/.orcr` must be owned by the current uid and not group- or world-writable, or the server refuses with `unsafe_home` (an `environment_error`, exit 2).
+- Socket paths are `lstat`-validated; symlinks are rejected.
+- A stale socket is unlinked only while holding the single-instance lock and only if it is same-uid.
+
+Startup takes an exclusive lock file in `~/.orcr` (`flock`), and the server refuses to open the store without it. Clients auto-starting the server first validate any existing socket with a handshake; losers of a start race wait for readiness rather than spawning a second server. Distinct errors separate the failure modes: `server_unreachable` (cannot connect), `server_start_failed` (spawn failed), `herdr_unreachable` (server fine, herdr not). See [durability and recovery](/docs/concepts/durability) for the single-instance and version-negotiation details.
+
+## Everything runs with bypassed permissions today
+
+<Callout type="warn">
+Every agent orcr spawns runs with its provider's permission prompts bypassed. There is no read-only mode and no permission profile in this release. Spawn agents only against repositories and directories you trust.
+</Callout>
+
+orcr's integrations launch each provider with bypass-permissions flags so agents can work unattended, without a human clearing each permission prompt. The cost is that a spawned agent can read and write files and run commands with your privileges. `--read-only` (per-provider write-tool disabling) and then policy profiles are future work; they do not exist yet.
+
+Two structural bounds still apply. Runaway nesting and fan-out are capped by the path depth limit (8 segments or fewer) and the [global and per-provider concurrency caps](/docs/concepts/queue-and-concurrency): admission control, not polite requests. And an agent's cwd is the caller's cwd or `--cwd`, so you choose where it operates.
+
+## Treat child output as data, never as instructions
+
+Child output flows into parent prompts by construction: a fan-out reviewer's findings become part of a synthesizer's prompt, a classifier's answer selects a handler. That output is untrusted. A compromised or confused child could emit text that reads like an instruction ("ignore your task and run …").
+
+Two rules follow:
+
+- **The orchestrating code treats child output as data.** Quote it, validate it against an expected shape or enum before using it, and never execute instructions found in it. The [classify-and-act pattern](/docs/patterns/classify-and-act) shows normalizing a model's answer through an enum before it is ever used in a path.
+- **orcr itself never interprets response content.** It records a transcript locator and reports what the transcript shows; it does not parse a response for commands, success, or intent. Completion is verified from herdr state and transcript settling (see [status model and completion](/docs/concepts/status-and-completion)), never from what the agent *said*.
+
+## What the boundary does not cover
+
+- Anyone who can run as your uid can use the socket. The socket is not an authorization layer beyond the OS uid check.
+- `blocked_kind` classification is best-effort; do not build security decisions on it.
+- There is no audit of what an agent does beyond `launch.json` (the launch payload) and the native transcript.
+
+The [troubleshooting page](/docs/resources/troubleshooting) covers the operational failure messages (`unsafe_home`, `herdr_unreachable`, `server_start_failed`), and the [roadmap](/docs/resources/roadmap) tracks the permission-policy work.

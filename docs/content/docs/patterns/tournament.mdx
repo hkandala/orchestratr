@@ -1,0 +1,75 @@
+---
+title: Tournament
+description: When N candidates are too many for one judge, run pairwise brackets with byes; winners advance until one remains.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+When a single judge would have to compare too many candidates at once, run a bracket instead. Each match is a pairwise comparison; winners advance; the pool halves each round until one remains. This is the pipeline shape scaled to large N.
+
+## The scenario
+
+[Generate-and-filter](/docs/patterns/generate-and-filter) puts every draft in one judge prompt. That works for a handful. Past that, a single judgment over the whole set gets unreliable and the prompt gets long. A tournament keeps every comparison to two candidates: judge A against B, advance the winner, repeat. The number of matches is linear in N; the number of rounds is logarithmic.
+
+## The annotated recipe
+
+```ts
+import { orcr } from "@orchestratr/sdk";
+
+async function tournament(candidates: string[]): Promise<string> {
+  return orcr.scope("tournament", async () => {
+    let pool = candidates;
+    for (let round = 1; pool.length > 1; round++) {
+      const next: string[] = [];
+      for (let i = 0; i < pool.length; i += 2) {
+        if (i + 1 >= pool.length) { next.push(pool[i]); continue; }   // bye
+        const verdict = await orcr.ask({
+          agent: "claude", path: `round_${round}/match_${i / 2}`,
+          prompt: `Which is better, A or B? Reply exactly A or B.\n` +
+                  `--- A ---\n${pool[i]}\n--- B ---\n${pool[i + 1]}`,
+        });
+        next.push(verdict.trim().startsWith("B") ? pool[i + 1] : pool[i]);
+      }
+      pool = next;
+    }
+    return pool[0];
+  });
+}
+```
+
+What each piece is doing:
+
+- The outer `for` runs one round per halving; it continues while `pool.length > 1`.
+- The inner `for` steps through the pool in pairs (`i += 2`). Each pair is one match.
+- **Byes are the odd-one-out rule.** When `i + 1 >= pool.length`, there is no partner, so `pool[i]` advances unopposed with `next.push(pool[i]); continue;`. An odd pool never drops a candidate.
+- **Path composition encodes the bracket.** `round_${round}/match_${i / 2}` gives every match a unique, readable path: `tournament/round_1/match_0`, `tournament/round_1/match_1`, `tournament/round_2/match_0`. The round and match indices are path segments, so nothing collides across rounds.
+- The judge replies `A` or `B`; `verdict.trim().startsWith("B") ? pool[i + 1] : pool[i]` reads the winner. Anything that is not `B` (including a malformed answer) advances `A`.
+- `pool = next` reduces the pool for the next round. When one candidate remains, `pool[0]` is the winner.
+
+<Callout title="Matches here run sequentially">
+This recipe awaits each match before the next. That keeps the code simple and the pool reduction obvious. To speed up a wide round, wrap the inner loop's matches in `Promise.all` so a whole round runs in parallel; the path scheme already keeps their paths distinct.
+</Callout>
+
+## Primitives it exercises
+
+- [`orcr.scope`](/docs/guides/scopes-and-fanout) to root the whole bracket under `tournament`.
+- Sequential [`orcr.ask`](/docs/getting-started/quickstart-sdk), one per match.
+- [Path composition](/docs/reference/path-grammar) to encode round and match indices as segments.
+
+## Failure and cleanup
+
+- **The tie-break is deterministic.** `startsWith("B") ? B : A` means A wins unless the judge explicitly says B. A blank, malformed, or injected answer never stalls the bracket; it just advances A. Every match resolves to exactly one winner.
+- **Singleton scope.** The `tournament` root is unique among live agents, so a second concurrent bracket fails fast with `state_conflict` (`path_in_use`). When you need concurrent brackets, parameterize the scope with a job id, for example `orcr.scope("tournament_" + jobId, ...)`. See [identity and paths](/docs/concepts/identity).
+- Every match is `gc: "immediate"` (via `ask`), so panes close as each verdict is captured. Nothing to reap.
+
+## Run it
+
+```sh
+orcr scaffold tournament-workflow && cd tournament-workflow
+# paste the recipe into workflow.ts, then call tournament([...]) from run()
+npx tsx workflow.ts
+```
+
+The recipe exports `tournament(candidates)`; the CI fixture calls it with four strings and prints the winner.
+
+Next: [loop-until-done](/docs/patterns/loop-until-done) takes any of these flows durable, handing remaining work to a scheduled loop.

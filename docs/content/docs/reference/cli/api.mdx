@@ -1,0 +1,37 @@
+---
+title: orcr api
+description: "The api schema and api snapshot verbs: the versioned protocol schema and a consistent runtime-state document that make the socket API self-describing."
+---
+
+`orcr api` mirrors `herdr api`. It exposes the socket protocol as data so the API is self-describing for languages without a TypeScript SDK. The schema is the contract; the CLI is one client of it.
+
+```text
+orcr api schema   [--json | --output <path>]
+orcr api snapshot [--json]
+```
+
+## schema
+
+Prints the versioned JSON schema of the socket protocol: every method's params and result, event payloads, error codes, and the protocol version. This is the single source of truth that the TypeScript SDK's generated client is produced from, and it is how a client in any language discovers the wire contract.
+
+```sh
+orcr api schema --output ./orcr-schema.json
+orcr api schema --json | jq '.methods | keys'
+```
+
+- `--json` prints the schema to stdout.
+- `--output <path>` writes it to a file.
+
+The schema is documented in prose on the [socket API reference](/docs/reference/socket-api).
+
+## snapshot
+
+Dumps live runtime state (agents, the queue, loops, and GC clocks) in one consistent document stamped with `snapshot_seq`. The sequence stamp lets a client subscribe to the event stream from exactly that point without missing or double-applying an update (this is the basis for [`orcr top`](/docs/reference/cli/top) and the SDK's `watch`).
+
+```sh
+orcr api snapshot --json | jq '.agents[] | select(.status == "blocked")'
+```
+
+JSON result: `{snapshot_seq, agents:[…], loops:[…], queue:[…]}`. The agent rows are the same flat shape as [`agent ls`](/docs/reference/cli/agent); each loop carries its active runs.
+
+Prefer `api snapshot` or `ls --json` for machine-readable state, not `top` (which is a TUI with no `--json`). See the [socket API reference](/docs/reference/socket-api) for how snapshots and subscriptions compose under one cursor pin.

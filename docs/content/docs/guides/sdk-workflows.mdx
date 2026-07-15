@@ -1,0 +1,192 @@
+---
+title: Write workflows with the SDK
+description: Author real control flow (branching, retries, fan-out, schedules) in TypeScript.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The CLI is for one or two agents. The moment a workflow needs branching, retries, fan-out over a computed list, or a schedule, write it in TypeScript with `@orchestratr/sdk`. The SDK is a typed client of the socket API: anything the CLI can do, the SDK can do, and anything the SDK does, a shell script can do with `orcr … --json`. There is no private surface.
+
+## Scaffold a project
+
+`orcr scaffold` sets up a ready-to-run project and installs dependencies:
+
+```sh
+orcr scaffold my-workflow
+cd my-workflow
+npx tsx workflow.ts
+```
+
+It creates exactly three files and runs `npm install`:
+
+```text
+package.json    @orchestratr/sdk (pinned to this CLI's version) · tsx · typescript
+tsconfig.json
+workflow.ts     a ~15-line runnable example: scope → run --name → wait → last-response
+```
+
+Rules to know:
+
+- Requires Node 20 or newer plus npm. Missing → `environment_error` with an install pointer, and nothing is created. This is the only orcr feature that needs Node; the CLI itself does not.
+- Never overwrites. If any of the three files already exists in the directory, it fails with `state_conflict` and touches nothing.
+- Purely local. `scaffold` is the one command that does not talk to the server; the project it generates talks to the server like any client, and the socket version check catches CLI/SDK drift loudly.
+
+It is a plain npm project, so you can add more `.ts` files freely and `npm install` any dependency the workflow needs (a GitHub client, a CSV parser). A human can review it like any other code.
+
+## Where projects live
+
+This is convention, not CLI behavior (the [skill](/docs/guides/the-skill) teaches it), split by lifetime:
+
+```text
+one-time dynamic workflow → $ORCR_AGENT_DATA_DIR/workflows/   (disposable, but auditable)
+reusable workflow / loop   → ~/.orcr/workflows/<name>/         (the shared library)
+```
+
+A one-time script written by an agent for one task dies with that agent's other artifacts but stays auditable. Anything reusable, and every loop's script, goes in the shared home, because a loop is by definition reusable. Two loops can share one project; removing and recreating a loop leaves its script untouched. A loop's cwd stays the workspace, so a script living in the shared home is invoked by absolute path (`<project>/node_modules/.bin/tsx <project>/x.ts`); Node finds the project's dependencies by walking up from the script file.
+
+## Spawn an agent
+
+`orcr.agent.run` returns an `AgentHandle` immediately, matching `agent run` semantics:
+
+```ts
+import { orcr } from "@orchestratr/sdk";
+
+const a = await orcr.agent.run({
+  agent: "codex",     // optional: falls back to config defaults.agent
+  prompt: "…",
+  name: "worker",     // --name OR path: exactly one (naming is mandatory)
+  // gc?, model?, effort?, cwd?, timeout?
+});
+
+a.uuid;               // permanent id
+a.path;               // "refactor/phase_1/worker"
+a.name;               // "worker" (last segment)
+a.dataDir;            // = ORCR_AGENT_DATA_DIR (the data convention)
+```
+
+The handle has the per-agent verbs:
+
+```ts
+await a.wait({ timeout });               // settles: turn complete | blocked | ended
+await a.send(prompt);
+await a.logs({ tail });                  // snapshot → LogEntry[]
+for await (const e of a.followLogs()) { … }   // streaming is a separate call
+await a.lastResponse();                  // → string (throws TranscriptUnavailable)
+await a.kill();
+```
+
+## The one-liner: ask
+
+`ask` is documented sugar for `run({ gc: "immediate" })` then `wait()` then `lastResponse()`. Naming rules are identical to `run`.
+
+```ts
+const answer: string = await orcr.ask({
+  agent: "claude", name: "quick_check", prompt: "…",
+});
+```
+
+## Collections
+
+The collection helpers take glob patterns (relative to your scope, `/` for absolute, `*`/`**` wildcards):
+
+```ts
+await orcr.agent.wait("phase_1/*", { timeout });   // relative to my scope
+await orcr.agent.wait("/refactor/**");             // absolute
+await orcr.agent.ls({ pattern, agent, status, managed, all });
+await orcr.agent.kill("fanout/*", { force });      // no interactive confirm in the SDK
+```
+
+The SDK never prompts. Destructive helpers behave like non-interactive CLI calls (`-y` semantics).
+
+## Scopes and fan-out
+
+`orcr.scope()` prefixes every relative path created or targeted inside it, using `AsyncLocalStorage` (not a process global), and scopes nest. Fan-out is plain `Promise.all` over `run`/`ask`:
+
+```ts
+await orcr.scope("review", async () => {
+  const reviewers = await Promise.all(files.map((f, i) =>
+    orcr.agent.run({ agent: "claude", path: `fanout/file_${i}`, gc: "immediate", prompt: `…${f}…` })));
+  await orcr.agent.wait("fanout/*");   // relative to the review scope
+}, { killOnThrow: true });             // barrier-kill review/** on throw
+```
+
+This is its own topic: see [Scopes, lineage, and fan-out](/docs/guides/scopes-and-fanout).
+
+## Context from the environment
+
+Inside a spawned agent or a loop run, derive your context from the env contract, never hand-parse `ORCR_PATH`:
+
+```ts
+const ctx = orcr.context.fromEnv();
+// → { kind: "agent" | "loopRun" | "root", id?, path?, scope?, dataDir?, parent?,
+//     loop?: { name, runId, path, dataDir } }
+```
+
+`dataDir` is `ORCR_AGENT_DATA_DIR` for agents; loop membership is detected via `ORCR_LOOP_DATA_DIR`. See [Data and file conventions](/docs/concepts/data-and-files).
+
+## Live events
+
+`watch` is snapshot-then-subscribe, the same feed `orcr top` renders:
+
+```ts
+const sub = await orcr.watch({ pattern, agent, status, managed, sinceSeq });
+for await (const ev of sub) {
+  // typed events: agent.status_changed, queue.promoted, …
+}
+```
+
+## Loops
+
+```ts
+await orcr.loop.create({
+  name: "burn_down", cron: "*/30 * * * *", timeout: "25m",
+  maxConcurrency, overlap,
+  command: [`${wf}/node_modules/.bin/tsx`, `${wf}/burn-down.ts`],
+});
+const run = await orcr.loop.run.start("burn_down");
+// → { uuid, path: "burn_down/r82c9s", runId, loop, status, dataDir }
+await orcr.loop.run.stop("burn_down", { runId });
+await orcr.loop.run.ls("burn_down", { all });
+await orcr.loop.ls();
+await orcr.loop.logs("burn_down", { run, source });
+await orcr.loop.pause("burn_down");
+await orcr.loop.resume("burn_down");
+await orcr.loop.rm(orcr.loopNameFrom(process.env.ORCR_PATH!));   // self-terminate
+```
+
+## Attach is terminal-mediated
+
+The SDK does not fake an interactive method. `prepareAttach` returns the command for you to exec:
+
+```ts
+const at = await orcr.agent.prepareAttach("review/worker", { takeover: false });
+// → { command, leaseId, uuid, path, ttlMs }
+await at.run();   // spawns it, heartbeats the lease while it lives, releases on exit
+```
+
+## Parity and server helpers
+
+The generated protocol client covers **every** socket method 1:1 (`server.*`, `api.*`, `loop.run.*`, `events.*`, `watch.open`, and the rest); the helpers above are the curated layer on top. Nothing the CLI can do is missing from the SDK.
+
+```ts
+await orcr.server.status();
+await orcr.api.snapshot();
+```
+
+## Typed errors
+
+Failures become typed errors carrying `{ code, message, details }` from the protocol error enum, one class per code:
+
+```text
+NotFound · InvalidRequest · StateConflict · Blocked · Timeout
+IntegrationMissing · TranscriptUnavailable · EnvironmentError · ServerError
+```
+
+A force-required kill is a `StateConflict` with `err.forceRequired`. The socket version check surfaces as `EnvironmentError` (cause `unsupported_version`).
+
+## Next
+
+- [Scopes, lineage, and fan-out](/docs/guides/scopes-and-fanout): compose paths correctly.
+- [Orchestration patterns](/docs/patterns): the runnable recipes.
+- [Data and file conventions](/docs/concepts/data-and-files): getting structured output from agents.
+- [SDK reference](/docs/reference/sdk): the full typed surface.

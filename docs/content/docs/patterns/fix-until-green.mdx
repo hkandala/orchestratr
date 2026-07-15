@@ -1,0 +1,96 @@
+---
+title: Fix-until-green
+description: A worker agent fixes build errors while a verifier on a different provider judges the result, looping until the verifier says PASS.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Fetch the compiler errors, fix them with one agent, verify with a *different* provider, and repeat until the verifier says PASS. This is the goal-style loop: a long-lived worker you keep steering, and a fresh independent reviewer each round.
+
+## The scenario
+
+You have a repository that does not compile. You want an agent to fix it, but you do not want that same agent to certify its own work. So the loop has two roles:
+
+- A **fixer** that stays alive across iterations (`gc: "never"`), holding its context so each `send` builds on the last.
+- A **verifier** spawned fresh each green build, on a different provider, that reviews the uncommitted changes and replies `PASS` or `FAIL: <reason>`. Its objection feeds back to the fixer.
+
+The loop is bounded to 10 iterations so a stubborn build cannot run forever.
+
+## The annotated recipe
+
+```ts
+import { orcr } from "@orchestratr/sdk";
+import { execSync } from "node:child_process";
+
+const build = () => {
+  try { execSync("npx tsc --noEmit", { stdio: "pipe" }); return { ok: true, errors: "" }; }
+  catch (e: any) { return { ok: false, errors: String(e.stdout) }; }
+};
+
+await orcr.scope("fix_build", async () => {
+  const fixer = await orcr.agent.run({
+    agent: "claude", name: "fixer", gc: "never", cwd: process.cwd(),
+    prompt: "You fix TypeScript build errors in this repo. Wait for my input.",
+  });
+
+  for (let iter = 1; iter <= 10; iter++) {
+    const { ok, errors } = build();
+    if (ok) {
+      // independent eyes: a codex verifier judges the changes, not the author
+      const verdict = await orcr.ask({
+        agent: "codex", path: `verify/iter_${iter}`,
+        prompt: `The build is green. Review the uncommitted changes in ${process.cwd()}
+                 for correctness and unintended edits. Reply exactly PASS or FAIL: <reason>.`,
+      });
+      if (verdict.trim().startsWith("PASS")) break;
+      await fixer.send(`A reviewer rejected the changes: ${verdict}. Address this.`);
+    } else {
+      await fixer.send(`Build errors (iteration ${iter}):\n${errors}\nFix all of them.`);
+    }
+    await fixer.wait();
+  }
+  await fixer.kill();
+}, { killOnThrow: true });   // any crash cleans up the whole subtree
+```
+
+What each piece is doing:
+
+- `orcr.scope("fix_build", ...)` roots everything under `fix_build`. The fixer lands at `fix_build/fixer`; each verifier at `fix_build/verify/iter_1`, `fix_build/verify/iter_2`, and so on.
+- `gc: "never"` keeps the fixer alive between iterations so `send` steers the same agent instead of a new one. You clean it up explicitly with `kill()`.
+- The build check is your code, not orcr's. orcr never infers success from output; you run `tsc`, read the exit status, and decide.
+- `orcr.ask(...)` for the verifier is a one-liner: it spawns a `gc: "immediate"` agent, waits for the answer, returns the final response as a string, and closes the pane. A new verifier each iteration means no stale context.
+- `agent: "codex"` for the verifier deliberately differs from the fixer's `agent: "claude"`. The reviewer is not grading its own work.
+- The verdict is parsed with `verdict.trim().startsWith("PASS")`. On `FAIL`, the objection is fed back to the fixer verbatim, then `fixer.wait()` blocks until the fixer's turn completes before the next build check.
+
+<Callout title="Prime the worker first">
+In the CI fixture the recipe adds `await fixer.wait()` right after spawning the fixer, before the loop, so the fixer finishes processing its priming prompt before the first `send` steers it. Do the same for any long-lived worker you spawn with a setup prompt and then steer.
+</Callout>
+
+## Primitives it exercises
+
+- [`orcr.scope`](/docs/guides/scopes-and-fanout) to root and namespace the whole workflow.
+- [`orcr.agent.run`](/docs/guides/run-agents) with `gc: "never"` for the persistent worker.
+- [`agent.send`](/docs/guides/attach-and-steer) to steer the worker with each round's feedback.
+- [`agent.wait`](/docs/concepts/status-and-completion) to block on the worker's turn completing.
+- [`orcr.ask`](/docs/getting-started/quickstart-sdk) for the fresh verifier each round.
+
+## Failure and cleanup
+
+Two mechanisms keep this from leaking agents:
+
+- `{ killOnThrow: true }` on the scope. If any `await` inside throws (a build command that never returns, a `Blocked` verifier that needs a human, a bug in your code), the scope performs a barrier kill of `fix_build/**`, cancelling in-flight spawns and killing every agent under the root before the error propagates. See [agent lifecycle and GC](/docs/concepts/lifecycle) and [scopes, lineage & fan-out](/docs/guides/scopes-and-fanout).
+- The bounded `for` loop. Always give an unattended loop a numeric ceiling; here it is ten iterations. A build that never goes green exits the loop and hits `fixer.kill()` regardless.
+
+If the verifier comes back `blocked` (a usage limit, a login prompt), `orcr.ask` throws `Blocked`, which `killOnThrow` catches and cleans up. See [error codes](/docs/reference/errors).
+
+## Run it
+
+```sh
+orcr scaffold fix-until-green && cd fix-until-green
+# paste the recipe into workflow.ts, replacing the generated example
+npx tsx workflow.ts
+```
+
+Both providers need their integrations installed on both layers (`herdr integration install claude` and `herdr integration install codex`); otherwise the run fails fast with `integration_missing`. See [providers & integrations](/docs/concepts/providers).
+
+Next: [adversarial verification](/docs/patterns/adversarial-verification) generalizes the single verifier into N lenses that must reach a majority.

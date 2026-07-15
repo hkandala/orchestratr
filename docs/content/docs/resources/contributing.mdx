@@ -1,0 +1,101 @@
+---
+title: Contributing
+description: How to build and test orcr, run the e2e gate, navigate the codebase, extend it cleanly, and the conventions every change follows.
+---
+
+orcr is a Rust workspace (crate `orchestratr`, binaries `orcr` and `orcr-mock-agent`) with a TypeScript SDK under `sdk/ts/` and an installable skill under `skill/`. This page covers building, testing, the codebase map, how to extend each surface, and the conventions a change must hold to.
+
+## Prerequisites
+
+- **Rust >= 1.89** for the CLI and server.
+- **Node >= 20** for the SDK, its tests, and `orcr scaffold`.
+- **herdr** on your `PATH` with the claude and codex integrations, for the e2e suites. The unit and fast tests do not need herdr.
+
+## Build and test
+
+```sh
+cargo test                          # unit + fast tests (no herdr needed)
+cargo clippy --all-targets          # lint
+(cd sdk/ts && npm install && npm test && npm run codegen:check)   # SDK tests + drift check
+ORCR_E2E=1 cargo test -- --test-threads=1   # e2e against live herdr + the mock provider
+```
+
+The fast tests (default `cargo test`) prove the auto-start race resolves to one server, `kill -9` gives a clean restart with an intact store, `api schema` is valid JSON Schema with full method coverage, and subscription replay has no gaps or dups.
+
+The SDK's `codegen:check` fails on drift: `src/generated.ts` is generated from `orcr api schema`, so the SDK cannot silently fall behind the protocol. `sdk/ts/test/` also proves path-grammar parity with `src/path.rs` and 100% schema-method coverage.
+
+## The e2e gate and the mock provider
+
+End-to-end tests are gated behind `ORCR_E2E=1` so `cargo test` stays fast. They exercise real behavior against **live herdr**, using the scriptable **mock provider** (`orcr-mock-agent`) instead of real claude or codex. The mock self-discovers its herdr pane, reports its own state, writes a claude-format transcript into its data dir (so `logs` and `ask` resolve), and parses per-turn directives from the prompt (`@turn_ms`, `@say=<word>`, `@write=<relpath>`, `@block`, and more) so a test can drive turn shape per agent. It runs only under `ORCR_ALLOW_MOCK_PROVIDER=1`.
+
+The suites, run one at a time:
+
+```sh
+ORCR_E2E=1 cargo test --test e2e                                   # driver + harness
+ORCR_E2E=1 cargo test --test agent_e2e -- --test-threads=1         # agent core
+ORCR_E2E=1 cargo test --test completion_e2e -- --test-threads=1    # turns, wait, logs
+ORCR_E2E=1 cargo test --test gc_e2e -- --test-threads=1            # park/reap, attach, reconcile
+ORCR_E2E=1 cargo test --test loop_e2e -- --test-threads=1          # scheduler
+ORCR_E2E=1 cargo test --test top_e2e -- --test-threads=1           # the TUI
+ORCR_E2E=1 cargo test --test recipe_e2e -- --test-threads=1        # SDK, recipes, scaffold
+```
+
+Every e2e test creates a throwaway `ORCR_HOME` tempdir and a **disposable** herdr session named `orcr_test_<rand>` (the rand comes from a UUIDv4, because UUIDv7's timestamp prefix collides across near-simultaneous tests), and tears both down in a drop guard. Never touch the user's `default` session and never use `~/.orcr`. Copy the harness helpers in `tests/e2e.rs`. Non-M4 suites set `ORCR_DISABLE_DISCOVERY=1` so unmanaged discovery does not pull your real sessions into the test store.
+
+## Navigate the codebase
+
+Read `spec/codebase.md` first. It is the living map of the source tree, updated by every milestone, so you can orient without re-reading everything. Open the specific file you need to touch for exact signatures; read the per-milestone `spec/_impl/*/notes.md` for the *why* (the herdr facts in `m0-foundations/notes.md` are critical to the driver).
+
+The rough shape:
+
+- `src/error.rs`: the error enum and exit mapping (single source of truth).
+- `src/path.rs`: the path and glob grammar in one place; every surface derives from it.
+- `src/api.rs`, `src/wire.rs`: the socket method registry and the wire protocol.
+- `src/config.rs`, `src/home.rs`, `src/cron.rs`, `src/service.rs`, `src/scaffold.rs`: config, home layout and safety, the cron evaluator, service units, and scaffolding.
+- `src/server/`: the single-writer server: `engine.rs` (agent core, queue, spawn pipeline, wait/ask/logs), `completion.rs` (turn state machine), `gc.rs` (park/reap plus reconciliation), `loops.rs` (scheduler), `discovery.rs` (unmanaged discovery).
+- `src/store/`: sqlite (WAL), single writer; `schema.rs` and the typed DAL in `mod.rs`.
+- `src/driver/`: the herdr socket driver; `contract.rs` pins the herdr methods and is checked against live herdr.
+- `src/top/`: the view-only TUI.
+- `sdk/ts/`, `skill/`: the TypeScript SDK and the skill.
+
+## Milestones
+
+Each milestone is independently buildable, testable, and verifiable; unit tests plus the e2e gate must pass before the next begins. The full spec is at `spec/spec.md` and per-milestone plans are archived under `spec/_impl/`.
+
+| milestone | ships | verify |
+| --- | --- | --- |
+| M0 · Foundations | repo scaffold, config, home layout, store schema, herdr socket driver, owned-session bootstrap, mock provider + e2e harness | driver conformance tests against live herdr; store round-trip tests |
+| M1 · Server & protocol | `server start/stop/status/logs`, single-instance lock + auto-start, socket API skeleton, events + snapshot-then-subscribe | two clients race auto-start to one server; `kill -9` gives a clean restart; the schema validates |
+| M2 · Agent core | `agent run` (queue, promotion, spawn pipeline), identity, env contract, claude + codex integrations, `send`, `kill`, `ls`, stuck-start guard, status model | spawn/send/kill e2e on both providers; concurrent-spawn uniqueness; cancel-during-starting |
+| M3 · Completion & logs | turns + input epochs + external-turn detection, `wait`, transcript adapters, `logs` and its flags, final-response capture, `gc immediate` | send/wait/last-response round-trips; a stale idle never satisfies a newer send; restart mid-turn |
+| M4 · GC & reconciliation | `gc auto` park/reap, `attach` + leases, the reconciler, unmanaged discovery | park/send/un-park e2e; kill the server mid-move and the reconciler repairs; foreign panes are never touched |
+| M5 · Loops | `loop` and `loop run` verbs, the scheduler (tz-correct cron, run ids, process groups, overlap/coalescing, restart recovery), `server enable/disable` | DST boundary tests; overlap coalescing; `loop run stop <name> <run_id>`; reboot-simulation recovery |
+| M6 · top | the TUI: view-only tree, live statuses, filters, snapshot + event rendering | renders 100-agent trees from snapshot + events without drops; filter parity with `ls`; mid-storm restart |
+| M7 · SDK & skill | the TS SDK, `orcr scaffold`, the pattern recipes as tested fixtures, the skill, docs | examples run end-to-end against live providers; the SDK covers 100% of schema methods; a scaffolded project runs `workflow.ts` green on a clean checkout |
+
+## How to extend
+
+Match the spec verbatim where it is precise (grammar, status vocabulary, error and exit codes, JSON shapes, env contract, store schema). Where the spec is silent, choose the simplest correct behavior and record it in the milestone `notes.md`.
+
+| change | where |
+| --- | --- |
+| new error condition | add or adjust `ErrorCode` in `src/error.rs`; keep the enum small, detail goes in `details` |
+| new store data | schema in `src/store/schema.rs` (bump `schema_version` only on an incompatible on-disk change) + typed access in `src/store/mod.rs` |
+| new herdr op | typed params/result in `src/driver/protocol.rs`, a method in `src/driver/mod.rs`, and pin it in `src/driver/contract.rs` + the conformance fixture |
+| new provider integration | `src/driver/integration.rs`; both layers are required (see [providers and integrations](/docs/concepts/providers)) |
+| new socket method | register it in `src/api.rs` `methods()` (params/result schema, `implemented`), add its handler in `src/server/mod.rs` `handle_request`, and call it from the CLI verb in `src/cli.rs` |
+| new event kind | add to `EVENT_KINDS` in `src/api.rs`; producers write it with `store::append_event_tx` in the same transaction as the change, then publish |
+| new loop or scheduler behavior | `src/server/loops.rs` + loop/run DAL in `src/store/mod.rs`; keep slot reservation atomic (`claim_pending_run` in one `BEGIN IMMEDIATE`) |
+| new OS service surface | `src/service.rs` (launchd/systemd unit builders + golden tests) |
+| new e2e | copy the disposable-home + disposable-session harness in `tests/` |
+
+## Conventions
+
+- **Single writer.** The server owns the store. All writes go through `BEGIN IMMEDIATE` transactions, and events are written in the same transaction as the change they describe.
+- **Clean lint.** `cargo fmt` and `cargo clippy --all-targets -- -D warnings` must stay clean.
+- **Small, focused commits on `main`**: one module and its tests, one verb, or one fix per commit.
+- **Derive, do not duplicate.** Nothing derivable is stored (an agent's name is its path's last segment, its home workspace is its first segment or `default`, data dirs mirror paths). Glob matching is anchored and segment-aware, never SQL `LIKE`.
+
+## License
+
+orchestratr is dual-licensed: GNU AGPL-3.0-or-later for open source, and a commercial license for organizations that cannot comply with the AGPL (contact `hey@orchestratr.dev`). See the `LICENSE` file in the repo.

@@ -1,0 +1,93 @@
+---
+title: Path grammar and glob patterns
+description: The one grammar every surface derives from (segments, paths, patterns, the rand placeholder, loop names, run ids), plus the anchored matching rules, reserved names, and resolution order.
+---
+
+Every surface (CLI validation, the SDK, the socket schema) derives from one grammar block. It is defined nowhere else, and no surface uses ad-hoc string matching or SQL `LIKE`. For the conceptual walkthrough, see [identity: paths and uuids](/docs/concepts/identity).
+
+## The grammar
+
+```
+segment   = [a-z0-9_]{1,64}
+path      = segment ("/" segment)*        # ≤ 8 segments, ≤ 256 chars total;
+                                          # the last segment is the name
+abs_path  = "/" path                      # anchored to the root
+pattern   = path where any segment may    # wildcards are whole segments only:
+            be "*" or "**"                # a/b/*, a/*/b, a/**, a/**/b, no
+                                          # partial forms (phase_*); bulk verbs
+                                          # only; a trailing bare "/" is invalid
+{rand}    = creation-only placeholder     # replaced with 5 random [a-z0-9] chars
+                                          # anywhere in --name/--path values
+loop name = segment                       # one segment, mandatory
+run id    = "r" + 5 [a-z0-9]              # r82c9s, generated, never user-chosen
+run path  = loop_name "/" run_id
+```
+
+A segment is lowercase alphanumeric plus underscore, up to 64 characters. A path is at most 8 segments and at most 256 characters total. A depth violation is `invalid_request` with `details.reason: "path_too_deep"` (carrying the effective path and count).
+
+## Anchored matching
+
+Patterns are resolved against the caller's scope first (a leading `/` skips that), then matched **anchored against the full path**. `review/*` can never match `reviewer/x`.
+
+- `*` matches any characters except `/`: one whole segment.
+- `**` matches any characters including `/`: any number of segments (one or more).
+
+Both may appear anywhere and more than once (`*/review/*` is legal). A bare `*` means every agent at the current level; a bare `**` means everything under the scope. There are no partial-segment forms like `phase_*`. A trailing bare slash (`review/`) is invalid syntax.
+
+So `review/*` matches agents directly under `review` (one level, not nested ones), and `review/**` matches everything under `review` at any depth, never the agent named `review` itself. Self plus subtree is two targets: `kill review "review/**"`.
+
+The stored matcher preserves exactly these semantics: no raw string-prefix scans, no SQL `LIKE`, because `_` is both a legal name character and a `LIKE` wildcard.
+
+## Where patterns are accepted
+
+| verb | accepts |
+| --- | --- |
+| `wait`, `kill`, `ls`, `top` (filter) | patterns and uuids (`<pattern\|uuid>`) |
+| `send`, `logs`, `attach` | exact target only (`<path\|uuid>`); wildcards rejected |
+
+Quote patterns in the shell (`kill "review/**"`) so your shell does not expand them against real files first.
+
+## The `{rand}` placeholder
+
+Same path means same agent slot, by definition: there is no silent auto-suffixing. When you want a fresh path each run, use `{rand}`: anywhere in a `--name` or `--path` value, it is replaced with 5 random lowercase alphanumeric characters before validation.
+
+```
+--path "review_{rand}/file_1"   →  review_u38c8/file_1  this run
+                                   review_o90j8/file_1  the next
+```
+
+`{rand}` is creation-only. It never appears in a selector.
+
+## Reserved level-1 names
+
+Some top-level path segments are owned by orcr, and are also rejected as loop names:
+
+| level-1 segment | you may create paths here? | owned by | what it is |
+| --- | --- | --- | --- |
+| `idle` | no | orcr | the parking workspace (GC) |
+| `unmanaged` | no | orcr | agents you started by hand, auto-tracked |
+| an **active** loop's name | only from inside that loop's runs | the loop | its runs and their agents |
+| an **ended** loop's name | yes | free again | history stays reachable by uuid |
+
+Reserved names apply at level 1 only: inside a scope, `--name idle` resolving to `review/idle` is fine. Loop protection applies to creation only: observing agents under an active loop (`ls`, `wait`, `logs`, `top`) always works, and `kill "/nightly/**"` works too (with the normal confirmation) as the escape hatch for a runaway loop. While loop `nightly` is active, nothing outside its own runs can create an agent anywhere under `nightly/**`, whether via a relative path or an absolute `/nightly/…`.
+
+## Enforcement order
+
+Every check runs on the effective path (the relative input already resolved against the caller's scope), in this order:
+
+1. **parse** the input.
+2. **resolve** against the caller's scope, unless the path is absolute.
+3. **validate grammar and depth**: `invalid_request`, `details.reason: "path_too_deep"`.
+4. **reserved level-1 check**: `invalid_request`, `details.reason: "reserved_name"`.
+5. **active-loop ownership.**
+6. **active path uniqueness**: `state_conflict`, `details.reason: "path_in_use"` with the occupying `{uuid, path, status}`.
+
+Steps 3 through 6 happen in one `BEGIN IMMEDIATE` transaction, which is what makes concurrent spawns safe.
+
+## Resolution and uniqueness
+
+A full uuid contains dashes, which names never do, so it resolves to its row directly, active or ended. A bare target is tried as a path first (the active agent, else the most recent ended agent with that path); only if nothing matches as a path is it tried as a uuid prefix of 8 or more hex characters.
+
+Results say which one you got: JSON carries `resolved: "active" | "latest_ended"`. `send`, `attach`, and `kill` act on active agents only.
+
+A full path must be unique among active agents (any non-ended status, including `lost`, which reserves its path until reconciliation confirms the terminal is gone). This is enforced by a partial unique index. Paths of ended agents are reusable: the uuid is what stays unique forever. For older reuses of a path, use the uuid from `ls --all`.

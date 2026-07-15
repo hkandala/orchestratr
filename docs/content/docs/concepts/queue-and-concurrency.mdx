@@ -1,0 +1,41 @@
+---
+title: Queue and concurrency
+description: How admission control protects the machine, with one FIFO queue, a global cap plus per-provider caps, and the stuck-start guard.
+---
+
+Heavy interactive TUIs at 100 times over will take a machine down. orcr protects against that with one queue and two caps. Every `agent run` passes through the same admission path, so no caller can flood the box, whether it is you, a script, an agent spawning agents, or a loop.
+
+## Every run enqueues
+
+`agent run` is async, always. The verb's whole job is to validate, persist a durable row, and print `<path> <uuid>`. The **server** processes the queue and manages the rest of the lifecycle. Every managed agent moves through the same statuses:
+
+```text
+queued → starting → working → idle → … → ended
+```
+
+The queue worker promotes strictly FIFO by `queue_seq`, as an atomic store transaction: `queued` becomes `starting` only if the row is still queued *and* a capacity recount under the write lock shows free slots.
+
+## Two caps
+
+- **Global cap** `concurrency.max` (default 25). This is RAM protection.
+- **Per-provider caps** beneath it, for example `claude = 10`. Any provider name is a valid config key.
+
+Promotion needs a free slot in **both**. A claude agent is promoted only when the global count is under 25 and the claude count is under the claude cap. See [configuration](/docs/guides/configuration) for setting the caps.
+
+## Stuck-start guard
+
+`starting` means a concurrency slot is claimed and the pane and TUI are being created. If that creation makes no progress (no pane appears, no `agent_session` pointer is captured) within an internal bound (`timings.max_starting`, default 2m, reset by each progress marker), the row is marked `ended` with `exit_reason: failed` and **stops holding its slot**. Otherwise one hung herdr call could block the whole queue forever.
+
+This is internal plumbing, not a user timeout. The rule is deliberately simple: if the guard expires with no pane recorded, the agent is `failed`; a pane that shows up later, matched by its launch token, is closed. Progress markers are herdr-reported facts only (pane created; `agent_session` pointer reported). Transcript parsing is never a startup requirement. For the actual per-turn timeout, see the explicit `--timeout` in [agent lifecycle and GC](/docs/concepts/lifecycle#there-is-no-default-timeout).
+
+## Acting on queued and starting agents
+
+- `wait` on a queued agent waits through promotion and its first turn.
+- `kill` on a queued agent dequeues it, ending it with `exit_reason: canceled`.
+- `kill` on a `starting` agent sets `cancel_requested`, checked between pipeline steps. Once a pane exists, cancellation closes it and ends the row with `exit_reason: canceled`.
+
+No work was done in either case, which is why both are `canceled` rather than `killed`. See [status model and completion](/docs/concepts/status-and-completion#exit_reason).
+
+## Loops have a separate knob
+
+Loops do not share the agent queue's caps. A loop's `--max-concurrency` caps concurrent **runs of that loop** (default 1), which is a different axis: it limits how many copies of the command run at once, not how many agents each run spawns. The agents a run spawns still pass through the global and per-provider caps like any other `agent run`. See [loops](/docs/concepts/loops#overlap-and-max-concurrency).

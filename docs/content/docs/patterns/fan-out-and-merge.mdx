@@ -1,0 +1,89 @@
+---
+title: Fan-out & merge
+description: Review every changed file in parallel with one cheap agent each, then a synthesizer merges the per-file findings into one report.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Run one agent per item across a computed list, all at once, then hand every result to a single synthesizer. This is the parallel shape, the most common orchestration workflow.
+
+## The scenario
+
+A pull request touches several files. You want each file reviewed independently, in parallel, then the findings merged into one prioritized report with overlaps removed. Each reviewer is a cheap one-shot agent that writes its findings to a file and exits; the synthesizer reads them all and produces the summary.
+
+## The annotated recipe
+
+```ts
+import { orcr } from "@orchestratr/sdk";
+import { execSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
+
+const files = execSync("git diff --name-only main", { encoding: "utf8" }).trim()
+  .split("\n").filter(Boolean);
+if (files.length === 0) { console.log("No changed files."); process.exit(0); }
+
+await orcr.scope("review", async () => {
+  const reviewers = await Promise.all(files.map((f, i) =>
+    orcr.agent.run({
+      agent: "claude", path: `fanout/file_${i}`, gc: "immediate",
+      prompt: `Review the diff of ${f} against main for bugs and risky changes.
+               Expand the environment variable ORCR_AGENT_DATA_DIR and write your
+               findings to $ORCR_AGENT_DATA_DIR/response.md, then say DONE.`,
+    })));
+
+  // settles when every reviewer finishes: gc:immediate → ended (completed)
+  await orcr.agent.wait("fanout/*");    // relative to the review scope
+
+  const findings = await Promise.all(reviewers.map(async r =>
+    `## ${r.path}\n` + await readFile(`${r.dataDir}/response.md`, "utf8")));
+
+  const summary = await orcr.ask({
+    agent: "codex", path: "merge/synthesizer",
+    prompt: `Merge these per-file review findings into one prioritized report,
+             deduplicating overlaps:\n\n${findings.join("\n\n")}`,
+  });
+  console.log(summary);
+});
+```
+
+What each piece is doing:
+
+- The fan-out is `Promise.all` over `files.map(...)`. Each `orcr.agent.run` returns a handle immediately, so all reviewers are spawned before any awaits complete, and they run concurrently up to the [concurrency caps](/docs/concepts/queue-and-concurrency).
+- The `path` on each run interpolates the index, so reviewer `i` lands at `fanout/file_0`, `fanout/file_1`, and so on under the `review` scope: `review/fanout/file_0`, `review/fanout/file_1`. Distinct paths are mandatory; two agents cannot share one live path.
+- `gc: "immediate"` closes each reviewer's pane the moment its final response is captured. No parked panes to clean up.
+- **The file convention.** Each reviewer writes structured output to `$ORCR_AGENT_DATA_DIR/response.md`. The prompt tells the agent to *expand* the environment variable; the caller reads the same location from the handle's `dataDir`. The completion sentinel (`then say DONE`) tells the agent when it is finished. See [data & file conventions](/docs/concepts/data-and-files).
+- `orcr.agent.wait("fanout/*")` blocks until every direct child of `review/fanout` settles. For `gc: "immediate"` agents that means `ended (completed)`. The pattern is relative to the scope; `*` matches one whole segment, so it catches `file_0` through `file_N` but nothing nested deeper.
+- The synthesizer reads each `response.md` off disk (not from a transcript) and merges them with a single `orcr.ask` on a different provider.
+
+<Callout title="The glob is whole-segment">
+`fanout/*` matches direct children only. To wait on everything under the scope at any depth you would use `fanout/**`. Quote patterns when you type them in a shell so it does not expand them against real files. See [path grammar & glob patterns](/docs/reference/path-grammar).
+</Callout>
+
+## Primitives it exercises
+
+- [`orcr.scope`](/docs/guides/scopes-and-fanout) to root the fan-out and namespace every reviewer.
+- Parallel [`orcr.agent.run`](/docs/guides/run-agents) via `Promise.all`, each with `gc: "immediate"`.
+- [`orcr.agent.wait`](/docs/concepts/status-and-completion) with a `*` pattern to join on the whole batch.
+- The [data-directory reads](/docs/concepts/data-and-files) via each handle's `dataDir`.
+- [`orcr.ask`](/docs/getting-started/quickstart-sdk) for the single synthesizer.
+
+## Failure and cleanup
+
+`gc: "immediate"` is the whole cleanup story here: each reviewer self-cleans as soon as it finishes, so there is nothing to reap even if the batch is large. The synthesizer is an `ask`, which is also `gc: "immediate"` under the hood.
+
+Two things to know:
+
+- If a reviewer's `response.md` is missing when you read it, `readFile` throws. Because the flow is not wrapped in `killOnThrow` here, add it if you spawn a large batch and want a thrown read to tear the batch down: `orcr.scope("review", async () => { ... }, { killOnThrow: true })`.
+- `wait("fanout/*")` snapshots its targets at invocation. Reviewers spawned after the wait starts are not included, which is why the fan-out completes before the wait is called.
+
+## Run it
+
+```sh
+orcr scaffold review-workflow && cd review-workflow
+# paste the recipe into workflow.ts, replacing the generated example
+npx tsx workflow.ts
+```
+
+Watch it live by splitting a pane running `orcr top "review/**"` beside yourself; the tree lights up as each reviewer starts and settles. See [monitor with orcr top](/docs/guides/monitor-with-top).
+
+This is also the [first-workflow tutorial](/docs/getting-started/first-workflow), built step by step. Next: [generate-and-filter](/docs/patterns/generate-and-filter) fans one prompt across providers instead of many files across one.

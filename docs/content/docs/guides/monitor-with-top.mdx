@@ -1,0 +1,97 @@
+---
+title: Monitor with orcr top
+description: Read the live, view-only tree of every active agent and loop.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+`orcr top` is the default view for tracking a running workflow or loop: a live tree that mirrors the path tree, with parent-to-child edges and statuses updating in real time. It is a status display, not a control surface. Acting on an agent is what the CLI verbs ([`attach`](/docs/guides/attach-and-steer), [`send`](/docs/guides/attach-and-steer), [`kill`](/docs/guides/run-agents#kill-stop-agents)) and `herdr --session orcr` are for.
+
+```text
+orcr top [<pattern|uuid>] [-a <provider>] [--status <s>]
+         [--managed|--unmanaged] [--loops]
+```
+
+```text
+┌ orcr · 9 agents (1 blocked) · 2 loops ─────────────────────────────┐
+│ ▼ refactor                                                         │
+│   ▼ phase_1                                                        │
+│     ├─ file_1     ● working    claude · opus        2m14s          │
+│     ├─ file_2     ● working    claude · opus        8m12s          │
+│     └─ review     ◐ blocked ⚠  codex · question    11m03s          │
+│ ▼ verify                                                           │
+│   └─ checker      ● working    codex  ↖ refactor/phase_1/file_1    │
+│ ▼ nightly · loop · next 09:00                                      │
+│   └─ ▼ run r82c9s  ⟳ running · due 08:00 · 12m                     │
+│       ├─ triage   ○ idle       claude               done 3m ago    │
+│       └─ fix_1    ● working    codex                4m40s          │
+│ ▼ unmanaged                                                        │
+│   └─ main/w6_p1   ● working    claude               22m            │
+│ ▶ idle (parked · 2)                                                │
+│                                                                    │
+│  [/] filter   [←→] collapse/expand   [q] quit                      │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+## The layout
+
+The tree is drawn by **paths**. Every agent appears exactly once, at its path:
+
+- Level-1 segments are the top nodes (they match herdr's workspaces).
+- Loops appear with their active runs as subtrees (`nightly` above, with run `r82c9s` and the agents it spawned nested inside).
+- Parked agents collapse into a single `Idle` node so tidied-away agents do not clutter the active work.
+- Unmanaged agents sit under `unmanaged`, grouped by the session they were found in.
+
+### Lineage is an annotation, never a second placement
+
+Parent-to-child edges come from the `ORCR_PARENT_*` env contract. A child can be created at an absolute path outside its parent's scope, so lineage is shown as a row annotation: a row whose parent lives elsewhere in the tree gets `↖ <parent path>` (above, `checker` under `verify` points to `refactor/phase_1/file_1`). Selecting a row highlights its parent and children wherever they sit. One node, one place; cross-scope edges are visible but never duplicate or re-root the tree. A parent that is a proper ancestor of the child gets no annotation, because the tree already shows that relationship.
+
+## Glyphs and status
+
+Rows show the name, a status glyph and status, provider and model (plus the blocked kind when relevant), and age.
+
+| glyph | meaning |
+| --- | --- |
+| `●` | working |
+| `○` | idle |
+| `◐` | blocked |
+| `⟳` | a loop run in flight |
+| dimmed | queued or starting, shown with the queue position |
+
+Blocked agents float upward: they are the "needs a human" queue, so `top` surfaces them where you will see them.
+
+## Keys and filters
+
+Interaction is navigation only:
+
+- `/` filters by path pattern (the same grammar as everywhere else, resolved against your scope).
+- Arrows collapse and expand nodes and move the selection.
+- `q` quits.
+
+CLI flags pre-scope the tree before it opens, mirroring `orcr agent ls`:
+
+```sh
+orcr top "refactor/**"        # only that subtree
+orcr top -a codex             # only codex agents
+orcr top --status blocked     # only agents that need a human
+orcr top --loops              # loops and their runs only
+orcr top --managed            # exclude unmanaged agents
+```
+
+The filter node set matches the equivalent `agent ls` query exactly.
+
+## Live-only by design
+
+`top` shows **active** agents only. There is no `--all` flag; history is `orcr agent ls --all`. This is deliberate: `top` is for watching work in flight, and machine-readable state comes from `orcr api snapshot` or `orcr agent ls --json`.
+
+Rendering rides the same snapshot-then-subscribe protocol as the rest of the system: `top` opens one consistent snapshot at a `snapshot_seq` (agents, loops, runs, queue positions, GC clocks, parent edges), then applies the event stream from that sequence. It cannot miss or double-apply an update, and it reconnects and re-snapshots if the server stops or the cursor expires.
+
+<Callout type="info">
+When you launch a real workflow inside a herdr session, split a no-focus pane running `orcr top "<your workflow root>/**"` beside yourself. The user watches the tree light up instead of wondering what is happening. The [skill](/docs/guides/the-skill) makes this a checklist item.
+</Callout>
+
+## Next
+
+- [Run and manage agents](/docs/guides/run-agents): `ls` for the flat, greppable view.
+- [Identity: paths and uuids](/docs/concepts/identity): the path and glob model the tree is built from.
+- [Schedule work with loops](/docs/guides/loops): the loops and runs shown as subtrees.

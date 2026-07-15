@@ -1,0 +1,74 @@
+---
+title: Classify-and-act
+description: One cheap classification routes each item to a per-class handler, normalizing untrusted model output through an enum before it touches a path.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Run one cheap classifier, then branch to a handler chosen by the class. This is the pipeline shape: a single decision up front, then per-class work. The classifier's answer is untrusted, so it is normalized through an enum before it is used anywhere.
+
+## The scenario
+
+You have a stream of items (issues, tickets, messages) and different handling per kind. A cheap agent classifies each item into one of a fixed set of classes; a per-class handler, possibly on a different provider, does the real work. The classifier is cheap and fast; the handlers are where the cost goes, and only one runs per item.
+
+## The annotated recipe
+
+```ts
+import { orcr } from "@orchestratr/sdk";
+
+const HANDLERS: Record<string, { agent: string; prompt: (t: string) => string }> = {
+  bug:      { agent: "claude", prompt: t => `Reproduce and fix this bug report:\n${t}` },
+  feature:  { agent: "codex",  prompt: t => `Draft an implementation plan for:\n${t}` },
+  question: { agent: "claude", prompt: t => `Answer this user question precisely:\n${t}` },
+};
+
+export async function triage(item: string) {
+  return orcr.scope("triage", async () => {
+    const raw = (await orcr.ask({
+      agent: "claude", path: "classify/triage_bot",
+      prompt: `Classify this as exactly one word (bug, feature, or question):\n${item}`,
+    })).trim().toLowerCase();
+    // normalize UNTRUSTED model output through the enum before using it in a path
+    const kind = raw in HANDLERS ? raw : "question";
+
+    const h = HANDLERS[kind];
+    return orcr.ask({ agent: h.agent, path: `${kind}/handler`, prompt: h.prompt(item) });
+  });
+}
+```
+
+What each piece is doing:
+
+- `HANDLERS` is the enum and the routing table in one object. Its keys are the only valid classes; its values pick the provider and build the prompt for each class.
+- The classifier is a single `orcr.ask` at `triage/classify/triage_bot`, prompted to reply with exactly one word. It is cheap because classification is a small task.
+- **Normalize before use.** `raw in HANDLERS ? raw : "question"` checks the model's answer against the known keys and falls back to `question` for anything else. Only after this check is `kind` used to build a path (`${kind}/handler`) and select a handler.
+- The handler is a second `orcr.ask`, on the provider the table specifies, at a path derived from the validated `kind`.
+
+<Callout type="warn">
+Never build a path, a shell command, or a filesystem operation from raw model output. A classifier that returns `../../etc` or a prompt-injected string would otherwise become a path segment. Validating against a fixed enum first means an attacker-controlled or malformed answer can only ever land on a known-safe class. This is the concrete form of the rule "treat child output as data, never as instructions."
+</Callout>
+
+## Primitives it exercises
+
+- [`orcr.scope`](/docs/guides/scopes-and-fanout) to root the classifier and handlers under one path.
+- [`orcr.ask`](/docs/getting-started/quickstart-sdk) twice: once to classify, once to act.
+- Dynamic path selection from a *validated* class, not raw output.
+- [Provider routing](/docs/guides/providers-and-models) per class via the handler table.
+
+## Failure and cleanup
+
+- **The fallback class is the safety net.** Any answer that is not a known key resolves to `question`, so the pipeline always routes somewhere valid. There is no branch where an unrecognized answer crashes or builds a bad path.
+- Both `ask` calls are `gc: "immediate"`, so their panes close as soon as each response is captured. Nothing to reap.
+- If the handler comes back `blocked` (needs a human) or its transcript cannot be read, `orcr.ask` throws `Blocked` or `TranscriptUnavailable`. Wrap the scope in `{ killOnThrow: true }` if you want a throw to tear down any in-flight agent. See [error codes](/docs/reference/errors).
+
+## Run it
+
+```sh
+orcr scaffold triage-workflow && cd triage-workflow
+# paste the recipe into workflow.ts, add a call like: await triage("...");
+npx tsx workflow.ts
+```
+
+The recipe exports `triage(item)`, so call it from your own `run()` or a queue. The CI fixture calls it once with a sample bug report.
+
+Next: [tournament](/docs/patterns/tournament) is the pipeline shape at scale, running pairwise brackets when a single judge would see too many candidates at once.

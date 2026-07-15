@@ -1,0 +1,91 @@
+---
+title: orcr server
+description: Operate the long-lived orcr server (start, stop, status, logs, enable, disable) and read the full server status JSON.
+---
+
+`orcr server` operates the single long-lived process that owns the store, the admission queue, GC, loop scheduling, reconciliation, and the socket API. Any CLI or SDK call auto-starts it on demand, so these verbs are for upgrades, debugging, and start-at-login registration rather than a required first step.
+
+```text
+orcr server start | stop | status | logs | enable | disable
+```
+
+## start
+
+Idempotent. If a healthy server already answers the readiness handshake, `start` exits 0 (`already_running` in JSON). Otherwise it starts under the single-instance lock and blocks until the handshake succeeds. Auto-start by other verbs is this same path.
+
+```sh
+orcr server start
+orcr server start --foreground   # what the service unit runs
+```
+
+`--foreground` runs the server in the foreground. Clients that lose a start race wait for readiness instead of spawning a second server. If the server cannot start, commands exit 2 with `environment_error` (`cause: server_start_failed`).
+
+## stop
+
+A graceful control-plane stop: stop accepting requests, close subscriptions with `server_stopping`, persist queue/GC/loop state, and release the socket. **Agent panes keep running**: stopping the server never kills agents (that is `agent kill`).
+
+While stopped: no loop fires (missed ones are skipped and logged on restart), no queue promotion, no GC (clocks are recomputed from persisted timestamps on restart), no unmanaged discovery. Any CLI call auto-starts the server again, so `stop` is not a pause switch. To pause loops, use `loop pause`.
+
+## status
+
+A health probe. Reports the server version and protocol version, socket and store paths, the herdr binary, its reachability, version, protocol, session socket path and running state, per-provider integration state, fleet counts, whether loop firing is enabled, the loop schedule and next fires, and reconciliation drift.
+
+```sh
+orcr server status
+orcr server status --json
+```
+
+Use it to verify a setup: the `integrations` map shows which providers are usable, and the counts show the current fleet.
+
+JSON result:
+
+```json
+{
+  "version": "0.1.0", "protocol": 1,
+  "socket": "/Users/you/.orcr/orcr.sock", "store": "/Users/you/.orcr/store.db",
+  "herdr": { "bin": "/usr/local/bin/herdr", "reachable": true,
+             "version": "0.7.2", "protocol": 16,
+             "socket": "/Users/you/.orcr/herdr-orcr.sock",
+             "session": "orcr", "session_running": true },
+  "integrations": { "claude": { "orcr": true, "herdr": true },
+                    "codex":  { "orcr": true, "herdr": false } },
+  "counts": { "live": 9, "queued": 2, "blocked": 1, "unmanaged": 1,
+              "orphan_agent_panes": 0, "unmarked_panes": 1 },
+  "loops_firing": true,
+  "loops": [ { "name": "nightly", "status": "active", "next_fire_at": "…" } ],
+  "drift": { "lost": 0, "repaired": 3 }
+}
+```
+
+The `counts` fields:
+
+| field | meaning |
+| --- | --- |
+| `live` | active managed agents |
+| `queued` | agents waiting for a concurrency slot |
+| `blocked` | agents needing a human |
+| `unmanaged` | discovered agents in your own sessions |
+| `orphan_agent_panes` | owned-session agent panes with no store row (reported, never touched) |
+| `unmarked_panes` | plain shells in the owned session (reported, never touched) |
+
+See [managed vs unmanaged agents](/docs/concepts/managed-vs-unmanaged) and [durability and recovery](/docs/concepts/durability) for what orphan and unmarked panes mean.
+
+## logs
+
+The server's own log at `~/.orcr/logs/server.log`: startup, herdr connection events, reconciliation actions, GC decisions, and errors. `--tail <n>` and `--follow` behave as elsewhere.
+
+```sh
+orcr server logs --tail 100 --follow
+```
+
+## enable / disable
+
+Start-at-login registration. Auto-start-on-demand works regardless of this; registration matters mainly so loops fire after a reboot before any orcr command is run. `enable` registers and starts; `disable` removes the registration (a running server and the store are untouched). `enable` echoes the created unit path and the platform command to verify it.
+
+| platform | mechanism |
+| --- | --- |
+| macOS | launchd agent `~/Library/LaunchAgents/dev.orchestratr.orcr.plist` (label `dev.orchestratr.orcr`, argv `orcr server start --foreground`, `RunAtLoad`, `KeepAlive` on crash) |
+| Linux | systemd user unit `~/.config/systemd/user/orcr.service` (`Restart=on-failure`) |
+| Windows | a Task Scheduler logon task (`schtasks /create … /sc onlogon`), landing with general Windows support |
+
+Any other platform returns `environment_error` (`cause: unsupported_platform`, exit 2). See the [run as a service guide](/docs/guides/run-as-a-service).

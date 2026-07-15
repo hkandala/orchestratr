@@ -1,0 +1,56 @@
+---
+title: Providers and integrations
+description: Why a provider needs both a herdr integration and an orcr integration, what each layer does, and how the driver contract is pinned to herdr's socket methods.
+---
+
+A provider is an agent CLI orcr can run: claude, codex, and more over time. Supporting one takes **two** integration layers, one on each side. orcr requires both because a half-working provider would leave you with statuses stuck at `unknown`, waits that can never resolve, and logs without transcripts.
+
+## The two layers
+
+- **herdr's integration**: installed with `herdr integration install <provider>`. It hooks the provider so herdr can *observe* it: agent state (`working`, `idle`, `blocked`) and the `agent_session` transcript pointer. herdr reports a blocked *state*, sometimes with a free-text message, but no structured reason.
+- **orcr's integration**: built into orcr (claude and codex ship first). It is how orcr *drives* the provider: launch argv (bypass-permissions flags, model and effort mapping), the startup recipe, completion tuning (the [named parameters](/docs/concepts/status-and-completion#integration-tuning-parameters)), the graceful-shutdown recipe, the transcript adapter, and `blocked_kind` classification.
+
+A provider is supported only when **both** are present.
+
+## Fail fast, no half-modes
+
+`agent run -a <provider>` fails fast with `integration_missing` when either layer is absent. The `details` name which layer or layers are missing and the exact fix: `herdr integration install <provider>`, or a pointer that the provider is not yet supported by orcr. Nothing is spawned.
+
+Unmanaged discovery only tracks supported providers; agents of a provider missing either layer are ignored. `server status` reports per-provider integration state (`integrations: {claude: {orcr, herdr}, …}`) so the gap is visible, and both `server status` and `--help` list the supported provider set. See [managed vs unmanaged agents](/docs/concepts/managed-vs-unmanaged#discovery-is-for-supported-providers-only).
+
+Degraded no-integration modes are deliberately cut for simplicity. They are on the roadmap, not shipping.
+
+## Supported set
+
+| provider | orcr integration | herdr integration | supported |
+| --- | --- | --- | --- |
+| claude | built-in (first release) | `herdr integration install claude` | yes |
+| codex | built-in (first release) | `herdr integration install codex` | yes |
+| pi / opencode / … | planned (`orcr integration add`) | available in herdr | not yet; `run` fails with the message above |
+
+A test-only `mock` provider exists for the e2e suite. It runs a scriptable fake agent TUI, writes a claude-format transcript into its own data dir, and is enabled only under `ORCR_ALLOW_MOCK_PROVIDER=1`. It is not for production use, but it is why every pattern in the cookbook has an end-to-end test.
+
+## Transcript adapters
+
+The orcr-integration piece behind `logs` locates and parses the provider's native session files into a common shape (ordered messages, roles, tool calls, token counts where available). Two rules keep it honest:
+
+- **Identity is a gate, not a guess.** Adapters select transcripts by the pane's `agent_session` id and the agent's `created_at`, never by cwd mtime alone. Multiple candidates return `transcript_unavailable` with the candidates in `details`, never a silent pick.
+- **Freshness.** A final response is reported only once the transcript has advanced past the observed completion, bounded by `transcript_freshness_timeout_ms`; otherwise `transcript_unavailable`.
+
+On each completion only the transcript locator and cursor are recorded. orcr keeps no response copies; reads always come from the native files. A documented limitation follows: if a provider later rotates or deletes its transcript files, historical `--last-response` fails with `transcript_unavailable` rather than returning a stale copy. See [data and file conventions](/docs/concepts/data-and-files#orcr-writes-no-prompt-or-response-files).
+
+`blocked_kind` (`question`, `limit`, `login`, `unknown`) is best-effort classification from herdr's blocked message plus the transcript. Detailed per-provider parsing of *why* an agent is blocked is future work.
+
+## The herdr driver contract
+
+The driver's operation set is pinned to **named herdr socket methods with fixed shapes**, not reverse-engineered at implementation time. An in-code contract table maps every operation orcr uses, and its methods and result types are checked against the installed herdr's live `api schema`: version drift fails the conformance check. The pinned operations include:
+
+- `agent.start {name, argv, cwd?, env?, workspace_id?, focus:false}`: herdr creates the tab and pane; orcr does not pre-create tabs. The returned workspace, tab, pane, and terminal ids are authoritative and recorded.
+- `pane.move` (destination forms for park and un-park), `pane.close`.
+- `pane.send-text` / `pane.send-keys` (the two-call input delivery).
+- `pane.list` / `agent.list` (status, `agent_session`, `terminal_id` reads).
+- `workspace.create`.
+- session enumeration: sessions are per-socket, each with its own `socket_path`; the driver discovers them via `herdr session list --json` and fans out over each session's socket for cross-session reads.
+- notification, and the herdr integration-state read (which method reports whether a provider's integration is installed).
+
+The minimum herdr protocol version is declared and handshake-checked. See [architecture](/docs/concepts/architecture#the-herdr-driver-speaks-herdrs-socket-directly) for where the driver sits, and [durability and recovery](/docs/concepts/durability#version-skew) for version negotiation.

@@ -1,0 +1,67 @@
+---
+title: Introduction
+description: orchestratr (orcr) runs AI coding agents as real interactive TUIs in herdr panes, addressable by path and drivable from a CLI, a TypeScript SDK, or another agent.
+---
+
+import { Cards, Card } from "fumadocs-ui/components/card";
+import { Callout } from "fumadocs-ui/components/callout";
+
+orchestratr (CLI: `orcr`) is a cross-provider orchestrator for AI coding agents, built on [herdr](https://herdr.dev). It runs, coordinates, and schedules agents (claude, codex, and more over time) as managed processes you can address by path, wait on, steer, and clean up on a policy you choose.
+
+One binary gives you three ways in: primitives you script, a live dashboard you watch, and a skill that teaches any agent to drive the same primitives.
+
+<Callout title="You need herdr first">
+orcr does not embed herdr. It needs a herdr binary on your `PATH` with the provider integrations installed (`herdr integration install claude`, `herdr integration install codex`). See [Installation](/docs/getting-started/installation).
+</Callout>
+
+## Every agent is a real TUI
+
+Every agent orcr launches is a real interactive terminal session that herdr manages, not a headless API call. Three consequences follow:
+
+- **Plan pricing.** Interactive TUI sessions bill against flat subscription plans; API-mode invocations bill per token. Running dozens of agents per token can cost many times the flat-plan price.
+- **Steerability and visibility.** You can attach to a running agent, watch it mid-flight, send a correction, or take over a permission prompt. A headless agent gives you none of that.
+- **Durability.** As providers restrict headless usage, interactive-TUI sessions are the way to keep running agents.
+
+herdr supplies the terminal substrate. orcr supplies identity, paths, lifecycle, scheduling, and a uniform contract across providers.
+
+## Three ways to use it
+
+orcr is one binary with three interfaces:
+
+- **Primitives.** An `orcr server` exposing a socket API; the CLI and the TypeScript SDK are thin clients of it. The primitives spawn, message, await, read, and stop agents on any supported provider, plus `loop`, durable cron for any command. The socket API is the API, mirroring herdr's own design.
+- **A TUI (`orcr top`).** A live, view-only tree of every agent and loop, arranged by path with lineage annotations. Acting on agents (`attach`, `send`, `kill`) stays in the CLI.
+- **A skill.** A `SKILL.md` plus reference files loaded on demand, teaching any agent the orcr vocabulary. It gives every provider the orchestration capabilities only some have natively.
+
+## Architecture at a glance
+
+```text
+you (or any agent, or a loop)
+  └─ orcr CLI / SDK ── unix socket ──► orcr server ──► store · queue · GC · loops · events
+                                            │  (herdr's socket API, spoken directly)
+                                            ▼
+                                          herdr: session "orcr"
+                                            ├─ refactor/  file_1  claude  ● working
+                                            ├─ refactor/  review  codex   ◐ blocked ⚠
+                                            ├─ nightly/   triage  claude  ○ idle
+                                            └─ idle/      (parked agents)
+```
+
+You, a script, another agent, or a loop calls the CLI or the SDK. Both are thin clients of the orcr server over a Unix socket at `~/.orcr/orcr.sock`. The server is the single long-lived process and the single writer: it owns the store (sqlite), the admission queue, GC, loop scheduling, reconciliation, and the event stream. It speaks herdr's own socket API directly to launch and drive panes in one dedicated herdr session (default name `orcr`), so your daily herdr session never sees a subagent pane. Any CLI or SDK call auto-starts the server if it is not already running.
+
+Lineage is recorded automatically. Every pane orcr launches carries the agent's ids (`ORCR_ID`/`ORCR_PATH`) and its parent's (`ORCR_PARENT_ID`/`ORCR_PARENT_PATH`). When an agent inside such a pane calls `orcr agent run`, the server reads the caller's identity, records the parent-child edge, and resolves the child's path relative to the caller's scope. No cooperation from the provider is needed, and `orcr top` renders the resulting tree.
+
+## What you get
+
+- **Cross-provider agents, addressable by path.** claude and codex ship first; the integration surface is designed for more. Every agent lives at a slash-separated path whose last segment is its name, alongside a permanent uuid. A 200-agent workflow stays legible and operable: you `wait` and `kill` by glob patterns like `review/**`.
+- **Loops.** Run any command on a cron cadence or once at a set time, surviving the caller's shell.
+- **An SDK.** Author real control flow in TypeScript. Anything the CLI can do, the SDK can do, because both are clients of the same socket API.
+- **Safety at scale.** A single queue with a global cap and per-provider caps protects RAM; automatic lifecycle GC and one owned herdr session keep your own workspace clean.
+
+## Where to go next
+
+<Cards>
+  <Card title="Installation" href="/docs/getting-started/installation">Install orcr, herdr, and the provider integrations, then verify.</Card>
+  <Card title="Quickstart: CLI" href="/docs/getting-started/quickstart-cli">Spawn, wait on, read, steer, and clean up an agent from the shell.</Card>
+  <Card title="Quickstart: SDK" href="/docs/getting-started/quickstart-sdk">Scaffold a TypeScript workflow project and run it.</Card>
+  <Card title="Why orchestratr" href="/docs/why">The problem it solves and how it differs from headless API orchestration.</Card>
+</Cards>

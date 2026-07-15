@@ -1,0 +1,129 @@
+---
+title: Store schema
+description: "The sqlite schema owned by the server: its six tables and columns, key indexes, what lives as files instead of blobs, and the fields that are derived and never stored."
+---
+
+The store is sqlite (WAL mode) under `~/.orcr/`, owned exclusively by the server (the single writer). The schema is deliberately minimal: nothing derivable is stored, and payloads live as files in the data dirs rather than as blobs. sqlite coordinates; files carry content. This page is advanced and contributor-facing; day-to-day use never touches the store directly.
+
+> This reflects `src/store/schema.rs`. All writes go through `BEGIN IMMEDIATE` transactions, and every event is written in the same transaction as the change it describes.
+
+## Payloads live as files
+
+Three payloads are files in the data dirs, not columns:
+
+| file | contents |
+| --- | --- |
+| `<agent data dir>/launch.json` | the full launch payload (provider, resolved argv, prompt, model/effort, cwd, gc/timeout, the effective path and how it was derived, the injected env, never the caller's environment); versioned; written before any herdr call; for audit and recovery, not auto-relaunch |
+| `<loop data dir>/loop.json` | the loop definition payload (argv, cadence, tz, cwd) |
+| `<run folder>/run.log` | the run command's stdout/stderr as JSONL (`{ts, stream, text}`); orcr's own scheduler actions live in the `events` table, and `loop logs` interleaves the two |
+
+orcr writes no prompt or response files. Responses are read from the provider's native transcript via `agent logs`; anything else an agent writes to its data dir is the agent's own doing (the [file convention](/docs/concepts/data-and-files)).
+
+## Tables
+
+### agents
+
+The primary table. `uuid` is a UUIDv7 primary key: the permanent identity; events, turns, and attaches reference it.
+
+```
+uuid PK, path,                                 -- path absolute; last segment = name
+  UNIQUE (path) WHERE status NOT IN ('ended'), -- reservation: active agents only
+managed (0|1), origin (run|detected),
+parent_id,                                     -- uuid of the spawning context
+agent (provider), model, effort, gc_mode, cwd,
+herdr_session, terminal_id, pane_id,           -- current location, not identity
+launch_token,                                  -- crash-recovery idempotency marker
+agent_session_kind, agent_session_value,       -- transcript identity gate
+status,   -- managed: queued|starting|working|idle|blocked|parked|ended|lost
+          -- unmanaged: working|idle|blocked|unknown|ended
+move_state (none|parking|unparking), move_token,   -- exclusive move lease
+blocked_kind (question|limit|login|unknown),
+input_seq, cancel_requested (0|1),
+exit_reason (completed|killed|canceled|reaped|timeout|failed|lost),
+transcript_locator, transcript_cursor,
+queue_seq, enqueued_at, starting_at, deadline_at,  -- deadline only if --timeout
+idle_since, parked_at, last_status_change_at, created_at, ended_at, updated_at
+```
+
+### turns
+
+One row per input/turn, keyed by `(agent_uuid, input_seq)`. This is the completion bookkeeping (did this input's turn complete?), and it survives server restarts so an old idle can never satisfy a newer send.
+
+```
+agent_uuid, input_seq (PK pair),
+source (orcr|external),                        -- external = typed via attach/herdr UI
+delivered_at, working_seen_at, completed_at, blocked_kind, transcript_cursor
+```
+
+### attaches
+
+Attach leases, so the GC interlock survives restarts.
+
+```
+agent_uuid, lease_id PK, mode (observe|takeover), connection, client_pid,
+started_at, heartbeat_at, expires_at
+```
+
+### loops
+
+Loop definitions. `uuid` is permanent; runs and events reference it. The active-name uniqueness is a partial index over active and paused rows.
+
+```
+uuid PK, name,   -- UNIQUE INDEX loops_active_name ON loops(name)
+                 --   WHERE status IN ('active','paused')
+cadence_kind (cron|once), cadence_value, tz, cwd,
+max_concurrency, overlap, timeout_s (nullable),
+status (active|paused|ended), next_fire_at, last_fire_at,
+updated_at, created_at, ended_reason (removed|removed_by_run|fired)
+```
+
+### loop_runs
+
+Loop run rows. Pending runs replace the old single pending-fire marker: at most one pending scheduled run per loop (coalesced), while manual runs always allocate their own. `pgid_start_time` is why kills and recovery only ever signal a pgid whose start time matches; pids get reused.
+
+```
+uuid PK, loop_uuid, run_id (r+5 [a-z0-9]; UNIQUE per loop),
+kind (scheduled|manual), due_at, created_at, timeout_at (nullable),
+status (pending|running|stopping|ok|failed|timeout|stopped|canceled),
+pid, pgid, pgid_start_time,                     -- signal only on start-time match
+exit_code, signal, started_at, ended_at, updated_at
+```
+
+### events
+
+The durable event log and the subscription cursor. Written in the same transaction as the change; also the source for `loop logs --source orcr`.
+
+```
+seq PK AUTOINCREMENT, ts, kind, ref_uuid, payload_json
+```
+
+## Key indexes
+
+| index | purpose |
+| --- | --- |
+| partial unique `(path) WHERE status NOT IN ('ended')` | active-path reservation |
+| `(status, queue_seq)` | FIFO queue promotion |
+| `(agent, status)` | per-provider capacity counting |
+| `(path)`, `(parent_id)`, `(pane_id)` | resolution, lineage, location lookup |
+| `(herdr_session, terminal_id)` | unmanaged-agent identity key |
+| `(agent_session_kind, agent_session_value)` | transcript identity |
+| loops `(status, next_fire_at)` | scheduler due lookup |
+| loop_runs `(loop_uuid, status)` | run promotion and listing |
+| events `(ref_uuid, seq)` | index-scoped event fetch for `loop logs` |
+
+Glob patterns compile to anchored, segment-aware matches (see the [path grammar](/docs/reference/path-grammar)), never a naive SQL `LIKE`, because `_` is a `LIKE` wildcard and a legal name character. uuid prefixes resolve against the primary key.
+
+## Derived, never stored
+
+One definition each, so the CLI, TUI, and SDK cannot drift:
+
+| field | definition |
+| --- | --- |
+| `name` | the path's last segment |
+| home workspace | the path's first segment when it has 2 or more segments, else `default` |
+| `queue_position` | rank by `queue_seq` among status `queued` (recomputed per read) |
+| age basis | `created_at` for queued/starting, `last_status_change_at` otherwise |
+| a run's `agents` count | active agents matching `<loop>/<run_id>/**` |
+| data dirs | `$ORCR_HOME/data/<path segments>/<uuid>` for agents, `$ORCR_HOME/data/<loop_name>` for loops, `.../<run_id>` for runs |
+
+The data tree is a convention, never an identity authority: rows and uuids are. Future data-dir GC must be row-aware, because a run's folder contains its descendants' folders and nothing may delete a shared ancestor while a child row still has data below it. See [data and file conventions](/docs/concepts/data-and-files) and [durability and recovery](/docs/concepts/durability).

@@ -1,0 +1,122 @@
+---
+title: orcr loop
+description: "Durable cron for any command: every loop and loop run command, flag, and output shape, plus the cadence and run-process rules."
+---
+
+`orcr loop` is durable cron for any command. It has two levels: verbs on the **loop** (the definition) and verbs on its **runs** (executions), under the `loop run` sub-noun. The loop owns time only: the command it runs spawns agents like any other caller. There are no provider flags, prompts, judge logic, or stop-condition DSL at the loop level.
+
+```text
+orcr loop create <name> ("<cron>" | --once-at <time>)
+                 [--max-concurrency <n>] [--overlap queue|skip]
+                 [--timeout <dur>] [--json] -- <command…>
+orcr loop pause  <name>... [--json]
+orcr loop resume <name>... [--json]
+orcr loop rm     <name>... [--kill-active] [-y] [--json]
+orcr loop ls     [<name>...] [--status <s>] [--all] [--json]
+orcr loop logs   <name> [--run <run_id>] [--source orcr|command]
+                 [--tail <n>] [--follow] [--json]
+
+orcr loop run start <name> [--json]               # manual trigger
+orcr loop run stop  <name> [<run_id|run_uuid>] [-y] [--json]
+orcr loop run ls    <name> [--status <s>] [--all] [--json]
+```
+
+## create
+
+The `--` boundary captures an argv array, executed directly (no shell). Want shell features? Say so: `-- sh -c 'a && b'`. Creation echoes the parsed argv verbatim, the cadence in words (local plus UTC), and the exact cancel command.
+
+```sh
+orcr loop create nightly "0 2 * * *" --timeout 25m -- \
+  /Users/you/.orcr/workflows/triage/node_modules/.bin/tsx \
+  /Users/you/.orcr/workflows/triage/run.ts
+```
+
+- The loop's **name** is its level-1 path and is mandatory (the positional first argument; one segment `[a-z0-9_]+`; no auto-generated names). It gets its own workspace. Names are unique among active loops; a removed loop's name is reusable, and same-named histories never collide because each definition has its own uuid.
+- **Loops are always root-level.** A loop created from inside an agent does not inherit the agent's scope: loops are global entities, not children.
+- `--max-concurrency <n>` caps concurrent runs of this loop (default 1). This is unrelated to the global agent [concurrency caps](/docs/concepts/queue-and-concurrency).
+- `--overlap queue|skip` sets what happens at the cap (default `queue`; see below).
+- `--timeout <dur>` sets a per-run timeout (no default). On expiry the run's process group gets TERM, then a grace period, then KILL, then a server-performed `orcr agent kill "<name>/<run_id>/**"`.
+
+JSON result: `{loop:{uuid, name, cadence, tz, next_fire_at, argv, max_concurrency, overlap}}`.
+
+## Cadence
+
+Give exactly one of a cron expression or `--once-at`:
+
+- **Five-field cron**, stored with the creating timezone and evaluated in it (DST-correct: "9am weekdays" stays 9am). Each occurrence is persisted as a UTC `next_fire_at`. Intervals are cron expressions (`*/30 * * * *`); there is no `--every`.
+- **`--once-at <time>`** accepts a relative duration (`30m`), an RFC3339 timestamp, or a local wall-clock `YYYY-MM-DD[ T]HH:MM[:SS]`. It resolves to a single UTC fire, fires once, then ends (releasing its name like any ended loop).
+
+Fires missed while the machine slept or the server was down are skipped and logged, never replayed.
+
+## pause / resume / rm
+
+Targets are exact names; bulk operations pass multiple names (`orcr loop pause nightly daily`).
+
+- **pause**: no new fires; a pending scheduled run is held, not started; active runs continue.
+- **resume**: fires resume; a held pending run starts if due.
+- **rm**: mark the definition ended (`removed`, or `removed_by_run` when called from inside a run via `orcr loop rm "${ORCR_PATH%%/*}"`); no future fires (any still-pending run is canceled); the active run and its agents continue unless `--kill-active`. Definition and run history stay queryable.
+
+Only the destructive `--kill-active` confirms on a TTY (`-y` skips). Plain `rm` is non-destructive and does not prompt.
+
+## ls
+
+`loop ls` lists loop definitions. `--status <s>` filters by loop status (`active`, `paused`, `ended`); `--all` includes ended definitions (with `loop_uuid` in JSON so same-named histories are addressable).
+
+JSON result: `{loops:[{uuid, name, status, ended_reason?, cadence, tz, next_fire_at, max_concurrency, overlap, created_at}]}`.
+
+## logs
+
+Two interleaved sources, each line tagged with its run (`[nightly/r82c9s]`): the command's captured stdout/stderr, and orcr's own scheduler actions on the loop (fired, coalesced, skipped, paused-hold, timed out, stopped; from the event log).
+
+```sh
+orcr loop logs nightly --run r82c9s --source command --follow
+```
+
+- `--run <run_id|run_uuid>` filters to one run (needed when concurrent runs interleave).
+- `--source orcr` / `--source command` filters to one side.
+- `--tail <n>` / `--follow` as in [`agent logs`](/docs/reference/cli/agent).
+
+JSON result: `{lines:[{run, source:"orcr|command", ts, text}]}`.
+
+## loop run start / stop / ls
+
+Runs are executions of a loop. Every run (scheduled or manual) gets a **run id** of `r` plus 5 lowercase alphanumeric characters (`r82c9s`) unique within the loop, plus a uuid in the store. The run's path is `<loop_name>/<run_id>` (`nightly/r82c9s`); this is its handle everywhere (log tags, `--run` filters, the path scope for its agents). Run statuses are `pending`, `running`, `stopping`, `ok`, `failed`, `timeout`, `stopped`, `canceled`.
+
+**`loop run start`** is the manual trigger and works on paused loops too. It always allocates the run (uuid, run_id, kind `manual`) and prints `<loop_name>/<run_id> <run_uuid>`. At capacity the run sits `pending` and starts when a slot frees.
+
+```sh
+orcr loop run start nightly
+# → nightly/r82c9s 018f…
+```
+
+**`loop run stop`** stops run(s) without touching the definition. An optional `<run_id|run_uuid>` targets one run; otherwise it stops all active plus pending runs of the loop. The run moves to a `stopping` barrier first (new `agent run`s resolving to that run context are rejected/canceled from that point), then TERM to the process group, grace, KILL, then a barrier glob-kill of the run's agents (`<loop>/<run_id>/**`, looped until a final snapshot shows none). It confirms on a TTY (`-y` skips). The run ends `stopped`, or `canceled` if it was still pending.
+
+**`loop run ls`** lists the loop's runs: run_id, status, kind (scheduled/manual), `due_at` vs started, duration, and agent count. Active plus pending by default; `--all` includes history (with `run_uuid` and `loop_uuid` in JSON); `--status <s>` filters (for example `--status failed` across history).
+
+JSON results:
+
+```json
+loop run start  {"run":{"uuid":"…","path":"nightly/r82c9s","run_id":"r82c9s","loop":"nightly","kind":"manual","status":"running"}}
+loop run stop   {"stopped":[{"run_id":"r82c9s","path":"…","status":"stopped"}],"skipped":[{"run_id":"…","reason":"not_running"}]}
+loop run ls     {"runs":[{"uuid":"…","run_id":"r82c9s","path":"…","kind":"scheduled","status":"ok","due_at":"…","created_at":"…","started_at":"…","ended_at":"…","exit_code":0,"agents":3}]}
+```
+
+## Max-concurrency, overlap, and coalescing
+
+`--max-concurrency` caps concurrent runs (default 1). At the cap:
+
+- `--overlap queue` (default) holds work as pending run rows. Scheduled fires at capacity coalesce into at most one pending scheduled run: later fires fold into it, and its `due_at` is the earliest missed fire. Manual runs always allocate their own row.
+- `--overlap skip` drops the fire with a log line.
+
+Pending runs survive restarts, appear in `loop run ls`, and can be canceled by `loop run stop` before they ever start (`canceled`). When a run exits, the oldest pending run starts.
+
+## Run process rules
+
+These are POSIX (process groups and signals); Windows lands with general Windows support.
+
+- **cwd** is the loop's recorded creation cwd: deliberately the workspace, not the script's folder, so agents the command spawns inherit it as their default cwd. A script living elsewhere (a scaffolded project) is invoked by absolute path.
+- **env** is the server env plus the [env contract](/docs/reference/environment): `ORCR_ID` is the run's uuid, `ORCR_PATH` is `<loop_name>/<run_id>`, and `ORCR_LOOP_DATA_DIR` is set; `ORCR_AGENT_DATA_DIR` is unset (runs are not agents).
+- **stdin** is `/dev/null`; **stdout/stderr** are captured line-tagged to the run's log (size-capped with rotation).
+- **exit-code mapping**: exit 0 maps to run status `ok`, any other exit to `failed`, a `--timeout` kill to `timeout`, and `loop run stop` to `stopped`. The exit code and terminating signal are recorded.
+
+Every agent the command spawns lands under the run path: a script's `--path review/file_1` yields `nightly/r82c9s/review/file_1`. `orcr agent ls --all nightly` is the loop's full agent history. See the [loops concept page](/docs/concepts/loops) and the [loops guide](/docs/guides/loops) for the model and worked examples.

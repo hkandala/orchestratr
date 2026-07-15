@@ -1,0 +1,50 @@
+---
+title: Environment variables
+description: The ORCR_* contract injected into agents and loop-run commands, which variables are set where, and the operational variables that configure orcr itself.
+---
+
+orcr uses two kinds of environment variables: the **injected contract** that carries an agent's or run's identity into its process, and the **operational** variables that configure orcr itself. Derive context from the contract with [`orcr.context.fromEnv()`](/docs/reference/sdk) rather than hand-parsing.
+
+## The injected contract
+
+These are injected into every managed agent pane and every loop-run command. All values are absolute.
+
+| variable | value |
+| --- | --- |
+| `ORCR_ID` | this agent's uuid (or, in a loop-run command, the run's uuid) |
+| `ORCR_PATH` | your absolute path, always ending in your own leaf: an agent's name (`review/fanout/file_1`) or a run id (`nightly/r82c9s`) |
+| `ORCR_PARENT_ID` | the uuid of the context that spawned this agent (unset at root) |
+| `ORCR_PARENT_PATH` | the parent context's absolute path (unset at root) |
+| `ORCR_AGENT_DATA_DIR` | this agent's data dir, `~/.orcr/data/<path segments>/<uuid>` (unset in loop-run commands, since they are not agents) |
+| `ORCR_LOOP_DATA_DIR` | the loop's data dir, `~/.orcr/data/<loop_name>`: one shared scratch space for the whole loop across all its runs; set for run commands and every agent descended from them; unset outside loops |
+
+## Which are set where
+
+The exact set depends on the context. This is the difference that lets a script tell an agent from a run:
+
+| variable | in an agent | in a loop-run command | at a root shell |
+| --- | --- | --- | --- |
+| `ORCR_ID` | agent uuid | run uuid | unset |
+| `ORCR_PATH` | agent path | run path (`<loop>/<run_id>`) | unset |
+| `ORCR_PARENT_ID` / `ORCR_PARENT_PATH` | set (unset at the tree root) | unset (runs are parentless) | unset |
+| `ORCR_AGENT_DATA_DIR` | set | **unset** | unset |
+| `ORCR_LOOP_DATA_DIR` | set only for agents descended from a run | set | unset |
+
+Because `ORCR_PATH` has the same shape everywhere, scope is derived by kind: an agent is a file, so its scope is `ORCR_PATH` minus the name (children land as siblings); a run is a directory, so its scope is its whole `ORCR_PATH` (children land inside it). A loop-run command's `ORCR_PARENT_*` are unset; the agents it spawns get `ORCR_PARENT_ID`/`ORCR_PARENT_PATH` equal to the run's uuid/path. Loop-run commands are distinguished from agents precisely by `ORCR_AGENT_DATA_DIR` being unset while `ORCR_LOOP_DATA_DIR` is set.
+
+Everything scope-related derives from the path. In shell, a loop's name is `"${ORCR_PATH%%/*}"`; in the SDK it is `orcr.loopNameFrom(process.env.ORCR_PATH)`. Want children inside your own path instead of beside you? Pass `--path "$ORCR_PATH/child"`; it works because env paths are absolute. See [agents and lineage](/docs/concepts/agents-and-lineage).
+
+## Operational variables
+
+These configure orcr itself and are read from your shell, not injected.
+
+| variable | effect |
+| --- | --- |
+| `ORCR_HOME` | relocates `~/.orcr` (store, socket, lock, config, logs, data). For tests and sandboxes; pair it with a distinct `herdr.session`. |
+| `ORCR_HERDR_BIN` | overrides herdr binary discovery (config `herdr.bin`, then this, then `$PATH`) |
+| `ORCR_HERDR_SESSION` | overrides `herdr.session` (empty means fall back to config or the default `orcr`) |
+| `ORCR_SDK_SPEC` | overrides the `@orchestratr/sdk` dependency spec that [`orcr scaffold`](/docs/reference/cli/scaffold) pins (for offline or local installs); otherwise the pinned CLI version is used |
+
+## The launch token
+
+Every pane orcr launches also carries an internal launch token in its env, unique per attempt, used as a crash-recovery anchor (see [durability and recovery](/docs/concepts/durability)). It is not part of the contract, and scripts must not rely on it. herdr's socket exposes no pane env, so this token cannot be read back off a live pane; recovery matches a pane to its store row by herdr label (the agent's full path) instead.

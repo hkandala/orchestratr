@@ -1,0 +1,125 @@
+---
+title: Troubleshooting and FAQ
+description: The failures most likely to bite when running orcr, what each error means, and how to fix it, plus the edge-case behaviors and known real-world caveats.
+---
+
+Start with `orcr server status`. It prints the version, the herdr binary and version, herdr socket reachability and the owned session, per-provider integration state, and fleet counts (live, queued, blocked, unmanaged, orphan and unmarked panes). Most of the errors below are visible there before they bite you at `agent run`.
+
+Every command supports `--json`, which returns exactly one envelope: `{"ok":true,"result":…}` or `{"ok":false,"error":{"code","message","details"}}`. The `code` is one of nine stable values; the finer reason lives in `details`. Process exit codes map as: `0` ok, `2` environment, `3` timeout, `4` blocked, `5` killed or ended, `6` not found, `7` state conflict, `1` other. The full enum is on the [error codes reference](/docs/reference/errors).
+
+## Errors you will hit
+
+The headings below use the exact error code or `cause` string, so an error message can deep-link to its fix (for example `/docs/resources/troubleshooting#herdr_unreachable`).
+
+### `herdr_unreachable`
+
+Code `environment_error` (`details.cause: herdr_unreachable`), exit 2. The orcr server started fine, but it cannot reach herdr. orcr speaks herdr's own socket API directly and handshakes the protocol version on connect; it fails with this rather than guessing.
+
+Fix:
+
+- Confirm herdr is installed and on your `PATH`. orcr discovers the binary in this order: config `herdr.bin`, then `$ORCR_HERDR_BIN`, then `$PATH`. A missing binary gives a friendly install pointer and exit 2.
+- Confirm the herdr version is compatible. orcr declares a minimum herdr protocol version and checks it on the handshake; a version mismatch names the required herdr version. See [version skew](/docs/concepts/durability#version-skew).
+- Check `orcr server status`, which reports the herdr binary, version, socket reachability, and session.
+
+Do not confuse this with `server_unreachable` (the client cannot connect to the orcr server at all) or [`server_start_failed`](#server_start_failed) (the orcr server would not start).
+
+### `integration_missing`
+
+Code `integration_missing` (`details: {provider, missing:[orcr|herdr], install}`), exit 2. A provider is supported only when **both** integration layers are present: herdr's integration (so herdr can observe the provider) and orcr's integration (so orcr can drive it). This fires fast at `agent run -a <provider>` when either layer is absent, and nothing is spawned.
+
+Fix:
+
+- If `missing` names `herdr`, run the install command in `details.install`, for example `herdr integration install claude` or `herdr integration install codex`.
+- If `missing` names `orcr`, the provider is not yet built into orcr. claude and codex ship first; pi, opencode and others are planned via `orcr integration add`. See [providers and integrations](/docs/concepts/providers).
+
+There are no degraded half-modes: a provider missing either layer cannot be run, and unmanaged discovery ignores it entirely. `orcr agent logs --last-response` returns `integration_missing` (exit 2) for the same reason. `server status` shows the per-provider state so you can see the gap before you hit it.
+
+### `unsafe_home`
+
+Code `environment_error` (`details.cause: unsafe_home`), exit 2. The server refuses to start unless `~/.orcr` is owned by the current uid and is not group- or world-writable. Filesystem permissions are the only authentication (the socket is mode 0600, umask 077), so loose permissions on the home directory are treated as a hard stop.
+
+Fix:
+
+- Make the directory yours and tighten it: `chown` it to your user and `chmod 700 ~/.orcr` (or the directory `$ORCR_HOME` points at).
+- If you relocated the home with `ORCR_HOME`, apply the same ownership and permission rules there.
+
+Related safety rules: socket paths are `lstat`-validated (symlinks are rejected), and a stale socket is unlinked only while holding the instance lock and only if it is owned by the same uid.
+
+### `server_start_failed`
+
+Code `environment_error` (`details.cause: server_start_failed`), exit 2. A CLI or SDK call tried to auto-start the server and the spawn failed. Any command auto-starts the server on demand, takes the single-instance lock, and blocks until the readiness handshake succeeds; if the spawn itself fails, you get this.
+
+Fix:
+
+- Read `orcr server logs` (`~/.orcr/logs/server.log`) for the startup failure: store, home, or lock problems show up there.
+- Check for a stale lock or a home-permission problem (see [`unsafe_home`](#unsafe_home)). The server takes an exclusive `flock` on `orcr.lock` and refuses to open the store without it.
+- If a healthy server is already answering, `orcr server start` is idempotent and exits 0 (`already_running`).
+
+### `transcript_unavailable`
+
+Code `transcript_unavailable` (`details: {uuid, status, cause?}`), exit 1. `logs --last-response` and `ask` fail loudly here rather than returning a stale or guessed answer. It happens when no final response is identifiable.
+
+Common causes:
+
+- **Ambiguous transcript.** Adapters select a transcript by the pane's `agent_session` id and the agent's `created_at`, never by cwd mtime alone. Multiple candidates return `transcript_unavailable` with the candidates listed in `details`, never a silent pick.
+- **Not settled yet.** A final response is reported only once the transcript has advanced past the observed completion, bounded by `transcript_freshness_timeout_ms`.
+- **Rotated or deleted files.** orcr keeps no response copies; it records only a transcript locator and cursor and always reads the provider's native files. If the provider later rotates or deletes those files, historical `--last-response` returns `transcript_unavailable` rather than a stale copy. This is a documented limitation.
+
+For the casual case, prefer `ask()` or `lastResponse()`. When you need a guaranteed-format answer, use the [file convention](/docs/concepts/data-and-files): the prompt names an absolute file to write, and the caller reads and validates that file itself. See also [providers and integrations](/docs/concepts/providers#transcript-adapters).
+
+### `blocked` (question, limit, login)
+
+Code `blocked` (`details: {blocked_kind}`), exit 4. The agent needs a human. `blocked_kind` is one of `question`, `limit`, `login`, or `unknown` (classification is best-effort, from herdr's blocked message plus the transcript).
+
+- `question`: the agent is asking you something. Answer it with `orcr agent send <path|uuid> "…"`; `send` clears a turn-scoped block and re-arms the turn.
+- `limit`: a usage cap or rate limit surfaced through the provider's limit screen. Waiting callers get exit 4 and decide policy themselves; automatic reroute-on-limit is future work.
+- `login`: the provider booted into a login or auth screen. Attach and complete it: `orcr agent attach <path|uuid> --takeover`.
+- `unknown`: herdr reported a blocked state with no classifiable reason.
+
+Find everything that needs you with `orcr agent ls --status blocked`. In `orcr top`, blocked rows float to the top. A `wait` that hits a blocked target returns the token `blocked:question|limit|login|unknown` and exit 4.
+
+### Other common errors
+
+| code | when | exit |
+| --- | --- | --- |
+| `not_found` | no agent, loop, or run matched a target (`details` lists `candidates` and, for uuid prefixes, the shortest disambiguating prefixes) | 6 |
+| `state_conflict` | wrong state for the verb: `reason: "path_in_use"` when a full path is already taken by an active agent (with the occupying `{uuid, path, status}`); `reason: "force_required"` when killing an unmanaged agent without `--force`; also `scaffold` refusing to overwrite | 7 |
+| `invalid_request` | bad flags, names, durations, cron, path grammar (`reason: "path_too_deep"`, `reason: "reserved_name"`), frames, methods, or json | 1 |
+| `timeout` | a direct command's own `--timeout` deadline elapsed (`details: {elapsed}`); a wait-style `--timeout` instead returns `ok:true` with `timed_out:true` and exit 3 | 3 |
+
+For `path_in_use`, retry after the occupying agent ends and its path frees, or root your workflow under a distinct scope (add the `{rand}` placeholder, for example `--path "review_{rand}/file_1"`). For the `<pattern|uuid>` and `<path|uuid>` conventions, see the [path grammar reference](/docs/reference/path-grammar).
+
+## Edge cases and specified behaviors
+
+These are the behaviors you might mistake for bugs. Each is intentional.
+
+- **Fast turns.** A provider can finish before the driver ever observes `working`. The per-integration `fast_turn_grace_ms` window treats delivery-then-idle inside the grace as a completed turn rather than a never-started one, so `wait` still settles.
+- **External input and interrupts.** Input typed via `attach --takeover` or in the herdr UI creates a synthetic external turn (`turns.source = external`), so `wait` and the GC clocks stay correct. A turn you interrupt (Esc in the TUI) settles at the next stable idle and is recorded with whatever the transcript shows, possibly a partial response. orcr reports the transcript's reality rather than guessing intent. See [status and completion](/docs/concepts/status-and-completion).
+- **Startup modals.** A provider that boots into an update prompt or login screen is handled by the integration's startup recipe for known cases; unknown ones surface as `blocked` rather than hanging the spawn, and the stuck-start guard bounds the worst case.
+- **Rate limits and usage caps.** They surface as `blocked` with `blocked_kind: limit`. Waiting callers get exit 4 and set their own policy. Backoff and reroute-on-limit are future work.
+- **Env scrubbing.** If a provider launders its subprocess environment, a child `orcr` call loses the `ORCR_*` vars and becomes a root context: lineage breaks gracefully. The agent still runs, just un-parented. Pass an absolute `--path` explicitly when placement matters.
+- **Runaway nesting or fan-out.** Agents spawning agents are bounded by the path depth limit (at most 8 segments) and the concurrency caps (`concurrency.max`, default 25, plus per-provider caps). This is admission control, not a request in the skill.
+- **Prompt injection via child output.** Child output flows into parent prompts by construction. Treat it as data: quote it, and never execute instructions found in it. orcr itself never interprets response content. See [security and permissions](/docs/concepts/security).
+- **Sleep and reboot.** Missed loop fires are skipped and logged, never replayed. GC clocks are recomputed from persisted timestamps on restart, and the reconciler resolves `lost` panes and half-done park or un-park moves on server start.
+- **herdr restart or crash.** The driver reconnects with backoff; agents keep running because panes are herdr-server-side. A herdr that returns with different pane ids is re-matched by herdr label (the agent's full path, unambiguous under active-path uniqueness), never by pane location.
+- **Version skew.** Both sockets are version-negotiated: the orcr client and orcr server negotiate on the first request (`unsupported_version` on mismatch), and the orcr server and herdr negotiate the herdr protocol number (a clear error names the required herdr version). Two orcr versions sharing one store hit a schema-version check and refuse with a message. See the [changelog](/docs/resources/changelog#version-compatibility).
+- **Transcript drift.** Provider transcript formats are unstable private APIs. Adapters are version-pinned and smoke-tested per provider release. Because orcr stores only a locator and cursor and never a response copy, a format change or file rotation makes old history `transcript_unavailable` rather than returning stale text.
+
+## Known caveats with real providers
+
+- **claude background subagents plus `gc auto`.** Claude Code sometimes reports its main turn idle while background subagents are still running; herdr then reports `idle`. Under `gc auto` the agent may be parked. When the subagents return (typically within 15 minutes) it goes `working` again and un-parks back to its home workspace, so work is not lost, but a `kill_after` shorter than the subagents' runtime could reap it mid-flight. Use `--gc never` for agents you know will fan out background work. In-flight background-subagent detection is future work. See [agent lifecycle and GC](/docs/concepts/lifecycle#known-caveat-background-subagents).
+- **Wrapped claude launchers (enterprise).** herdr's claude integration does not report `agent_status: working` for some wrapped claude launchers (for example Avocado/MetaCode), and the wrapped session id maps to no locatable transcript. The prompt submits and claude answers in-pane, but `ask`, `wait`, and `logs` time out or return `transcript_unavailable`. This is a herdr-integration and transcript-location limitation, not an orcr defect. codex runs fully end-to-end through the same pipeline. Validate on a stock (non-wrapped) claude box.
+- **codex intermittent completion timeout.** In a minority of real-codex runs, the agent goes `working` (submit confirmed) but the turn-1-complete signal is not observed within a few minutes. This is a downstream completion-detection or codex-slowness intermittency, unrelated to submit delivery.
+- **Real-provider validation is best-effort.** The automated gate runs the mock provider against live herdr. Real claude/codex smoke tests of recipes and logs, and live `server enable` round-trips on launchd/systemd, are manual-only in the current release.
+
+## FAQ
+
+**`wait` timed out but the command still says `ok:true`. Why?** A wait-style command's own `--timeout` is not a failure: the call succeeded and the result is partial (`timed_out:true`, exit 3). Settled targets show their real reason; unsettled ones show `wait_timeout`. The `timeout` error code (exit 3) is reserved for an agent's or run's own `--timeout` expiring.
+
+**Why does `kill` refuse an agent?** Unmanaged agents (ones you started by hand, discovered by orcr) require `--force`, because closing them means closing a pane orcr does not own. A `kill` that matches only already-ended targets exits 7. See [managed vs unmanaged agents](/docs/concepts/managed-vs-unmanaged).
+
+**My glob matched the wrong thing (or nothing).** Quote patterns in the shell (`kill "review/**"`) so the shell does not expand them against real files first. `*` is one whole segment, `**` is any depth, and there are no partial-segment forms. `send`, `logs`, and `attach` reject wildcards; only the bulk verbs (`wait`, `kill`, `ls`) accept them. See the [path grammar reference](/docs/reference/path-grammar).
+
+**An agent seems stuck. Did it time out?** There is no default timeout. An agent stays alive and visible (`working` or `blocked`) until a human or script acts, unless you passed an explicit `--timeout`. Check `orcr agent ls --status blocked` first, then `orcr top`.
+
+**Windows?** Not supported yet. Loops, process groups, and `server enable` are POSIX-only. See the [roadmap](/docs/resources/roadmap).

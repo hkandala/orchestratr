@@ -1,0 +1,13 @@
+{
+  "title": "Patterns",
+  "pages": [
+    "index",
+    "fix-until-green",
+    "fan-out-and-merge",
+    "classify-and-act",
+    "adversarial-verification",
+    "generate-and-filter",
+    "tournament",
+    "loop-until-done"
+  ]
+}

@@ -1,0 +1,112 @@
+---
+title: Installation
+description: Install orcr, connect it to herdr and the provider integrations, then verify the setup with orcr server status.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+orcr needs three things on your machine:
+
+1. the `orcr` binary itself,
+2. a running [herdr](https://herdr.dev) on your `PATH`, with the integration installed for every provider you want to run, and
+3. Node (only if you use `orcr scaffold` or the TypeScript SDK).
+
+The `orcr` binary has no other runtime dependency. herdr is the layer below it: persistent named sessions, background TUIs, and the per-provider state detection orcr reads. orcr discovers herdr, it never bundles it.
+
+<Callout type="warn" title="Platform support">
+orcr runs on macOS and Linux. Windows is not supported yet: loops, process groups, and `orcr server enable` are POSIX-only, and `orcr server enable` returns `unsupported_platform` on other platforms. Windows support is tracked as future work.
+</Callout>
+
+## Install orcr
+
+Pick one of the three methods.
+
+### Prebuilt binary
+
+Prebuilt tarballs are published on [GitHub releases](https://github.com/orchestratr/orchestratr/releases) for macOS (`macos-arm64`, `macos-x64`) and Linux (`linux-x64`). Each `orcr-<version>-<platform>.tar.gz` ships a matching `.sha256` you can check before extracting.
+
+```sh
+# optional: verify the download against its published checksum first
+shasum -a 256 -c orcr-<version>-<platform>.tar.gz.sha256
+
+tar -xzf orcr-<version>-<platform>.tar.gz && mv orcr /usr/local/bin/
+```
+
+### cargo install
+
+If you have a Rust toolchain (Rust >= 1.89):
+
+```sh
+cargo install orchestratr    # installs the `orcr` binary
+```
+
+The `orchestratr` crate is not yet claimed on crates.io, so this method does not work today; the prebuilt tarball and build-from-source paths are the working options. See the [changelog](/docs/resources/changelog) for release status.
+
+### Build from source
+
+From a checkout:
+
+```sh
+cargo build --release        # produces target/release/orcr
+```
+
+Confirm the binary is on your `PATH`:
+
+```sh
+orcr --version
+```
+
+## Install herdr and its integrations
+
+orcr talks to herdr over herdr's own socket API and discovers the herdr binary in this order:
+
+1. the `herdr.bin` key in your orcr config,
+2. the `$ORCR_HERDR_BIN` environment variable,
+3. your `$PATH`.
+
+If none of these resolves to herdr, orcr commands exit with code `2` and print an install pointer. Install herdr from [herdr.dev](https://herdr.dev) first (orcr is verified against herdr 0.7.x).
+
+A provider is supported only when **both** integration layers are present:
+
+- **herdr's integration** lets herdr observe the provider (its working/idle/blocked state and the transcript pointer). Install it per provider:
+
+  ```sh
+  herdr integration install claude
+  herdr integration install codex
+  ```
+
+- **orcr's integration** is how orcr drives the provider (launch flags, model and effort mapping, completion tuning, graceful shutdown, and the transcript adapter). claude and codex are built into orcr in the first release; you do not install them separately.
+
+If either layer is missing for a provider, `orcr agent run -a <provider>` fails fast with `integration_missing` and names the exact fix. Nothing is spawned. There is no degraded half-mode.
+
+## Verify your setup
+
+Run:
+
+```sh
+orcr server status
+```
+
+This auto-starts the orcr server if it is not already running (every CLI call does), then reports the server version and protocol version, the socket and store paths, whether the herdr binary and its socket are reachable and which session orcr owns, live agent counts, loop schedule, and the per-provider integration state.
+
+The integration state is the field to check. Both layers must read `true` for a provider before you can run it:
+
+```jsonc
+// orcr server status --json (excerpt)
+{
+  "integrations": {
+    "claude": { "orcr": true, "herdr": true },   // supported
+    "codex":  { "orcr": true, "herdr": false }   // run herdr integration install codex
+  }
+}
+```
+
+## Node, only for the SDK
+
+`orcr scaffold` and the TypeScript SDK need Node >= 20 with npm. The CLI itself does not. If Node is missing or too old, `orcr scaffold` fails with `environment_error` and an install pointer, and creates nothing. Install Node from [nodejs.org](https://nodejs.org/) if you plan to write workflows in TypeScript.
+
+## Next steps
+
+- [Quickstart: CLI](/docs/getting-started/quickstart-cli) drives one agent from the shell.
+- [Quickstart: SDK](/docs/getting-started/quickstart-sdk) scaffolds a TypeScript project.
+- [Your first workflow](/docs/getting-started/first-workflow) builds a parallel code review end to end.

@@ -1,0 +1,62 @@
+---
+title: Loops (scheduling model)
+description: Durable cron for any command. How a loop owns time, how runs get ids and process groups, and how overlap, timezones, and missed fires are handled.
+---
+
+A loop is durable cron for any command. It survives the shell that created it and fires on a cadence you set. The loop owns **time only**: no provider flags, no prompts, no judge logic, no stop-condition DSL. The command it fires spawns agents via the CLI or SDK like any other caller.
+
+This page is the model. For the full verb set (`create`, `pause`, `resume`, `rm`, `ls`, `logs`, and the `loop run` sub-noun) see [schedule work with loops](/docs/guides/loops).
+
+## A loop owns time; the command does the work
+
+```text
+orcr loop create nightly "0 9 * * *" --overlap queue -- \
+  node_modules/.bin/tsx ~/.orcr/workflows/nightly/triage.ts
+```
+
+The `--` boundary captures an argv array, executed directly with no shell. Want shell features? Say so: `-- sh -c 'a && b'`. When the cadence fires, orcr runs that argv; the script inside spawns agents, waits on them, reads their output. The loop never sees an agent.
+
+## Runs and run ids
+
+Every run (scheduled or manual) gets a **run id**: `r` plus 5 lowercase alphanumeric characters (for example `r82c9s`; the `r` prefix makes run ids recognizable in a path), unique within the loop, plus a uuid in the store. The run's path is `<loop_name>/<run_id>`, for example `nightly/r82c9s`. That path is its handle everywhere: log tags, `--run` filters, and the [scope](/docs/concepts/identity#what-a-scope-is) for its agents.
+
+The run command executes in its **own process group** (pid and pgid recorded) with `ORCR_PATH=<loop_name>/<run_id>`, so every agent it spawns lands under that path. A script's `--path review/file_1` yields `nightly/r82c9s/review/file_1`. `orcr agent ls --all nightly` is the loop's full agent history. The run's cwd is the loop's recorded creation cwd (deliberately the workspace, not the script's folder), which agents inherit as their default cwd; a script living elsewhere is invoked by absolute path. See [data and file conventions](/docs/concepts/data-and-files#the-workflow-project-convention).
+
+## Loops are always root-level
+
+A loop's name is its level-1 path, and it is mandatory (the positional first argument; one segment, `[a-z0-9_]+`; no auto-generated loop names). The loop gets its own workspace. A loop created from inside an agent does **not** inherit the agent's scope: loops are global entities, not children.
+
+Names are unique among **active** loops. A removed loop's name is reusable; internally each definition has its own uuid, and runs and events reference it, so histories of same-named definitions never collide. `loop logs <name>` resolves the active definition first, else the most recent ended one; older same-named history is addressed by loop uuid (from `loop ls --all --json`). A `once` loop that has fired releases its name like any ended loop.
+
+## Cadence: timezone-stored, DST-correct
+
+The cadence is a five-field cron expression **stored with the creating timezone and evaluated in it**, so "9am weekdays" stays 9am across a DST boundary. Each occurrence is persisted as a UTC `next_fire_at`. There is no `--every`; intervals are cron expressions (`*/30 * * * *`).
+
+The alternative is `--once-at <time>`: a relative duration like `30m`, an RFC3339 timestamp, or a local wall-clock `YYYY-MM-DD[ T]HH:MM[:SS]`, resolved to a single UTC fire. A once loop fires once, then ends.
+
+**Missed fires are skipped and logged, never replayed.** If the machine slept or the server was down through a scheduled time, that fire is dropped with a log line rather than fired late. See [durability and recovery](/docs/concepts/durability).
+
+## Overlap and max-concurrency
+
+`--max-concurrency` caps concurrent runs of the loop (default 1). At the cap, the overlap policy decides what happens to a new fire:
+
+- `--overlap queue` (default) holds work as **pending run rows**. Scheduled fires at capacity coalesce into **at most one pending scheduled run**: later fires fold into it, and its `due_at` becomes the earliest missed fire. Manual runs always allocate their own row.
+- `--overlap skip` drops the fire with a log line.
+
+When a run exits, the oldest pending run starts. Pending runs are durable: they survive restarts, appear in `loop run ls`, and can be canceled by `loop run stop` before they ever start (status `canceled`). This is a separate axis from the agent [queue and concurrency](/docs/concepts/queue-and-concurrency#loops-have-a-separate-knob) caps, which still apply to every agent a run spawns.
+
+## Run statuses
+
+Every run is a durable row from the moment it is asked for, including at capacity:
+
+```text
+pending · running · stopping · ok · failed · timeout · stopped · canceled
+```
+
+The command's exit maps to status: `ok` on exit 0, else `failed`; `timeout` when the loop's `--timeout` killed it; `stopped` for `loop run stop`; `canceled` if it was still pending when stopped or removed. `loop run start` always allocates the run (uuid plus run id, kind `manual`) and prints `<loop_name>/<run_id> <run_uuid>`; at capacity the run sits `pending` and starts when a slot frees.
+
+## Process-group identity guard
+
+A pgid alone is not proof of identity; pids get reused. So orcr records the process **start time** alongside pid and pgid. Recovery and kills only ever signal a pgid whose start time still matches; otherwise the run is closed as dead and nothing is signaled.
+
+Stop and timeout follow one path: the run moves to a `stopping` barrier (new `agent run`s resolving to that run context are rejected from that point), then TERM to the process group, a grace period, KILL to the process group, and finally a barrier glob-kill of the run's agents (`<loop>/<run_id>/**`, looped until a final snapshot shows none). Restart recovery is a serialized per-loop transaction: verify running rows by pgid and start-time match (dead runs are closed and their agents glob-killed), recompute the active count, honor paused and ended loops, start pending runs as slots allow, and recompute `next_fire_at`, skipping missed fires with an event row explaining each decision. Every scheduler action (fired, coalesced, skipped, paused-hold, timed out, stopped) is an event row; that is `loop logs --source orcr`.

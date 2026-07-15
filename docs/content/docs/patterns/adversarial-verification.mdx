@@ -1,0 +1,81 @@
+---
+title: Adversarial verification
+description: A worker produces; N verifiers with different lenses try to reject it in parallel; objections loop back until a majority passes.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Generalize the single verifier from [fix-until-green](/docs/patterns/fix-until-green) into a panel. A worker produces; N verifiers, each with a different lens, try hard to reject it; their objections feed back to the worker; the round repeats until a majority passes. This is the phased shape with parallel review inside each phase.
+
+## The scenario
+
+You want more than one kind of scrutiny on the same work: correctness, security, edge cases. Each concern is a separate reviewer with its own lens, told to find a real problem. The work is accepted only when a majority of lenses pass. Failures from the minority feed back so the worker can address them, and the panel re-reviews.
+
+## The annotated recipe
+
+```ts
+import { orcr } from "@orchestratr/sdk";
+
+const LENSES = ["correctness", "security", "edge cases and error handling"];
+
+await orcr.scope("harden", async () => {
+  const worker = await orcr.agent.run({
+    agent: "claude", name: "worker", gc: "never", cwd: process.cwd(),
+    prompt: "Implement the task in TASK.md. Say DONE when finished.",
+  });
+  await worker.wait();
+
+  for (let round = 1; round <= 5; round++) {
+    const verdicts = await Promise.all(LENSES.map((lens, i) =>
+      orcr.ask({
+        agent: "codex", path: `verify/round_${round}/lens_${i}`,
+        prompt: `Adversarially review the uncommitted changes in ${process.cwd()}
+                 through the lens of ${lens}. Try hard to find a real problem.
+                 Reply PASS, or FAIL: <the single most important problem>.`,
+      })));
+
+    const failures = verdicts.filter(v => !v.trim().startsWith("PASS"));
+    if (failures.length <= LENSES.length / 2) break;      // majority passed
+    await worker.send(`Reviewers rejected the work:\n${failures.join("\n")}\nFix these.`);
+    await worker.wait();
+  }
+  await worker.kill();
+}, { killOnThrow: true });
+```
+
+What each piece is doing:
+
+- `LENSES` is the array of concerns. Adding a lens is one string; the rest of the loop adapts.
+- The worker is long-lived (`gc: "never"`), spawned once, and steered across rounds. `await worker.wait()` after the spawn lets it finish the initial implementation before the first review.
+- Each round fans the panel out with `Promise.all` over `LENSES`. Every verifier is a fresh `orcr.ask` on a different provider than the worker.
+- **The per-round path is the bookkeeping.** `verify/round_${round}/lens_${i}` gives every reviewer a unique, human-readable path: `harden/verify/round_1/lens_0`, `harden/verify/round_2/lens_1`, and so on. Rounds never collide because the round number is a path segment, so the panel can re-run with the same lenses each round.
+- **The majority test** is `failures.length <= LENSES.length / 2`. With three lenses, the work passes when at most one fails (`1 <= 1.5`). The minority's objections are sent to the worker verbatim, then `worker.wait()` blocks until the worker's fix turn completes before the next round.
+
+<Callout title="Different lenses, one prompt template">
+Each verifier gets the same instructions with its lens substituted in, and is told to "try hard to find a real problem." Distinct lenses on distinct providers is how you get genuinely independent objections rather than three copies of the same review.
+</Callout>
+
+## Primitives it exercises
+
+- [`orcr.scope`](/docs/guides/scopes-and-fanout) to root the worker and every round's panel.
+- [`orcr.agent.run`](/docs/guides/run-agents) with `gc: "never"` for the persistent worker.
+- [`agent.send`](/docs/guides/attach-and-steer) and [`agent.wait`](/docs/concepts/status-and-completion) to steer and join on the worker.
+- Parallel [`orcr.ask`](/docs/getting-started/quickstart-sdk) for the lens panel each round.
+
+## Failure and cleanup
+
+- `{ killOnThrow: true }` on the scope barrier-kills `harden/**` if any await throws, so a blocked verifier or a bug never leaves the worker or a half-finished panel running. See [scopes, lineage & fan-out](/docs/guides/scopes-and-fanout).
+- **Rounds are bounded** to 5. A panel that can never reach a majority still exits the loop and hits `worker.kill()`. Like every loop pattern, the stop condition carries a number, never "until it passes."
+- Each verifier is `gc: "immediate"` (via `ask`), so the panel self-cleans every round; only the worker needs an explicit `kill()`.
+
+## Run it
+
+```sh
+orcr scaffold harden-workflow && cd harden-workflow
+# paste the recipe into workflow.ts, replacing the generated example
+npx tsx workflow.ts
+```
+
+With three lenses per round and a live worker, one round can have up to four agents in flight. Keep an eye on the [concurrency caps](/docs/concepts/queue-and-concurrency) if you add many lenses; anything over a free slot queues rather than overloads the machine.
+
+Next: [generate-and-filter](/docs/patterns/generate-and-filter) inverts this, fanning many *producers* and judging once.
