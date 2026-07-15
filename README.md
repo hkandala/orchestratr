@@ -1,4 +1,4 @@
-# orchestratr (`orcr`)
+# orchestratr
 
 a cross-provider orchestrator for AI coding agents, built on [herdr](https://herdr.dev). run,
 coordinate, and schedule agents (claude, codex, …) as managed, addressable processes — each
