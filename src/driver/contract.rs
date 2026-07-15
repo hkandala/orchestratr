@@ -1,10 +1,11 @@
-//! The herdr driver contract table (spec §11.7): every orcr driver operation is pinned
-//! to a named herdr socket method with a fixed result-type tag. This table is the source
-//! of truth; a conformance fixture (`fixtures/herdr-contract.json`, generated from the
-//! installed herdr's `api schema`) pins the herdr-side facts. Version drift between the
-//! table, the fixture, and the live herdr schema fails the conformance suite.
-
-use serde::Deserialize;
+//! The herdr driver contract table: every orcr driver operation is pinned
+//! to a named herdr socket method with a fixed result-type tag. This table is orcr's own
+//! source of truth for which herdr methods and result-type tags the M0 driver depends on
+//! (the op → method → result_type mapping is orcr-side design; herdr does not report it).
+//! The live conformance suite (`tests/conformance_live.rs` and the `orcr __m0-selfcheck`
+//! binary) verifies every pinned method + result type against the installed herdr's
+//! `api schema` and that the declared protocol matches `MIN_HERDR_PROTOCOL`; version drift
+//! fails there.
 
 /// One pinned driver operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,29 +97,6 @@ pub const DRIVER_CONTRACT: &[DriverOp] = &[
     },
 ];
 
-/// The checked-in conformance fixture (generated from the installed herdr's `api schema`).
-pub const FIXTURE_JSON: &str = include_str!("../../fixtures/herdr-contract.json");
-
-#[derive(Debug, Deserialize)]
-pub struct Fixture {
-    pub protocol: u32,
-    pub ops: Vec<FixtureOp>,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-pub struct FixtureOp {
-    pub op: String,
-    pub method: String,
-    pub result_type: String,
-}
-
-impl Fixture {
-    /// Load the checked-in fixture.
-    pub fn load() -> Fixture {
-        serde_json::from_str(FIXTURE_JSON).expect("fixtures/herdr-contract.json is valid JSON")
-    }
-}
-
 /// Extract the set of request method consts from a live `herdr api schema` document.
 pub fn schema_methods(schema: &serde_json::Value) -> Vec<String> {
     let mut out = Vec::new();
@@ -165,36 +143,6 @@ pub fn schema_protocol(schema: &serde_json::Value) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::driver::protocol::MIN_HERDR_PROTOCOL;
-
-    /// The contract table and the checked-in fixture must agree exactly, and the fixture's
-    /// protocol must match what the driver is built against. This runs without herdr.
-    #[test]
-    fn contract_table_matches_fixture() {
-        let fx = Fixture::load();
-        assert_eq!(
-            fx.protocol, MIN_HERDR_PROTOCOL,
-            "fixture protocol must match MIN_HERDR_PROTOCOL"
-        );
-        assert_eq!(
-            fx.ops.len(),
-            DRIVER_CONTRACT.len(),
-            "fixture op count differs from the contract table"
-        );
-        for op in DRIVER_CONTRACT {
-            let f = fx
-                .ops
-                .iter()
-                .find(|f| f.op == op.op)
-                .unwrap_or_else(|| panic!("op `{}` missing from fixture", op.op));
-            assert_eq!(f.method, op.method, "method drift for op `{}`", op.op);
-            assert_eq!(
-                f.result_type, op.result_type,
-                "result_type drift for op `{}`",
-                op.op
-            );
-        }
-    }
 
     #[test]
     fn extracts_methods_and_types_from_schema() {

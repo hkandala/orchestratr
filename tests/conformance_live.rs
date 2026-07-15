@@ -2,12 +2,11 @@
 //! tag in the driver contract must exist in the installed herdr's `api schema`, and the
 //! declared protocol must match what orcr is built against. Version drift fails here.
 //!
-//! Gated behind `ORCR_E2E=1` because it shells the herdr binary. The offline half — that
-//! the contract table matches the checked-in fixture — runs unconditionally as a unit
-//! test in `src/driver/contract.rs`.
+//! Gated behind `ORCR_E2E=1` because it shells the herdr binary. The offline unit tests
+//! for the schema-extraction helpers run unconditionally in `src/driver/contract.rs`.
 
 use orchestratr::driver::contract::{
-    schema_methods, schema_protocol, schema_result_types, Fixture, DRIVER_CONTRACT,
+    schema_methods, schema_protocol, schema_result_types, DRIVER_CONTRACT,
 };
 use orchestratr::driver::protocol::MIN_HERDR_PROTOCOL;
 use orchestratr::driver::HerdrBinary;
@@ -32,16 +31,11 @@ fn live_schema_matches_contract() {
     assert!(out.status.success(), "herdr api schema failed");
     let schema: serde_json::Value = serde_json::from_slice(&out.stdout).expect("schema json");
 
-    // Protocol must match both the fixture and MIN_HERDR_PROTOCOL — drift fails.
+    // Protocol must match MIN_HERDR_PROTOCOL — drift fails.
     let live = schema_protocol(&schema).expect("schema protocol");
     assert_eq!(
         live, MIN_HERDR_PROTOCOL,
         "live herdr protocol {live} != expected {MIN_HERDR_PROTOCOL} (version drift)"
-    );
-    assert_eq!(
-        Fixture::load().protocol,
-        live,
-        "fixture protocol drifted from live herdr"
     );
 
     // Every pinned method + result type must exist in the live schema.
