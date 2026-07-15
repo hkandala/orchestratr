@@ -570,3 +570,59 @@ fn e2e_submit_confirm_resends_until_working() {
     );
     let _ = ts.request("agent.kill", json!({ "targets": [uuid] }));
 }
+
+/// Regression for the deeper half of known-issues #2 / E02: when the provider TUI isn't yet
+/// accepting input on a slow boot, the first `send_text` itself is DROPPED (not just the Enter).
+/// A bare-`Enter` re-send loop can never recover — the prompt was never typed. The hardened
+/// submit-confirm READS the pane, sees the input box is empty, and re-delivers the FULL prompt.
+/// The mock is told to discard its first received line (`ORCR_MOCK_DROP_FIRST_SENDS=1`); the
+/// prompt must still land (via re-delivery) and produce exactly one real response.
+#[test]
+fn e2e_submit_confirm_redelivers_dropped_prompt() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set ORCR_E2E=1)");
+        return;
+    }
+    // Enable the hardened submit-confirm for the mock: a confirm budget, full re-delivery
+    // attempts, and a (short) readiness wait.
+    let tuning = r#""integrations":{"mock":{"fast_turn_grace_ms":2500,"idle_stable_ms":700,"transcript_settle_ms":0,"shutdown_grace_ms":200,"submit_ready_ms":2000,"submit_confirm_ms":8000,"submit_attempts":6}}"#;
+    let ts = TestServer::start_full(tuning, &[("ORCR_MOCK_DROP_FIRST_SENDS", "1")]);
+    let uuid = ts.run("submit/dropped", Some("@say=PONG hi"), None);
+    // Despite the dropped first send, the re-delivered prompt lands → the turn completes.
+    let waited = ts.wait(&["submit/dropped"], "25s");
+    let t = target(&waited, "submit/dropped");
+    assert_eq!(
+        t["reason"],
+        json!("turn_complete"),
+        "the turn must complete after the dropped prompt is re-delivered"
+    );
+    assert_eq!(t["ok"], json!(true));
+    // The prompt actually reached the agent: the last response is the scripted PONG (a bare-Enter
+    // re-send loop would never deliver the prompt, so there'd be no response).
+    let resp = ts
+        .request(
+            "agent.logs",
+            json!({ "target": "submit/dropped", "last_response": true }),
+        )
+        .expect("agent.logs last_response");
+    let text = resp["response"]["text"].as_str().unwrap_or_default();
+    assert!(
+        text.contains("PONG"),
+        "the re-delivered prompt must produce the scripted response (got {text:?})"
+    );
+    // Exactly one turn ran — the dropped line + re-delivery produced a single assistant response.
+    let logs = ts
+        .request("agent.logs", json!({ "target": "submit/dropped" }))
+        .unwrap();
+    let assistant = logs["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["role"] == json!("assistant") && e["kind"] == json!("text"))
+        .count();
+    assert_eq!(
+        assistant, 1,
+        "re-delivery must not open extra turns (expected 1 assistant response)"
+    );
+    let _ = ts.request("agent.kill", json!({ "targets": [uuid] }));
+}

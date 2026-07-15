@@ -30,6 +30,10 @@
 //!   its native transcript — the known-issues #2 gc-immediate race).
 //! - `ORCR_MOCK_DELAY_WORKING_MS` — if > 0, stay `idle` for this long after receiving a line
 //!   before reporting `working` (exercises orcr's known-issues #2 submit-confirm re-send loop).
+//! - `ORCR_MOCK_DROP_FIRST_SENDS` — silently DISCARD the first N input lines (no echo, stays
+//!   `idle`), simulating a provider TUI that isn't yet accepting input on a slow boot (the
+//!   `send_text` itself is dropped). orcr's submit-confirm must re-deliver the FULL prompt — a
+//!   bare-Enter re-send never gets the prompt through (known-issues #2 / E02).
 //!
 //! Per-turn `@`-directives in the prompt: `@turn_ms=` `@tool_gaps=` `@gap_ms=` `@block`
 //! `@say=<word>` (the exact response text) `@write=<relpath>` (also write the response to
@@ -246,6 +250,13 @@ fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
+    // Simulate a not-yet-ready TUI that drops early input: discard the first N received lines
+    // entirely (no echo, no state change), so orcr's submit-confirm must re-deliver the whole
+    // prompt (a bare-Enter re-send never lands it). Exercises the E02 hardening.
+    let mut drop_remaining: u64 = std::env::var("ORCR_MOCK_DROP_FIRST_SENDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
     // Prove the env contract reached the pane (§5.3): dump every ORCR_* var to a file in the
     // agent's data dir, so e2e can assert it without needing to read pane env over herdr
@@ -262,6 +273,23 @@ fn main() {
                 std::path::Path::new(&dir).join("mock_env.json"),
                 serde_json::to_vec_pretty(&serde_json::Value::Object(map)).unwrap_or_default(),
             );
+        }
+    }
+
+    // Disable terminal echo on stdin so herdr `pane.read` reflects only what the mock explicitly
+    // prints (its banner + per-turn acceptance echo below), not the raw characters herdr types via
+    // `pane.send_text` (a cooked pty echoes those). This models a real TUI's own input handling and
+    // lets orcr's submit-confirm reliably distinguish a DROPPED send (nothing on screen) from an
+    // ACCEPTED one (the mock's `> …` echo) — the basis of the E02 re-delivery test. Canonical mode
+    // stays on, so line reads are unaffected. A no-op when stdin isn't a tty.
+    unsafe {
+        let fd = libc::STDIN_FILENO;
+        if libc::isatty(fd) == 1 {
+            let mut term: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(fd, &mut term) == 0 {
+                term.c_lflag &= !libc::ECHO;
+                let _ = libc::tcsetattr(fd, libc::TCSANOW, &term);
+            }
         }
     }
 
@@ -286,6 +314,17 @@ fn main() {
         if prompt.is_empty() {
             continue;
         }
+        // A not-yet-ready TUI drops this input entirely: no echo, no state change (stays idle).
+        // orcr's submit-confirm reads the pane, sees the prompt is absent, and re-delivers.
+        if drop_remaining > 0 {
+            drop_remaining -= 1;
+            continue;
+        }
+        // Echo the accepted prompt to stdout immediately so herdr `pane.read` reflects that the
+        // input landed (a real TUI shows typed/submitted text) — this lets orcr's submit-confirm
+        // distinguish "accepted, working delayed" from "dropped" and avoid double-delivery.
+        println!("> {prompt}");
+        let _ = std::io::stdout().flush();
 
         // Per-turn directives embedded in the prompt (`@turn_ms=..`, `@tool_gaps=..`,
         // `@gap_ms=..`, `@block`) override the env defaults — this is how e2e drives a
