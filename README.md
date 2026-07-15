@@ -1,25 +1,25 @@
 # orchestratr (`orcr`)
 
-A cross-provider orchestrator for AI coding agents, built on [herdr](https://herdr.dev). Run,
+a cross-provider orchestrator for AI coding agents, built on [herdr](https://herdr.dev). run,
 coordinate, and schedule agents (claude, codex, …) as managed, addressable processes — each
 lives at a **path**, settles on a **turn boundary**, and cleans up on a policy you choose.
-Drive it from the CLI, the TypeScript SDK, or the installable skill that teaches any agent the
+drive it from the CLI, the TypeScript SDK, or the installable skill that teaches any agent the
 vocabulary.
 
-## Install
+## install
 
 ```sh
 curl -fsSL https://orchestratr.dev/install.sh | sh
 ```
 
-Or grab a prebuilt `orcr` from [GitHub Releases](../../releases) — macOS (`macos-arm64`,
+or grab a prebuilt `orcr` from [GitHub releases](../../releases) — macOS (`macos-arm64`,
 `macos-x64`) and Linux (`linux-x64`); each `orcr-<version>-<platform>.tar.gz` ships a `.sha256`:
 
 ```sh
 tar -xzf orcr-<version>-<platform>.tar.gz && mv orcr /usr/local/bin/
 ```
 
-Or build from source (Rust ≥ 1.89):
+or build from source (Rust ≥ 1.89):
 
 ```sh
 cargo install orchestratr    # installs the `orcr` binary
@@ -27,16 +27,16 @@ cargo install orchestratr    # installs the `orcr` binary
 cargo build --release        # → target/release/orcr
 ```
 
-The SDK is on npm: `npm i @orchestratr/sdk`.
+the SDK is on npm: `npm i @orchestratr/sdk`.
 
 `orcr` needs a running herdr on your PATH with the claude/codex integrations installed
-(`orcr server status` shows what's available). Only `orcr scaffold` and the SDK need Node
-(≥ 20). See [`RELEASING.md`](RELEASING.md) for the release process.
+(`orcr server status` shows what's available). only `orcr scaffold` and the SDK need Node
+(≥ 20). see [`docs/RELEASING.md`](docs/RELEASING.md) for the release process.
 
-## Quickstart (CLI)
+## quickstart (CLI)
 
 ```sh
-# spawn an agent (naming is mandatory: --name or --path). Prints "<path> <uuid>".
+# spawn an agent (naming is mandatory: --name or --path). prints "<path> <uuid>".
 orcr agent run --name reviewer -a codex -p "Review src/auth.ts for auth bugs. Say DONE."
 
 orcr agent wait reviewer                 # block until it settles
@@ -47,9 +47,9 @@ orcr agent kill "review/**" -y           # clean up a subtree
 orcr top                                 # live, view-only dashboard of the path tree
 ```
 
-Paths are relative to your scope (`/` = absolute); `*` = one segment, `**` = any depth.
+paths are relative to your scope (`/` = absolute); `*` = one segment, `**` = any depth.
 
-## Quickstart (SDK)
+## quickstart (SDK)
 
 ```sh
 orcr scaffold my-workflow && cd my-workflow
@@ -68,10 +68,10 @@ await orcr.scope("review", async () => {
 });
 ```
 
-The SDK is a typed client of the socket API — anything the CLI can do, the SDK can do. See
+the SDK is a typed client of the socket API — anything the CLI can do, the SDK can do. see
 [`skill/references/sdk.md`](skill/references/sdk.md).
 
-## Schedule (loops)
+## schedule (loops)
 
 ```sh
 orcr loop create nightly "0 2 * * *" --timeout 25m -- \
@@ -79,18 +79,18 @@ orcr loop create nightly "0 2 * * *" --timeout 25m -- \
 orcr loop ls
 ```
 
-## Concepts
+## concepts
 
-- **Identity** — every agent has a permanent `uuid` and a human `path`; the last segment is its
-  name. Children nest under your scope; glob patterns operate on subtrees.
-- **Completion** — `wait` settles on turn-complete (live agents) or `ended (completed)`
-  (`--gc immediate`). Never parse terminal output; use `--last-response` or the file convention.
-- **Data** — `~/.orcr/data/` mirrors the path tree; each agent gets `$ORCR_AGENT_DATA_DIR`
+- **identity** — every agent has a permanent `uuid` and a human `path`; the last segment is its
+  name. children nest under your scope; glob patterns operate on subtrees.
+- **completion** — `wait` settles on turn-complete (live agents) or `ended (completed)`
+  (`--gc immediate`). never parse terminal output; use `--last-response` or the file convention.
+- **data** — `~/.orcr/data/` mirrors the path tree; each agent gets `$ORCR_AGENT_DATA_DIR`
   (see [`skill/references/files.md`](skill/references/files.md)).
-- **The skill** — [`skill/SKILL.md`](skill/SKILL.md) teaches any agent the orcr vocabulary
+- **the skill** — [`skill/SKILL.md`](skill/SKILL.md) teaches any agent the orcr vocabulary
   (decision ladder, hot path, guard rails, provider routing).
 
-## Layout
+## layout
 
 ```
 src/            the orcr Rust crate (server · CLI · driver · store · top)
@@ -99,7 +99,7 @@ skill/          SKILL.md + references/ (cli · sdk · patterns · loops · files
 spec/spec.md    the complete design
 ```
 
-## Development
+## development
 
 ```sh
 cargo test                          # unit + fast tests
@@ -108,19 +108,17 @@ cargo clippy --all-targets          # lint
 ORCR_E2E=1 cargo test -- --test-threads=1   # e2e against live herdr + the mock provider
 ```
 
-Not yet published to npm (the package name is finalized at release); the SDK installs locally
-via `orcr scaffold` (which pins `@orchestratr/sdk` to the CLI's own version) — set `ORCR_SDK_SPEC`
-to a local `file:`/tarball path for offline installs.
+the SDK installs locally via `orcr scaffold` (which pins `@orchestratr/sdk` to the CLI's own
+version) — set `ORCR_SDK_SPEC` to a local `file:`/tarball path for offline installs. to cut a
+release, use [`scripts/release.sh`](scripts/release.sh) (`scripts/release.sh minor`); see
+[`docs/RELEASING.md`](docs/RELEASING.md).
 
-To cut a release, use [`scripts/release.sh`](scripts/release.sh) (`scripts/release.sh minor`);
-see [`RELEASING.md`](RELEASING.md).
-
-## License
+## license
 
 orchestratr is **dual-licensed**:
 
-- **Open source** — [GNU AGPL-3.0-or-later](LICENSE).
-- **Commercial** — for organizations that cannot comply with the AGPL; contact
+- **open source** — [GNU AGPL-3.0-or-later](LICENSE).
+- **commercial** — for organizations that cannot comply with the AGPL; contact
   `hey@orchestratr.dev`.
 
-See [`LICENSE`](LICENSE) for the full text.
+see [`LICENSE`](LICENSE) for the full text.

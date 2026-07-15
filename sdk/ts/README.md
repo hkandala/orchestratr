@@ -1,19 +1,19 @@
 # @orchestratr/sdk
 
-The TypeScript client for [orchestratr (`orcr`)](https://github.com/) — a cross-provider
-orchestrator for AI coding agents. The SDK is a first-class client of the orcr socket API:
-anything the CLI can do, the SDK can do, with typed methods, typed errors, and client-side path
-scoping that composes exactly like the CLI.
+the TypeScript client for [orchestratr (`orcr`)](https://github.com/hkandala/orchestratr) — a
+cross-provider orchestrator for AI coding agents. the SDK is a first-class client of the orcr
+socket API: anything the CLI can do, the SDK can do, with typed methods, typed errors, and
+client-side path scoping that composes exactly like the CLI.
 
-## Requirements
+## requirements
 
 - Node ≥ 20.
-- The `orcr` binary on your PATH (with a running herdr + provider integrations). The SDK
+- the `orcr` binary on your PATH (with a running herdr + provider integrations). the SDK
   auto-starts the server on first use.
 
-## Quickstart
+## quickstart
 
-The fastest way to a runnable project is `orcr scaffold`, which writes `package.json`
+the fastest way to a runnable project is `orcr scaffold`, which writes `package.json`
 (pinning `@orchestratr/sdk` to the CLI's own version), `tsconfig.json`, and a runnable
 `workflow.ts`, then runs `npm install`:
 
@@ -25,7 +25,7 @@ npx tsx workflow.ts
 ```ts
 import { orcr } from "@orchestratr/sdk";
 
-// Fan out reviewers under a named scope, wait for all to settle, then read each result.
+// fan out reviewers under a named scope, wait for all to settle, then read each result.
 await orcr.scope("review", async () => {
   const files = ["src/auth.ts", "src/db.ts"];
   const reviewers = await Promise.all(
@@ -45,7 +45,7 @@ await orcr.scope("review", async () => {
 });
 ```
 
-The one-liner form:
+the one-liner form:
 
 ```ts
 import { orcr } from "@orchestratr/sdk";
@@ -57,7 +57,7 @@ const answer = await orcr.ask({
 });
 ```
 
-## Surface
+## surface
 
 - `orcr.agent.run/wait/ls/kill` and the returned `AgentHandle`
   (`wait`, `send`, `logs`, `followLogs`, `lastResponse`, `kill`, plus `uuid`/`path`/`name`/`dataDir`).
@@ -68,17 +68,16 @@ const answer = await orcr.ask({
   `AsyncIterable` of typed events.
 - `orcr.loop.*` (create/pause/resume/rm/ls/logs + `loop.run.start/stop/ls`),
   `orcr.server.*`, `orcr.api.*`, and `orcr.gen` — the generated 1:1 protocol client.
-- Typed errors, one class per orcr error code (`NotFound`, `InvalidRequest`, `StateConflict`,
+- typed errors, one class per orcr error code (`NotFound`, `InvalidRequest`, `StateConflict`,
   `Blocked`, `Timeout`, `IntegrationMissing`, `TranscriptUnavailable`, `EnvironmentError`,
-  `ServerError`), all subclasses of `OrcrError`. Blocking calls (`wait`/`ask`) are never capped
+  `ServerError`), all subclasses of `OrcrError`. blocking calls (`wait`/`ask`) are never capped
   by a client-side timeout — their deadline is the caller's own `timeout` option (unbounded when
   omitted).
 
-## Notes
+## notes
 
-Not yet published to npm (the package name is finalized at release). `orcr scaffold` installs the
-SDK pinned to the CLI's own version; set `ORCR_SDK_SPEC` to a local `file:`/tarball path for
-offline installs.
+`orcr scaffold` installs the SDK pinned to the CLI's own version; set `ORCR_SDK_SPEC` to a local
+`file:`/tarball path for offline installs.
 
-See the skill references for the full SDK surface and recipes:
+see the skill references for the full SDK surface and recipes:
 `skill/references/sdk.md` and `skill/references/patterns.md`.
