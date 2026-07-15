@@ -140,3 +140,19 @@ WRONG — verified false):**
   pipeline — `agent ask -a codex` → `PONG`). See the E02 entry's real-provider validation for the
   evidence. Independent validation on a non-enterprise claude box (where herdr's claude integration
   reports state normally) is the way to confirm the claude leg end-to-end.
+
+## Deferred infra / roadmap (parked by owner)
+
+Not bugs — release/distribution polish parked for later. The repo is now **public**, so the
+`curl … | sh` install one-liner and release binaries are downloadable without auth.
+
+- **Host the install script at `orchestratr.dev/install.sh`** — `install.sh` is in the repo; it
+  still needs to be served at that URL. Recommended: a **Cloudflare Worker** on the route (ready
+  snippet in `docs/RELEASING.md`), or Cloudflare Pages, or a redirect rule to the raw GitHub URL.
+- **Automate releases further** — today: `scripts/release.sh` (one-command bump+tag+push).
+  Consider **release-please** (auto version + `CHANGELOG.md` from Conventional Commits — the repo
+  already uses `feat:`/`fix:`/`chore:` prefixes) or **cargo-dist** (generates the release workflow
+  *and* the installer). Either would replace the hand-rolled `release.yml` + `install.sh`.
+- **Publish to registries** — add `CARGO_REGISTRY_TOKEN` (crates.io) + `NPM_TOKEN` (npm) repo
+  secrets to enable the gated publish jobs; claim the `orchestratr` crate name + `@orchestratr`
+  npm scope first (see `docs/RELEASING.md`).
