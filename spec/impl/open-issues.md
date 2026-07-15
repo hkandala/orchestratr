@@ -42,15 +42,48 @@ herdr pane alive; row even carried a stale `pane_id`). Only session teardown rea
   before `c811a0b`, passes after. Green: build/clippy(-D warnings)/fmt/164 unit +
   `gc_e2e` (16) + `agent_e2e` (10).
 
-## Open — deferred by owner (not being fixed now)
+## Fixed after manual-e2e (cont.)
 
-### E02 — intermittent codex submit-confirm flake  ·  medium  ·  DEFERRED
-Plain `agent ask -a codex` passes (PONG, ~22s); one `--json` ask timed out at 8s
-(`submit-confirm … still idle after 8000ms`) and passed clean on retry. Same root as the
-E01 submit-Enter fix — the re-send window/attempts aren't fully robust on a slow boot.
-- **This is also the true cause of the "BLOCKED" real-claude paths below.**
-- Fix direction (when picked up): more re-send attempts, adaptive `submit_confirm_ms`,
-  and/or pane-read acceptance verification (confirm the prompt left the input box).
+### E02 — intermittent submit-confirm flake  ·  medium  ·  REAL BUG  ·  **FIXED**
+Plain `agent ask -a codex` passed (PONG, ~22s) but one `--json` ask timed out at 8s
+(`submit-confirm … still idle after 8000ms`) and passed on retry; E01 timed out both times in
+one run. Root weakness: the old `confirm_submit` relied on "pane left idle" and only re-sent a
+bare `Enter` — it couldn't recover a dropped `send_text` (empty input box), and could fire before
+the TUI was ready to accept input at all.
+- **Fix (hardened submit-confirm, §5.6):** `engine.rs::deliver_prompt` now, for a managed
+  real-provider agent, (1) **waits for readiness** (`await_input_ready`, bounded by
+  `submit_ready_ms`) — herdr reports a real `agent_status` or the pane's rendered content settles
+  (via new driver `pane_read`) — before the first send; (2) **verifies submission** by reading the
+  pane (`pane_shows_prompt`): if a turn isn't underway and the input box is empty (the `send_text`
+  was dropped) it re-sends the **FULL** delivery, else it nudges with `Enter`; (3) uses a longer
+  **adaptive** window (`submit_confirm_ms` 8000→20000 default) across up to `submit_attempts` (6)
+  full re-deliveries. Applied to **both** the first-prompt delivery (`pipeline_inner`) and the
+  `send` path. Per-provider tuning in `integration.rs` + config overrides; the mock is off
+  (`submit_confirm_ms 0`).
+- **Regression:** `tests/completion_e2e.rs::e2e_submit_confirm_redelivers_dropped_prompt` (mock,
+  `ORCR_MOCK_DROP_FIRST_SENDS=1` + tty-echo-off so `pane.read` faithfully shows a dropped vs
+  accepted send) asserts the prompt is re-delivered and the turn completes with exactly one
+  response. Fails with a bare-Enter-only loop (`submit_attempts:0`), passes after. Green:
+  build/clippy(-D warnings)/fmt/164 unit + `conformance_live` + `completion_e2e` (11) + `agent_e2e`
+  (10) + `recipe_e2e` (8).
+- **Real-provider validation (disposable home + `orcr_sc_*` session, teardown clean, no leaks):**
+  - **codex — FULL end-to-end works.** `agent ask -a codex` (plain **and** `--json`) returns `PONG`
+    in ~12s, exit 0, 3/3 runs (the intermittent `--json` 8s timeout is gone with the adaptive
+    window).
+  - **claude — submission is now FIXED.** A clean baseline (submit-confirm disabled) proved the bug
+    is a **dropped `Enter`** (not a dropped `send_text`): `send_text` lands the prompt in claude's
+    input box, but the single `Enter` is silently dropped, so the prompt **sits unsubmitted in the
+    box indefinitely** (herdr `agent_status` stays `idle`). With the fix the prompt submits
+    **exactly once** (no duplicate copies, no spurious re-delivery) and claude starts processing.
+  - **Newly-found, SEPARATE blocker for claude on this box (NOT submit, out of scope):** herdr's
+    claude integration (v7) does **not** report `working` for the enterprise Avocado/MetaCode-wrapped
+    claude — `agent_status` stays `idle` even while claude is visibly `Schlepping…`. So orcr's
+    completion monitor can't detect the turn, `ask`/`wait` still time out, and `logs` hits
+    `transcript_unavailable` (the wrapped claude's session id maps to no transcript file). This — not
+    the submit flake — is the real remaining cause of the "BLOCKED" real-claude paths (E01/E03/E05/E18)
+    **on this specific box**; codex proves the pipeline itself is correct. Fix direction (future,
+    separate task): herdr claude-integration screen-detection for the Avocado wrapper + transcript
+    location.
 
 ### E21 — `wait` exit code for an agent's-own `--timeout`  ·  low  ·  DEFERRED (spec nit)
 Impl returns exit **5** for a target that ended via its own `--timeout` when observed
@@ -75,8 +108,13 @@ WRONG — verified false):**
   run were the **intermittent submit-Enter flake (E02 root)**: when the boot-time Enter
   is dropped, the prompt never submits → the turn never runs → no fresh response →
   `ask`/`wait` time out. When the Enter lands, it returns `PONG` and everything works.
-- **How to "fix" the blocked paths:** harden the submit-confirm (E02) so the prompt
-  reliably submits on a slow real-provider boot. That single robustness fix unblocks
-  E01/E03/E05/E18. (No transcript-discovery change is needed — the adapter is correct.)
-- Independent validation on a non-enterprise claude box is still worthwhile, but the
-  enterprise wrapper does **not** break transcript persistence (confirmed).
+- **UPDATE (submit-confirm hardening / E02 above):** the submit-Enter flake is now fixed and
+  proven — claude's prompt submits reliably (dropped-`Enter` recovery via bounded bare-Enter
+  re-send). BUT real-claude `ask`/`wait` on THIS enterprise box remains blocked by a **separate**
+  issue found during that work: herdr's claude integration does not report `agent_status: working`
+  for the Avocado/MetaCode-wrapped claude, so completion is never detected and `logs` can't resolve
+  the wrapped session's transcript. This is a **herdr-integration / transcript-location** problem,
+  not an orcr submit or completion-logic defect (codex runs fully end-to-end with the same orcr
+  pipeline — `agent ask -a codex` → `PONG`). See the E02 entry's real-provider validation for the
+  evidence. Independent validation on a non-enterprise claude box (where herdr's claude integration
+  reports state normally) is the way to confirm the claude leg end-to-end.

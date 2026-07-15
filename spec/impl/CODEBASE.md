@@ -254,8 +254,10 @@ Current state: **through M7 (SDK & skill)** + the comprehensive spec-vs-impl rev
   - `mod.rs` — the `Driver`: **synchronous/blocking**, **one request per connection**
     (herdr closes the socket after each response — open a fresh `UnixStream` per call,
     with read/write timeouts). Typed methods wrap each herdr op (ping/handshake,
-    session.snapshot, workspace.create/list, agent.start/list, pane.get/list/move/close/
-    send_text/send_keys, notification.show). **Version handshake is orcr-side**: ping,
+    session.snapshot, workspace.create/list, agent.start/list, pane.get/list/read/move/close/
+    send_text/send_keys, notification.show). `pane_read` (`ReadSource`/`PaneReadResult`) reads a
+    pane's rendered content — used by the submit-confirm hardening (readiness + submission
+    verification, §5.6). **Version handshake is orcr-side**: ping,
     read `protocol` from `pong`, reject mismatch. NOTE: M1's socket *server* + event
     stream (§11.6) is a separate concern — the async story was deferred from M0; decide
     the server's runtime (tokio vs threaded) in M1 and record it.
@@ -270,7 +272,13 @@ Current state: **through M7 (SDK & skill)** + the comprehensive spec-vs-impl rev
     `ORCR_ALLOW_MOCK_PROVIDER=1`), and `ensure_supported` (both-layers-required →
     `integration_missing` naming the missing layer + install command, §11.4). **M3**:
     `TuningParams` + `tuning_for(provider, &config.integrations)` (completion tuning defaults
-    per provider + config overrides).
+    per provider + config overrides). **Submit-confirm hardening (E02)**: `TuningParams` adds
+    `submit_ready_ms` (bounded wait for the TUI to accept input before the first prompt) and
+    `submit_attempts` (max full re-deliveries), and `submit_confirm_ms` is now a longer adaptive
+    budget (real default 20000ms). `engine.rs` uses `deliver_prompt` → `await_input_ready` +
+    `confirm_submitted` + `pane_shows_prompt` (reads the pane to re-send the FULL delivery when the
+    input box is empty, not just a bare Enter) for BOTH the first-prompt delivery and the `send`
+    path.
   - `transcript.rs` — **M3 transcript adapters** (§11.4). **M7**: `locate_transcript` gained a
     `data_dir` param + a `mock`-provider branch that reads `<data_dir>/transcript.jsonl` directly
     (the mock writes a claude-format transcript into its own data dir — self-contained, never the
@@ -302,6 +310,10 @@ Current state: **through M7 (SDK & skill)** + the comprehensive spec-vs-impl rev
   **M7**: writes a claude-format `transcript.jsonl` into `$ORCR_AGENT_DATA_DIR` (read by the
   `mock` transcript adapter) so `logs`/`ask` resolve; new directives `@say=<word>` (exact
   response) + `@write=<relpath>` (file convention); `ORCR_MOCK_NO_TRANSCRIPT` opts out.
+  **Submit-confirm (E02)**: disables tty ECHO on stdin (so herdr `pane.read` reflects only what
+  the mock prints — its banner + a per-turn `> <prompt>` acceptance echo — not raw typed input),
+  and `ORCR_MOCK_DROP_FIRST_SENDS=N` silently discards the first N received lines to simulate a
+  not-yet-ready TUI that drops input (forces orcr's full re-delivery).
 
 ## SDK, recipes & skill (`sdk/ts/`, `skill/`) — M7
 
