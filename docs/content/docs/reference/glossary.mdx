@@ -1,86 +1,86 @@
 ---
-title: Glossary
-description: "Short definitions for every orcr term: agent, path, scope, turn, settle, park/reap, managed vs unmanaged, loop and run, integration, herdr session, lineage, and more."
+title: glossary
+description: "short definitions for every orcr term: agent, path, scope, turn, settle, park/reap, managed vs unmanaged, loop and run, integration, herdr session, lineage, and more."
 ---
 
-Definitions for the vocabulary used across orchestratr, with links to the page that covers each in depth.
+definitions for the vocabulary used across orchestratr, with links to the page that covers each in depth.
 
 ### agent
 
-An AI coding agent running as a real interactive TUI in a herdr pane. Every agent has a [uuid](#uuid) and a [path](#path), and passes through the [status](/docs/reference/status-model) lifecycle. See [agents and lineage](/docs/concepts/agents-and-lineage).
+an AI coding agent running as a real interactive TUI in a herdr pane. every agent has a [uuid](#uuid) and a [path](#path), and passes through the [status](/docs/reference/status-model) lifecycle. see [agents and lineage](/docs/concepts/agents-and-lineage).
 
 ### blocked_kind
 
-The best-effort category of why an agent is `blocked`: `question`, `limit`, `login`, or `unknown`. See the [status model](/docs/reference/status-model).
+the best-effort category of why an agent is `blocked`: `question`, `limit`, `login`, or `unknown`. see the [status model](/docs/reference/status-model).
 
 ### exit_reason
 
-Why an agent ended: `completed`, `reaped`, `killed`, `timeout`, `canceled`, `failed`, or `lost`. It answers whether the work finished. See the [status model](/docs/reference/status-model).
+why an agent ended: `completed`, `reaped`, `killed`, `timeout`, `canceled`, `failed`, or `lost`. it answers whether the work finished. see the [status model](/docs/reference/status-model).
 
 ### herdr
 
-The terminal substrate orcr builds on: persistent named sessions, background TUIs, and programmatic input/output to real agent terminals. orcr discovers herdr, never embeds it. See [what herdr provides](/docs/why).
+the terminal substrate orcr builds on: persistent named sessions, background TUIs, and programmatic input/output to real agent terminals. orcr discovers herdr, never embeds it. see [what herdr provides](/docs/why).
 
 ### herdr session
 
-A herdr container for workspaces, tabs, and panes. orcr runs all managed agents in one dedicated owned session (default name `orcr`), so the user's daily session is never polluted. See [the owned herdr session](/docs/concepts/herdr-session).
+a herdr container for workspaces, tabs, and panes. orcr runs all managed agents in one dedicated owned session (default name `orcr`), so the user's daily session is never polluted. see [the owned herdr session](/docs/concepts/herdr-session).
 
 ### integration
 
-A per-provider adapter. A provider is supported only when **both layers** exist: herdr's integration (so herdr can observe the provider's state and transcript pointer) and orcr's integration (launch argv, completion tuning, shutdown recipe, transcript adapter). Missing either layer fails fast with `integration_missing`. See [providers and integrations](/docs/concepts/providers).
+a per-provider adapter. a provider is supported only when **both layers** exist: herdr's integration (so herdr can observe the provider's state and transcript pointer) and orcr's integration (launch argv, completion tuning, shutdown recipe, transcript adapter). missing either layer fails fast with `integration_missing`. see [providers and integrations](/docs/concepts/providers).
 
 ### lineage
 
-The parent-to-child relationship between agents, assembled from the `ORCR_PARENT_*` [environment](/docs/reference/environment) contract when an agent spawns another. `orcr top` draws it as a `↖ parent` annotation. See [agents and lineage](/docs/concepts/agents-and-lineage).
+the parent-to-child relationship between agents, assembled from the `ORCR_PARENT_*` [environment](/docs/reference/environment) contract when an agent spawns another. `orcr top` draws it as a `↖ parent` annotation. see [agents and lineage](/docs/concepts/agents-and-lineage).
 
 ### loop
 
-A durable schedule that runs any command on a cadence (cron or one-shot), surviving the caller's shell. A loop owns time only; the command it runs spawns agents like any caller. See [loops](/docs/concepts/loops) and [`orcr loop`](/docs/reference/cli/loop).
+a durable schedule that runs any command on a cadence (cron or one-shot), surviving the caller's shell. a loop owns time only; the command it runs spawns agents like any caller. see [loops](/docs/concepts/loops) and [`orcr loop`](/docs/reference/cli/loop).
 
 ### managed vs unmanaged
 
-**Managed** agents are created by `agent run` in the owned session and get the full lifecycle (queue, GC, naming, lineage). **Unmanaged** agents are ones herdr detects in your own sessions; orcr tracks them but never manages their panes, and killing one requires `--force`. See [managed vs unmanaged agents](/docs/concepts/managed-vs-unmanaged).
+**managed** agents are created by `agent run` in the owned session and get the full lifecycle (queue, GC, naming, lineage). **unmanaged** agents are ones herdr detects in your own sessions; orcr tracks them but never manages their panes, and killing one requires `--force`. see [managed vs unmanaged agents](/docs/concepts/managed-vs-unmanaged).
 
 ### name
 
-The last segment of an agent's [path](#path). Naming is mandatory on `run` and `ask` (via `--name` or the last segment of `--path`); there are no auto-generated names.
+the last segment of an agent's [path](#path). naming is mandatory on `run` and `ask` (via `--name` or the last segment of `--path`); there are no auto-generated names.
 
 ### park / reap
 
-Two `gc auto` steps. **Park**: an idle agent past `idle_after` is moved to the `idle` workspace (status `parked`) to keep things tidy; it stays alive and any `send` revives it. **Reap**: a parked agent past `kill_after` is gracefully killed and its pane closed (`exit_reason: reaped`). See [lifecycle and GC](/docs/concepts/lifecycle).
+two `gc auto` steps. **park**: an idle agent past `idle_after` is moved to the `idle` workspace (status `parked`) to keep things tidy; it stays alive and any `send` revives it. **reap**: a parked agent past `kill_after` is gracefully killed and its pane closed (`exit_reason: reaped`). see [lifecycle and GC](/docs/concepts/lifecycle).
 
 ### path
 
-An agent's address, slash-separated like a filesystem path; the last segment is its [name](#name). Every reported path is absolute; relative forms exist only as input, resolved against the caller's [scope](#scope). See [the path grammar](/docs/reference/path-grammar).
+an agent's address, slash-separated like a filesystem path; the last segment is its [name](#name). every reported path is absolute; relative forms exist only as input, resolved against the caller's [scope](#scope). see [the path grammar](/docs/reference/path-grammar).
 
 ### pattern
 
-A path where any segment may be `*` (one segment) or `**` (any depth). Accepted only by the bulk verbs (`wait`, `kill`, `ls`, `top`'s filter). See [the path grammar](/docs/reference/path-grammar).
+a path where any segment may be `*` (one segment) or `**` (any depth). accepted only by the bulk verbs (`wait`, `kill`, `ls`, `top`'s filter). see [the path grammar](/docs/reference/path-grammar).
 
 ### run
 
-One execution of a [loop](#loop). Every run gets a run id (`r` plus 5 characters, like `r82c9s`) and a path `<loop_name>/<run_id>`, executes in its own process group, and is the path scope for the agents it spawns. See [`orcr loop`](/docs/reference/cli/loop).
+one execution of a [loop](#loop). every run gets a run id (`r` plus 5 characters, like `r82c9s`) and a path `<loop_name>/<run_id>`, executes in its own process group, and is the path scope for the agents it spawns. see [`orcr loop`](/docs/reference/cli/loop).
 
 ### scope
 
-Where relative paths resolve. An agent is a file, so its scope is its path minus its name (children land as siblings). A loop run is a directory, so its scope is its whole run path (children land inside). A plain shell has no scope. See [identity](/docs/concepts/identity) and [`orcr.scope()`](/docs/reference/sdk).
+where relative paths resolve. an agent is a file, so its scope is its path minus its name (children land as siblings). a loop run is a directory, so its scope is its whole run path (children land inside). a plain shell has no scope. see [identity](/docs/concepts/identity) and [`orcr.scope()`](/docs/reference/sdk).
 
 ### settle
 
-The point where a waited agent reaches a state the caller can or must act on: turn complete, finished, blocked, or dead. `wait` blocks until every target settles. Settle states can un-settle (a `send`, a revive, external input). See [`agent wait`](/docs/reference/cli/agent).
+the point where a waited agent reaches a state the caller can or must act on: turn complete, finished, blocked, or dead. `wait` blocks until every target settles. settle states can un-settle (a `send`, a revive, external input). see [`agent wait`](/docs/reference/cli/agent).
 
 ### status
 
-The single public state of an agent at a time: for managed agents `queued`, `starting`, `working`, `idle`, `blocked`, `parked`, `ended`, `lost`; for unmanaged agents `working`, `idle`, `blocked`, `unknown`, `ended`. See the [status model](/docs/reference/status-model).
+the single public state of an agent at a time: for managed agents `queued`, `starting`, `working`, `idle`, `blocked`, `parked`, `ended`, `lost`; for unmanaged agents `working`, `idle`, `blocked`, `unknown`, `ended`. see the [status model](/docs/reference/status-model).
 
 ### subagent
 
-An agent spawned by another agent (or by a loop-run command). Any orcr-spawned agent can call `orcr` itself; the server reads the caller's identity and records [lineage](#lineage). See [agents and lineage](/docs/concepts/agents-and-lineage).
+an agent spawned by another agent (or by a loop-run command). any orcr-spawned agent can call `orcr` itself; the server reads the caller's identity and records [lineage](#lineage). see [agents and lineage](/docs/concepts/agents-and-lineage).
 
 ### turn
 
-One delivered input and the work it produces. Every input (the first prompt, every `send`) bumps `input_seq` before delivery. A turn is complete only when `working` is seen after that delivery, then stable idle, then the transcript settles, so an old idle can never satisfy a newer send. See [status and completion](/docs/concepts/status-and-completion).
+one delivered input and the work it produces. every input (the first prompt, every `send`) bumps `input_seq` before delivery. a turn is complete only when `working` is seen after that delivery, then stable idle, then the transcript settles, so an old idle can never satisfy a newer send. see [status and completion](/docs/concepts/status-and-completion).
 
 ### uuid
 
-An agent's permanent identity: a UUIDv7 generated at creation, unique across all history, never reused. Any unambiguous prefix of 8 or more hex characters is accepted. Persist the uuid when you mean this exact historical agent. See [identity](/docs/concepts/identity).
+an agent's permanent identity: a UUIDv7 generated at creation, unique across all history, never reused. any unambiguous prefix of 8 or more hex characters is accepted. persist the uuid when you mean this exact historical agent. see [identity](/docs/concepts/identity).

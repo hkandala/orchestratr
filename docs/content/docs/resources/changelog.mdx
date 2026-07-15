@@ -1,24 +1,24 @@
 ---
-title: Changelog and releases
-description: How orcr releases are cut, what each release ships, how the SDK is version-pinned, and the version-compatibility rules for both sockets.
+title: changelog and releases
+description: how orcr releases are cut, what each release ships, how the SDK is version-pinned, and the version-compatibility rules for both sockets.
 ---
 
-orcr ships the CLI binary and the TypeScript SDK together, in lockstep, from a single tag. This page covers how a release is produced, what artifacts it contains, and the compatibility rules you need when the CLI, the SDK, herdr, and the store are not all the same age.
+orcr ships the CLI binary and the TypeScript SDK together, in lockstep, from a single tag. this page covers how a release is produced, what artifacts it contains, and the compatibility rules you need when the CLI, the SDK, herdr, and the store are not all the same age.
 
-## Release history
+## release history
 
-The project is pre-1.0 and developed against a milestone plan (M0 through M7 are complete; see [contributing](/docs/resources/contributing#milestones)). There are no versions published to the package registries yet:
+the project is pre-1.0 and developed against a milestone plan (M0 through M7 are complete; see [contributing](/docs/resources/contributing#milestones)). there are no versions published to the package registries yet:
 
-- The `orchestratr` crate is not yet claimed on crates.io.
+- the `orchestratr` crate is not yet claimed on crates.io.
 - `@orchestratr/sdk` is unpublished (`0.0.0` in the manifest). `orcr scaffold` installs it locally, pinned to the CLI version.
 
-Prebuilt CLI binaries are published as GitHub release assets per tag. Future released versions will each get an entry here summarizing what changed, following the `feat:` / `fix:` / `chore:` commit convention the repo already uses.
+prebuilt CLI binaries are published as GitHub release assets per tag. future released versions will each get an entry here summarizing what changed, following the `feat:` / `fix:` / `chore:` commit convention the repo already uses.
 
-## How releases work
+## how releases work
 
-Releases are tag-driven. Pushing a `vX.Y.Z` tag runs the release workflow, which builds the `orcr` binaries, creates a GitHub release, and (when the publish tokens are configured) pushes to crates.io and npm.
+releases are tag-driven. pushing a `vX.Y.Z` tag runs the release workflow, which builds the `orcr` binaries, creates a GitHub release, and (when the publish tokens are configured) pushes to crates.io and npm.
 
-The one-command path bumps both manifests in lockstep, runs a sanity build, commits, tags, and pushes:
+the one-command path bumps both manifests in lockstep, runs a sanity build, commits, tags, and pushes:
 
 ```sh
 scripts/release.sh patch          # 0.1.0 -> 0.1.1  (bug fixes)
@@ -28,13 +28,13 @@ scripts/release.sh 0.4.2          # or an explicit version
 scripts/release.sh minor --dry-run   # preview, change nothing
 ```
 
-It refuses unless you are on a clean `main` in sync with `origin`. It bumps `Cargo.toml` and `sdk/ts/package.json` (plus the lockfiles), does a `cargo build`, commits `chore(release): vX.Y.Z`, tags, and pushes. The `Cargo.toml` version and the tag must match; the workflow's version guard fails the run otherwise.
+it refuses unless you are on a clean `main` in sync with `origin`. it bumps `Cargo.toml` and `sdk/ts/package.json` (plus the lockfiles), does a `cargo build`, commits `chore(release): vX.Y.Z`, tags, and pushes. the `Cargo.toml` version and the tag must match; the workflow's version guard fails the run otherwise.
 
-The binaries job always runs. The crates.io and npm publish jobs run only when their repo secrets (`CARGO_REGISTRY_TOKEN`, `NPM_TOKEN`) are present, and they never block or fail the release when absent. Registry versions are immutable: you cannot re-publish `X.Y.Z`, so bump the patch and re-tag if a publish half-fails.
+the binaries job always runs. the crates.io and npm publish jobs run only when their repo secrets (`CARGO_REGISTRY_TOKEN`, `NPM_TOKEN`) are present, and they never block or fail the release when absent. registry versions are immutable: you cannot re-publish `X.Y.Z`, so bump the patch and re-tag if a publish half-fails.
 
-## Install artifacts
+## install artifacts
 
-Each release ships a tarball per platform, and each tarball ships a `.sha256` checksum alongside it:
+each release ships a tarball per platform, and each tarball ships a `.sha256` checksum alongside it:
 
 | platform | asset |
 | --- | --- |
@@ -42,7 +42,7 @@ Each release ships a tarball per platform, and each tarball ships a `.sha256` ch
 | macOS x64 | `orcr-<version>-macos-x64.tar.gz` (+ `.sha256`) |
 | Linux x64 | `orcr-<version>-linux-x64.tar.gz` (+ `.sha256`) |
 
-Ways to install:
+ways to install:
 
 ```sh
 # one-liner: detects the platform, verifies the .sha256, installs orcr to ~/.local/bin
@@ -56,32 +56,32 @@ tar -xzf orcr-<version>-<platform>.tar.gz && mv orcr /usr/local/bin/
 cargo install orchestratr        # installs the orcr binary
 ```
 
-`orcr` needs a running herdr on your `PATH` at runtime, with the claude and codex integrations installed. Only `orcr scaffold` and the SDK need Node (>= 20). Full setup is on the [installation page](/docs/getting-started/installation).
+`orcr` needs a running herdr on your `PATH` at runtime, with the claude and codex integrations installed. only `orcr scaffold` and the SDK need Node (>= 20). full setup is on the [installation page](/docs/getting-started/installation).
 
-> **Note.** Until the install script is hosted at `orchestratr.dev/install.sh`, the raw GitHub release URL works auth-free because the repo is public. See the [roadmap](/docs/resources/roadmap#release-and-distribution-follow-ups).
+> **note.** until the install script is hosted at `orchestratr.dev/install.sh`, the raw GitHub release URL works auth-free because the repo is public. see the [roadmap](/docs/resources/roadmap#release-and-distribution-follow-ups).
 
 ## SDK version pinning
 
-`orcr scaffold` generates a `package.json` that pins `@orchestratr/sdk` to the **CLI's own version**. This keeps the SDK you write against and the server you talk to in the same generation, which matters because both are version-negotiated (below).
+`orcr scaffold` generates a `package.json` that pins `@orchestratr/sdk` to the **CLI's own version**. this keeps the SDK you write against and the server you talk to in the same generation, which matters because both are version-negotiated (below).
 
-Because the SDK is not on npm yet, the scaffolded project installs the pinned version from wherever `ORCR_SDK_SPEC` points:
+because the SDK is not on npm yet, the scaffolded project installs the pinned version from wherever `ORCR_SDK_SPEC` points:
 
-- Unset: the scaffold uses the pinned CLI version (works once `@orchestratr/sdk` is published).
-- Set to a `file:` path or a local tarball: the scaffold installs from there. This is the offline and local-development path, and it is how the recipe e2e suite installs the SDK.
+- unset: the scaffold uses the pinned CLI version (works once `@orchestratr/sdk` is published).
+- set to a `file:` path or a local tarball: the scaffold installs from there. this is the offline and local-development path, and it is how the recipe e2e suite installs the SDK.
 
 ```sh
 # install the SDK from a local tarball instead of npm
 ORCR_SDK_SPEC=/path/to/orchestratr-sdk.tgz orcr scaffold my-workflow
 ```
 
-`orcr scaffold` is purely local: it never talks to the server, and it fails with `state_conflict` (touching nothing) if any of its three files already exist. See the [SDK quickstart](/docs/getting-started/quickstart-sdk).
+`orcr scaffold` is purely local: it never talks to the server, and it fails with `state_conflict` (touching nothing) if any of its three files already exist. see the [SDK quickstart](/docs/getting-started/quickstart-sdk).
 
-## Version compatibility
+## version compatibility
 
-Three boundaries carry a version, and each fails loudly on a mismatch rather than guessing.
+three boundaries carry a version, and each fails loudly on a mismatch rather than guessing.
 
-- **orcr client to orcr server.** The socket protocol is negotiated on the first request. A mismatch returns `unsupported_version`. The current orcr socket protocol version is `1`. Because `orcr scaffold` pins the SDK to the CLI version, a scaffolded project and its CLI stay in step; a hand-updated SDK against an older CLI (or the reverse) is what this check catches.
-- **orcr server to herdr.** orcr declares a minimum herdr protocol version and handshake-checks it on connect. A mismatch fails with a clear error naming the required herdr version (surfaced as [`herdr_unreachable`](/docs/resources/troubleshooting#herdr_unreachable) style version-skew). The driver's operation set is pinned to named herdr methods and checked against the installed herdr's live `api schema`, so herdr version drift is caught, not silently tolerated.
-- **Two orcr versions sharing one store.** The store stamps a `schema_version`. A binary that finds an incompatible on-disk schema refuses to open the store with a message rather than migrating blindly.
+- **orcr client to orcr server.** the socket protocol is negotiated on the first request. a mismatch returns `unsupported_version`. the current orcr socket protocol version is `1`. because `orcr scaffold` pins the SDK to the CLI version, a scaffolded project and its CLI stay in step; a hand-updated SDK against an older CLI (or the reverse) is what this check catches.
+- **orcr server to herdr.** orcr declares a minimum herdr protocol version and handshake-checks it on connect. a mismatch fails with a clear error naming the required herdr version (surfaced as [`herdr_unreachable`](/docs/resources/troubleshooting#herdr_unreachable) style version-skew). the driver's operation set is pinned to named herdr methods and checked against the installed herdr's live `api schema`, so herdr version drift is caught, not silently tolerated.
+- **two orcr versions sharing one store.** the store stamps a `schema_version`. a binary that finds an incompatible on-disk schema refuses to open the store with a message rather than migrating blindly.
 
-The socket protocol is additive: unknown fields are ignored, so newer payload fields do not break an older reader. `orcr api schema` publishes the full contract (methods, params, results, event kinds, error codes, protocol version) and is the source of truth for what a given version speaks. See the [socket API reference](/docs/reference/socket-api).
+the socket protocol is additive: unknown fields are ignored, so newer payload fields do not break an older reader. `orcr api schema` publishes the full contract (methods, params, results, event kinds, error codes, protocol version) and is the source of truth for what a given version speaks. see the [socket API reference](/docs/reference/socket-api).

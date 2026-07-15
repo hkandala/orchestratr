@@ -1,23 +1,23 @@
 ---
-title: Configure orchestratr
-description: "Tune the knobs you actually touch: concurrency caps, GC timings, and completion tuning."
+title: configure orchestratr
+description: "tune the knobs you actually touch: concurrency caps, GC timings, and completion tuning."
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Configuration lives in `~/.orcr/config.json` (strict JSON). Every key is optional and has a default, so most setups touch only a few knobs. This page covers the ones you reach for; the [configuration reference](/docs/reference/configuration) documents every key.
+configuration lives in `~/.orcr/config.json` (strict JSON). every key is optional and has a default, so most setups touch only a few knobs. this page covers the ones you reach for; the [configuration reference](/docs/reference/configuration) documents every key.
 
-## Precedence
+## precedence
 
-Values resolve in one order everywhere:
+values resolve in one order everywhere:
 
 ```text
 CLI flag  →  config.json  →  built-in default
 ```
 
-A `--gc` or `-a` on the command line beats the config, which beats the shipped default.
+a `--gc` or `-a` on the command line beats the config, which beats the shipped default.
 
-## The knobs you actually touch
+## the knobs you actually touch
 
 ```jsonc
 // ~/.orcr/config.json: every key optional; defaults shown
@@ -39,26 +39,26 @@ A `--gc` or `-a` on the command line beats the config, which beats the shipped d
 }
 ```
 
-### Concurrency caps
+### concurrency caps
 
-`concurrency.max` (default 25) is the global ceiling on live agents, RAM protection because heavy TUIs at 100x will take a machine down. Per-provider caps sit beneath it (any provider name is a key); promotion from the queue needs a free slot in both the global cap and the provider's cap. Lower `max` on a small machine; raise a provider's cap if that provider is your bottleneck and you have the RAM. See [Queue and concurrency](/docs/concepts/queue-and-concurrency).
+`concurrency.max` (default 25) is the global ceiling on live agents, RAM protection because heavy TUIs at 100x will take a machine down. per-provider caps sit beneath it (any provider name is a key); promotion from the queue needs a free slot in both the global cap and the provider's cap. lower `max` on a small machine; raise a provider's cap if that provider is your bottleneck and you have the RAM. see [queue and concurrency](/docs/concepts/queue-and-concurrency).
 
 ### GC timings
 
-The `timings.*` block collects every duration knob in one place. The three you are most likely to change govern parking and reaping under `--gc auto`: an agent idle past `idle_after` is parked, and a parked agent past `kill_after` is reaped. Raise them for agents you keep coming back to; the behavior itself is in [Agent lifecycle and GC](/docs/concepts/lifecycle).
+the `timings.*` block collects every duration knob in one place. the three you are most likely to change govern parking and reaping under `--gc auto`: an agent idle past `idle_after` is parked, and a parked agent past `kill_after` is reaped. raise them for agents you keep coming back to; the behavior itself is in [agent lifecycle and GC](/docs/concepts/lifecycle).
 
-### Completion tuning
+### completion tuning
 
-Per-provider completion tuning is integration logic, with defaults shipped inside each integration. Override any of them per provider under `integrations.<provider>.*`:
+per-provider completion tuning is integration logic, with defaults shipped inside each integration. override any of them per provider under `integrations.<provider>.*`:
 
 ```text
 fast_turn_grace_ms · idle_stable_ms · transcript_settle_ms
 transcript_freshness_timeout_ms · shutdown_grace_ms
 ```
 
-These decide when a turn counts as complete (working-after-delivery, stable idle, transcript settled). `integrations` is a known key, validated like the rest, not an unknown-key warning. Change these only if a provider's turns are being marked complete too early or too late; see [Status model and completion](/docs/concepts/status-and-completion).
+these decide when a turn counts as complete (working-after-delivery, stable idle, transcript settled). `integrations` is a known key, validated like the rest, not an unknown-key warning. change these only if a provider's turns are being marked complete too early or too late; see [status model and completion](/docs/concepts/status-and-completion).
 
-## Provider defaults and herdr
+## provider defaults and herdr
 
 ```jsonc
 {
@@ -75,30 +75,30 @@ These decide when a turn counts as complete (working-after-delivery, stable idle
 }
 ```
 
-`defaults.*` is covered in [Choose providers and models](/docs/guides/providers-and-models). Note there is no default timeout: an agent never times out unless you pass `--timeout`.
+`defaults.*` is covered in [choose providers and models](/docs/guides/providers-and-models). note there is no default timeout: an agent never times out unless you pass `--timeout`.
 
-## Validation is strict
+## validation is strict
 
-Validation runs at server start and on reload:
+validation runs at server start and on reload:
 
-- **Unknown keys warn and are ignored**, with the nearest valid name suggested, so early configs stay forward- and backward-compatible instead of failing.
-- **Known keys are validated strictly.** Durations require units and must be positive. `concurrency.max` must be at least 1. Per-provider caps are clamped to `max` with a warning. `herdr.session` must be a valid session name.
+- **unknown keys warn and are ignored**, with the nearest valid name suggested, so early configs stay forward- and backward-compatible instead of failing.
+- **known keys are validated strictly.** durations require units and must be positive. `concurrency.max` must be at least 1. per-provider caps are clamped to `max` with a warning. `herdr.session` must be a valid session name.
 
-A genuinely invalid config surfaces as `environment_error` (cause `config_invalid`).
+a genuinely invalid config surfaces as `environment_error` (cause `config_invalid`).
 
-## Environment overrides
+## environment overrides
 
-- `ORCR_HOME` relocates the entire `~/.orcr` tree (store, socket, lock, config, logs, data). Use it for tests and sandboxes.
+- `ORCR_HOME` relocates the entire `~/.orcr` tree (store, socket, lock, config, logs, data). use it for tests and sandboxes.
 - `ORCR_HERDR_BIN` overrides herdr binary discovery.
 - `ORCR_HERDR_SESSION` overrides `herdr.session` (empty falls back to config or default).
 
 <Callout type="warn">
-When you relocate `ORCR_HOME` for a sandbox, pair it with a distinct `herdr.session` (via config or `ORCR_HERDR_SESSION`). Otherwise the sandbox and your real orcr would share one owned herdr session, and their panes would mix.
+when you relocate `ORCR_HOME` for a sandbox, pair it with a distinct `herdr.session` (via config or `ORCR_HERDR_SESSION`). otherwise the sandbox and your real orcr would share one owned herdr session, and their panes would mix.
 </Callout>
 
-## Next
+## next
 
-- [Configuration reference](/docs/reference/configuration): every key, default, and constraint.
-- [Manage the server](/docs/guides/server): the process that reads this config.
-- [Queue and concurrency](/docs/concepts/queue-and-concurrency): what the caps protect.
-- [Choose providers and models](/docs/guides/providers-and-models): the `defaults` block.
+- [configuration reference](/docs/reference/configuration): every key, default, and constraint.
+- [manage the server](/docs/guides/server): the process that reads this config.
+- [queue and concurrency](/docs/concepts/queue-and-concurrency): what the caps protect.
+- [choose providers and models](/docs/guides/providers-and-models): the `defaults` block.

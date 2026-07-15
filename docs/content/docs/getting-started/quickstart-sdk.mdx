@@ -1,26 +1,26 @@
 ---
-title: "Quickstart: SDK"
-description: Scaffold a TypeScript workflow project with orcr scaffold and run it with npx tsx.
+title: "quickstart: SDK"
+description: scaffold a TypeScript workflow project with orcr scaffold and run it with npx tsx.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Use the SDK when a workflow needs real control flow: branching, retries, fan-out over a computed list, or a schedule. `orcr scaffold` sets up a ready-to-run TypeScript project so you do not chain `--json` and `jq` in bash.
+use the SDK when a workflow needs real control flow: branching, retries, fan-out over a computed list, or a schedule. `orcr scaffold` sets up a ready-to-run TypeScript project so you do not chain `--json` and `jq` in bash.
 
-<Callout title="Prerequisite">
-`orcr scaffold` and the SDK need Node >= 20 with npm. The CLI itself does not. If Node is missing or too old, `orcr scaffold` fails with `environment_error` and creates nothing. See [Installation](/docs/getting-started/installation).
+<Callout title="prerequisite">
+`orcr scaffold` and the SDK need Node >= 20 with npm. the CLI itself does not. if Node is missing or too old, `orcr scaffold` fails with `environment_error` and creates nothing. see [installation](/docs/getting-started/installation).
 </Callout>
 
-## Scaffold and run
+## scaffold and run
 
 ```sh
 orcr scaffold my-workflow && cd my-workflow
 npx tsx workflow.ts
 ```
 
-`orcr scaffold` creates the directory (if missing), writes exactly three files, and runs `npm install`. It never overwrites: if any of the three files already exists it fails with `state_conflict` and touches nothing. It is the one orcr command that does not talk to the server; the project it generates does, like any SDK client.
+`orcr scaffold` creates the directory (if missing), writes exactly three files, and runs `npm install`. it never overwrites: if any of the three files already exists it fails with `state_conflict` and touches nothing. it is the one orcr command that does not talk to the server; the project it generates does, like any SDK client.
 
-## The three generated files
+## the three generated files
 
 ```text
 package.json    @orchestratr/sdk (pinned to this CLI's version) · tsx · typescript
@@ -28,9 +28,9 @@ tsconfig.json   ES2022 modules, strict mode, node types
 workflow.ts     a runnable scope -> run -> wait -> last-response example
 ```
 
-`package.json` pins `@orchestratr/sdk` to the exact version of the `orcr` CLI that scaffolded it, so the SDK and the socket protocol stay in step. The socket version check catches any drift loudly at runtime.
+`package.json` pins `@orchestratr/sdk` to the exact version of the `orcr` CLI that scaffolded it, so the SDK and the socket protocol stay in step. the socket version check catches any drift loudly at runtime.
 
-The generated `workflow.ts` is a working starting point:
+the generated `workflow.ts` is a working starting point:
 
 ```ts
 import { orcr } from "@orchestratr/sdk";
@@ -49,9 +49,9 @@ await orcr.scope("scaffold_demo", async () => {
 });
 ```
 
-## The shape: scope, run, wait, lastResponse
+## the shape: scope, run, wait, lastResponse
 
-The SDK is a typed client of the socket API. Anything the CLI can do, the SDK can do. `orcr.agent.run` returns a handle immediately, mirroring `orcr agent run`:
+the SDK is a typed client of the socket API. anything the CLI can do, the SDK can do. `orcr.agent.run` returns a handle immediately, mirroring `orcr agent run`:
 
 ```ts
 import { orcr } from "@orchestratr/sdk";
@@ -73,9 +73,9 @@ await orcr.scope("review", async () => {
 });
 ```
 
-`orcr.scope(name, fn)` prefixes every relative path created or targeted inside `fn`. A leading `/` on a path escapes the scope to the root. Scopes nest, and the prefixes stack.
+`orcr.scope(name, fn)` prefixes every relative path created or targeted inside `fn`. a leading `/` on a path escapes the scope to the root. scopes nest, and the prefixes stack.
 
-For a single request and answer, use the `ask` one-liner, which is sugar for a `gc: "immediate"` run, then `wait`, then `lastResponse`:
+for a single request and answer, use the `ask` one-liner, which is sugar for a `gc: "immediate"` run, then `wait`, then `lastResponse`:
 
 ```ts
 const answer: string = await orcr.ask({
@@ -85,23 +85,23 @@ const answer: string = await orcr.ask({
 });
 ```
 
-Failures become typed errors carrying `{ code, message, details }`, one class per protocol error code: `NotFound`, `InvalidRequest`, `StateConflict`, `Blocked`, `Timeout`, `IntegrationMissing`, `TranscriptUnavailable`, `EnvironmentError`, `ServerError`. The SDK never prompts; destructive helpers behave like non-interactive CLI calls.
+failures become typed errors carrying `{ code, message, details }`, one class per protocol error code: `NotFound`, `InvalidRequest`, `StateConflict`, `Blocked`, `Timeout`, `IntegrationMissing`, `TranscriptUnavailable`, `EnvironmentError`, `ServerError`. the SDK never prompts; destructive helpers behave like non-interactive CLI calls.
 
-## A plain npm project
+## a plain npm project
 
-Add any dependency the workflow needs, and a human can review the code like any other code:
+add any dependency the workflow needs, and a human can review the code like any other code:
 
 ```sh
 npm install @octokit/rest    # a GitHub client, a CSV parser, whatever the task needs
 ```
 
-Add more `.ts` files freely and run each with `npx tsx <file>.ts`.
+add more `.ts` files freely and run each with `npx tsx <file>.ts`.
 
-<Callout title="Where projects live">
-This is convention, not enforced by the CLI. A one-time script for a single task goes under `$ORCR_AGENT_DATA_DIR/workflows/`. Anything reusable, including every loop's script, goes under `~/.orcr/workflows/<name>/`. For offline or local-development installs, set `ORCR_SDK_SPEC` to a `file:` path or tarball before scaffolding.
+<Callout title="where projects live">
+this is convention, not enforced by the CLI. a one-time script for a single task goes under `$ORCR_AGENT_DATA_DIR/workflows/`. anything reusable, including every loop's script, goes under `~/.orcr/workflows/<name>/`. for offline or local-development installs, set `ORCR_SDK_SPEC` to a `file:` path or tarball before scaffolding.
 </Callout>
 
-## Next steps
+## next steps
 
-- [Your first workflow](/docs/getting-started/first-workflow) turns this into a parallel code review.
-- The [data and file conventions](/docs/concepts/data-and-files) explain how to get structured output from agents.
+- [your first workflow](/docs/getting-started/first-workflow) turns this into a parallel code review.
+- the [data and file conventions](/docs/concepts/data-and-files) explain how to get structured output from agents.

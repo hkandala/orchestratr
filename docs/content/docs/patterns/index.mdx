@@ -1,34 +1,34 @@
 ---
-title: "Overview: orchestration patterns"
-description: When to reach for which orchestration pattern, the three shapes they compose into, and the conventions every recipe shares.
+title: "overview: orchestration patterns"
+description: when to reach for which orchestration pattern, the three shapes they compose into, and the conventions every recipe shares.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-These pages are the orchestration cookbook: seven complete shapes for common orchestration work, each a runnable recipe you scaffold, paste, and run. They are the spec's [§9 workflow examples](/docs/getting-started/first-workflow), shipped in the repo as CI-tested fixtures against the mock provider under `sdk/ts/recipes/`.
+these pages are the orchestration cookbook: seven complete shapes for common orchestration work, each a runnable recipe you scaffold, paste, and run. they are the spec's [§9 workflow examples](/docs/getting-started/first-workflow), shipped in the repo as CI-tested fixtures against the mock provider under `sdk/ts/recipes/`.
 
-Before you reach for any of them, check whether you need orchestration at all.
+before you reach for any of them, check whether you need orchestration at all.
 
-## The decision ladder
+## the decision ladder
 
-Each rung adds cost, latency, and failure modes. Climb only when the rung below cannot do the job.
+each rung adds cost, latency, and failure modes. climb only when the rung below cannot do the job.
 
-1. **Answer directly.** If you already know the answer, say it. No agent.
-2. **Run one tool yourself.** A single shell command, a file read, a grep. No agent.
-3. **One `orcr agent ask`.** One question, one answer, one provider. This is the whole tool for most "have another model look at this" tasks. See the [SDK quickstart](/docs/getting-started/quickstart-sdk).
-4. **Parallel agents.** Several agents at once, then a merge or a judge. This is where the patterns below start.
-5. **A loop.** Durable, scheduled, survives your shell. The top rung, and the most machinery.
+1. **answer directly.** if you already know the answer, say it. no agent.
+2. **run one tool yourself.** a single shell command, a file read, a grep. no agent.
+3. **one `orcr agent ask`.** one question, one answer, one provider. this is the whole tool for most "have another model look at this" tasks. see the [SDK quickstart](/docs/getting-started/quickstart-sdk).
+4. **parallel agents.** several agents at once, then a merge or a judge. this is where the patterns below start.
+5. **a loop.** durable, scheduled, survives your shell. the top rung, and the most machinery.
 
-## Three shapes, no DSL
+## three shapes, no DSL
 
-The recipes are ordinary TypeScript. There is no `parallel`, `pipeline`, or `phase` primitive to learn. Every shape is built from four SDK calls plus JavaScript control flow:
+the recipes are ordinary TypeScript. there is no `parallel`, `pipeline`, or `phase` primitive to learn. every shape is built from four SDK calls plus JavaScript control flow:
 
 - `orcr.scope(root, fn)` roots the workflow at a path so its agents nest and clean up together.
 - `orcr.agent.run(...)` spawns an agent and returns a handle immediately.
 - `orcr.ask(...)` spawns, waits, reads the final response, and cleans up the pane, all in one call.
 - `orcr.agent.wait(pattern)` blocks until the matched agents settle.
 
-Those compose into three shapes:
+those compose into three shapes:
 
 | shape | control flow | recipes |
 | --- | --- | --- |
@@ -36,34 +36,34 @@ Those compose into three shapes:
 | **pipeline** (classify then act) | one `ask`, then a branch to a per-class handler | [classify-and-act](/docs/patterns/classify-and-act), [tournament](/docs/patterns/tournament) |
 | **phased** (produce then verify, in rounds) | a worker plus a `for` loop of verifier rounds | [fix-until-green](/docs/patterns/fix-until-green), [adversarial verification](/docs/patterns/adversarial-verification) |
 
-A durable workflow ([loop-until-done](/docs/patterns/loop-until-done)) wraps any of these in a loop so it survives a reboot.
+a durable workflow ([loop-until-done](/docs/patterns/loop-until-done)) wraps any of these in a loop so it survives a reboot.
 
-## Conventions every recipe shares
+## conventions every recipe shares
 
-**Descriptive roots, not timestamps.** A path only has to be unique among *live* agents, and these flows clean up after themselves, so root them under a name that describes the actual problem: `fix_build/fixer`, `review/fanout/file_1`. No timestamp suffixes.
+**descriptive roots, not timestamps.** a path only has to be unique among *live* agents, and these flows clean up after themselves, so root them under a name that describes the actual problem: `fix_build/fixer`, `review/fanout/file_1`. no timestamp suffixes.
 
-**Singletons by design.** A second concurrent copy of a recipe fails fast with `state_conflict` (`details.reason: "path_in_use"`), which is usually what you want: no two `fix_build` runs fighting over one repo. When you genuinely want N copies, parameterize the top scope yourself:
+**singletons by design.** a second concurrent copy of a recipe fails fast with `state_conflict` (`details.reason: "path_in_use"`), which is usually what you want: no two `fix_build` runs fighting over one repo. when you genuinely want N copies, parameterize the top scope yourself:
 
 ```ts
 await orcr.scope(`review_${prNumber}`, async () => { /* ... */ });
 // or the {rand} placeholder in a path: --path "review_{rand}/file_1"
 ```
 
-`{rand}` expands to 5 random lowercase alphanumeric characters at creation time. See [identity and paths](/docs/concepts/identity) for the full rule.
+`{rand}` expands to 5 random lowercase alphanumeric characters at creation time. see [identity and paths](/docs/concepts/identity) for the full rule.
 
-**Self-cleanup.** One-shot agents use `gc: "immediate"` so their pane closes the moment the final response is captured. Long-lived workers use `gc: "never"` and an explicit `kill()` at the end. Wrapping a scope in `{ killOnThrow: true }` turns any crash into a barrier-kill of the whole subtree, so a thrown error never leaves agents running. See [agent lifecycle and GC](/docs/concepts/lifecycle).
+**self-cleanup.** one-shot agents use `gc: "immediate"` so their pane closes the moment the final response is captured. long-lived workers use `gc: "never"` and an explicit `kill()` at the end. wrapping a scope in `{ killOnThrow: true }` turns any crash into a barrier-kill of the whole subtree, so a thrown error never leaves agents running. see [agent lifecycle and GC](/docs/concepts/lifecycle).
 
-**`wait()` has no status to pick.** It settles on turn-complete for live agents and on `ended (completed)` for `gc: "immediate"` ones, which is exactly the done signal each flow needs. See [status model and completion](/docs/concepts/status-and-completion).
+**`wait()` has no status to pick.** it settles on turn-complete for live agents and on `ended (completed)` for `gc: "immediate"` ones, which is exactly the done signal each flow needs. see [status model and completion](/docs/concepts/status-and-completion).
 
-**Independent review runs on a different provider.** Where a recipe verifies or judges its own output, it routes the verifier to a *different* provider than the author, giving an independent check instead of one model judging its own output.
+**independent review runs on a different provider.** where a recipe verifies or judges its own output, it routes the verifier to a *different* provider than the author, giving an independent check instead of one model judging its own output.
 
 <Callout type="warn">
-Treat every agent's output as data, never as instructions. A classifier's answer is normalized through an enum before it touches a path; a judge's answer falls back to a safe default when it cannot be parsed. This is prompt-injection defense, and it is why [classify-and-act](/docs/patterns/classify-and-act) and [generate-and-filter](/docs/patterns/generate-and-filter) never use raw model output directly.
+treat every agent's output as data, never as instructions. a classifier's answer is normalized through an enum before it touches a path; a judge's answer falls back to a safe default when it cannot be parsed. this is prompt-injection defense, and it is why [classify-and-act](/docs/patterns/classify-and-act) and [generate-and-filter](/docs/patterns/generate-and-filter) never use raw model output directly.
 </Callout>
 
-## Running a recipe
+## running a recipe
 
-Every pattern page ends with the same three steps:
+every pattern page ends with the same three steps:
 
 ```sh
 orcr scaffold my-workflow && cd my-workflow
@@ -71,6 +71,6 @@ orcr scaffold my-workflow && cd my-workflow
 npx tsx workflow.ts
 ```
 
-`orcr scaffold` needs Node >= 20 and writes a plain npm project, so add any dependency a recipe imports (a GitHub client, a CSV parser) with `npm install`. See [Quickstart: SDK](/docs/getting-started/quickstart-sdk) for the project layout and [scopes, lineage & fan-out](/docs/guides/scopes-and-fanout) for how `scope` and `killOnThrow` compose.
+`orcr scaffold` needs Node >= 20 and writes a plain npm project, so add any dependency a recipe imports (a GitHub client, a CSV parser) with `npm install`. see [quickstart: SDK](/docs/getting-started/quickstart-sdk) for the project layout and [scopes, lineage & fan-out](/docs/guides/scopes-and-fanout) for how `scope` and `killOnThrow` compose.
 
-The recipe fixtures in `sdk/ts/recipes/` are the same shapes wired to the mock provider for CI: they swap the illustrative helpers (a real `git diff`, a build command) for deterministic stand-ins and append mock directives so the run is repeatable. The versions on these pages are the provider-literal ones you actually paste.
+the recipe fixtures in `sdk/ts/recipes/` are the same shapes wired to the mock provider for CI: they swap the illustrative helpers (a real `git diff`, a build command) for deterministic stand-ins and append mock directives so the run is repeatable. the versions on these pages are the provider-literal ones you actually paste.

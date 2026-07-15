@@ -1,17 +1,17 @@
 ---
-title: Generate-and-filter
-description: Fan the same prompt across several providers and models, judge the drafts once, and keep the winner with a safe fallback.
+title: generate-and-filter
+description: fan the same prompt across several providers and models, judge the drafts once, and keep the winner with a safe fallback.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Send one prompt to several generators at once, each a different provider or model, then judge the drafts with a single agent and keep the best. This is the parallel shape aimed at quality: you spend on breadth up front and filter down to one answer.
+send one prompt to several generators at once, each a different provider or model, then judge the drafts with a single agent and keep the best. this is the parallel shape aimed at quality: you spend on breadth up front and filter down to one answer.
 
-## The scenario
+## the scenario
 
-For open-ended work, one model's first draft is rarely the best you can get. Fan the same prompt across a mix of providers and models, collect every draft in parallel, then have one judge pick the winner. You pay for N drafts plus one judgment, and you get the benefit of different models' strengths on the same task.
+for open-ended work, one model's first draft is rarely the best you can get. fan the same prompt across a mix of providers and models, collect every draft in parallel, then have one judge pick the winner. you pay for N drafts plus one judgment, and you get the benefit of different models' strengths on the same task.
 
-## The annotated recipe
+## the annotated recipe
 
 ```ts
 import { orcr } from "@orchestratr/sdk";
@@ -36,31 +36,31 @@ await orcr.scope("landing_copy", async () => {
 });
 ```
 
-What each piece is doing:
+what each piece is doing:
 
-- `GENERATORS` is the roster: a provider, and optionally a `model` or `effort` override per entry. Here two claude models (`opus`, `sonnet`) and one codex. `{ ...g }` spreads each entry's `agent` and `model` into the `ask` call.
-- The fan-out is `Promise.all` over `GENERATORS.map(...)`. All drafts run concurrently, each at a distinct path (`landing_copy/generate/gen_0`, `gen_1`, `gen_2`).
-- The judge is a single `orcr.ask`. It receives every draft, numbered, and is told to reply with only the number. One judgment over the whole set is cheaper and more consistent than pairwise comparisons.
-- **The fallback is the last line.** `drafts[parseInt(pick.trim(), 10)] ?? drafts[0]` parses the judge's answer as an index; if that answer is not a parseable number in range, `parseInt` yields `NaN`, the index misses, and `?? drafts[0]` falls back to the first draft. The workflow always returns a real draft.
+- `GENERATORS` is the roster: a provider, and optionally a `model` or `effort` override per entry. here two claude models (`opus`, `sonnet`) and one codex. `{ ...g }` spreads each entry's `agent` and `model` into the `ask` call.
+- the fan-out is `Promise.all` over `GENERATORS.map(...)`. all drafts run concurrently, each at a distinct path (`landing_copy/generate/gen_0`, `gen_1`, `gen_2`).
+- the judge is a single `orcr.ask`. it receives every draft, numbered, and is told to reply with only the number. one judgment over the whole set is cheaper and more consistent than pairwise comparisons.
+- **the fallback is the last line.** `drafts[parseInt(pick.trim(), 10)] ?? drafts[0]` parses the judge's answer as an index; if that answer is not a parseable number in range, `parseInt` yields `NaN`, the index misses, and `?? drafts[0]` falls back to the first draft. the workflow always returns a real draft.
 
-<Callout title="Model routing lives in the roster">
-`agent`, `model`, and `effort` are the routing knobs. To try a new model, add one line to `GENERATORS`. The judge is deliberately a single fixed provider so the comparison is consistent across runs. See [choose providers & models](/docs/guides/providers-and-models).
+<Callout title="model routing lives in the roster">
+`agent`, `model`, and `effort` are the routing knobs. to try a new model, add one line to `GENERATORS`. the judge is deliberately a single fixed provider so the comparison is consistent across runs. see [choose providers & models](/docs/guides/providers-and-models).
 </Callout>
 
-## Primitives it exercises
+## primitives it exercises
 
 - [`orcr.scope`](/docs/guides/scopes-and-fanout) to root the generators and the judge.
-- Parallel [`orcr.ask`](/docs/getting-started/quickstart-sdk) across a roster, each with a per-entry `model` override.
-- [Provider and model routing](/docs/guides/providers-and-models) via the spread `{ ...g }`.
-- A single judge `ask` over the collected drafts.
+- parallel [`orcr.ask`](/docs/getting-started/quickstart-sdk) across a roster, each with a per-entry `model` override.
+- [provider and model routing](/docs/guides/providers-and-models) via the spread `{ ...g }`.
+- a single judge `ask` over the collected drafts.
 
-## Failure and cleanup
+## failure and cleanup
 
-- **Unparseable judge output falls back to the first draft.** The `?? drafts[0]` guard means a judge that replies "I like the second one" instead of "1" cannot crash the workflow; it just loses its vote. This is the same principle as [classify-and-act](/docs/patterns/classify-and-act): never trust the shape of model output.
-- Every generator and the judge are `gc: "immediate"` (via `ask`), so each pane closes as its response is captured. No parked panes.
-- If a generator is `blocked` or its transcript is unreadable, `orcr.ask` throws. Add `{ killOnThrow: true }` to the scope to tear down the rest of the batch on a throw.
+- **unparseable judge output falls back to the first draft.** the `?? drafts[0]` guard means a judge that replies "I like the second one" instead of "1" cannot crash the workflow; it just loses its vote. this is the same principle as [classify-and-act](/docs/patterns/classify-and-act): never trust the shape of model output.
+- every generator and the judge are `gc: "immediate"` (via `ask`), so each pane closes as its response is captured. no parked panes.
+- if a generator is `blocked` or its transcript is unreadable, `orcr.ask` throws. add `{ killOnThrow: true }` to the scope to tear down the rest of the batch on a throw.
 
-## Run it
+## run it
 
 ```sh
 orcr scaffold copy-workflow && cd copy-workflow
@@ -68,6 +68,6 @@ orcr scaffold copy-workflow && cd copy-workflow
 npx tsx workflow.ts
 ```
 
-Every provider in the roster needs both integration layers installed, or the run fails fast with `integration_missing`. See [providers & integrations](/docs/concepts/providers).
+every provider in the roster needs both integration layers installed, or the run fails fast with `integration_missing`. see [providers & integrations](/docs/concepts/providers).
 
-Next: [tournament](/docs/patterns/tournament) is what to reach for when the roster grows too large to judge in one prompt.
+next: [tournament](/docs/patterns/tournament) is what to reach for when the roster grows too large to judge in one prompt.

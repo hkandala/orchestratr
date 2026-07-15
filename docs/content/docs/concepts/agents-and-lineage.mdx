@@ -1,13 +1,13 @@
 ---
-title: Agents and subagents (lineage)
-description: How an orcr agent spawns subagents, how the server derives scope and records lineage from the environment, and how orcr top renders the tree.
+title: agents and subagents (lineage)
+description: how an orcr agent spawns subagents, how the server derives scope and records lineage from the environment, and how orcr top renders the tree.
 ---
 
-Any agent orcr spawns can call `orcr` itself. When it does, the server reads the caller's identity from the environment, records who spawned whom, and resolves the child's path relative to the caller's scope. No cooperation from the provider is needed, and `orcr top` renders the resulting tree.
+any agent orcr spawns can call `orcr` itself. when it does, the server reads the caller's identity from the environment, records who spawned whom, and resolves the child's path relative to the caller's scope. no cooperation from the provider is needed, and `orcr top` renders the resulting tree.
 
-## The env contract
+## the env contract
 
-Every managed agent pane and every loop-run command is launched with these variables injected. All values are absolute.
+every managed agent pane and every loop-run command is launched with these variables injected. all values are absolute.
 
 ```text
 ORCR_ID           this agent's uuid (or, in a loop-run command, the run's uuid)
@@ -25,46 +25,46 @@ ORCR_LOOP_DATA_DIR  the LOOP's data dir ~/.orcr/data/<loop_name>: one shared
                     loops
 ```
 
-Loop-run commands are parentless: their `ORCR_PARENT_*` are unset. Agents they spawn get `ORCR_PARENT_ID` and `ORCR_PARENT_PATH` set to the run's uuid and path. One more variable, a launch token, also rides in pane env for crash recovery; it is not part of the contract and scripts must not rely on it.
+loop-run commands are parentless: their `ORCR_PARENT_*` are unset. agents they spawn get `ORCR_PARENT_ID` and `ORCR_PARENT_PATH` set to the run's uuid and path. one more variable, a launch token, also rides in pane env for crash recovery; it is not part of the contract and scripts must not rely on it.
 
-The [environment variables reference](/docs/reference/environment) lists every variable and where it is set. The data directories are covered in [data and file conventions](/docs/concepts/data-and-files).
+the [environment variables reference](/docs/reference/environment) lists every variable and where it is set. the data directories are covered in [data and file conventions](/docs/concepts/data-and-files).
 
-## Calling orcr from inside an agent
+## calling orcr from inside an agent
 
-When `orcr agent run` executes inside a managed context, the server resolves the caller by `ORCR_ID`, records lineage (parent uuid and path), and resolves relative paths against the caller's scope. The same identity contract that let herdr launch the agent lets the agent orchestrate more agents. A shell script, the TypeScript SDK, and an agent typing into its own terminal all reach the server the same way.
+when `orcr agent run` executes inside a managed context, the server resolves the caller by `ORCR_ID`, records lineage (parent uuid and path), and resolves relative paths against the caller's scope. the same identity contract that let herdr launch the agent lets the agent orchestrate more agents. a shell script, the TypeScript SDK, and an agent typing into its own terminal all reach the server the same way.
 
-## Scope derivation and where children land
+## scope derivation and where children land
 
-`ORCR_PATH` has the same *shape* everywhere. What differs is how your **scope** is derived from it, and that is the deliberate files-vs-directories rule:
+`ORCR_PATH` has the same *shape* everywhere. what differs is how your **scope** is derived from it, and that is the deliberate files-vs-directories rule:
 
-- An **agent is a file**, so its scope is its directory (`ORCR_PATH` minus the name). `review/worker` spawning `--name child` produces `review/child`: children land as **siblings**.
-- A **run is a directory**, so its scope is its whole `ORCR_PATH`. A run at `nightly/r82c9s` spawning agents lands them **inside**: `nightly/r82c9s/…`.
+- an **agent is a file**, so its scope is its directory (`ORCR_PATH` minus the name). `review/worker` spawning `--name child` produces `review/child`: children land as **siblings**.
+- a **run is a directory**, so its scope is its whole `ORCR_PATH`. a run at `nightly/r82c9s` spawning agents lands them **inside**: `nightly/r82c9s/…`.
 
-The caller-scope algorithm, once: resolve `ORCR_ID`; an agent row gives path-minus-name; a loop-run row gives the full run path; absent gives no scope. The SDK's `orcr.scope()` composes on top of this, and a leading `/` strips everything back to the root.
+the caller-scope algorithm, once: resolve `ORCR_ID`; an agent row gives path-minus-name; a loop-run row gives the full run path; absent gives no scope. the SDK's `orcr.scope()` composes on top of this, and a leading `/` strips everything back to the root.
 
-Want children *inside* your own path instead of beside you? Say so explicitly, since env paths are absolute:
+want children *inside* your own path instead of beside you? say so explicitly, since env paths are absolute:
 
 ```sh
 orcr agent run --path "$ORCR_PATH/child" -p "…"
 ```
 
-Everything scope-related derives from the path. An agent's scope is `ORCR_PATH` minus the name segment; a loop's name is the first segment of a run path (`"${ORCR_PATH%%/*}"` in shell, `loopNameFrom()` in the SDK). See [scopes, lineage and fan-out](/docs/guides/scopes-and-fanout) for the SDK helpers.
+everything scope-related derives from the path. an agent's scope is `ORCR_PATH` minus the name segment; a loop's name is the first segment of a run path (`"${ORCR_PATH%%/*}"` in shell, `loopNameFrom()` in the SDK). see [scopes, lineage and fan-out](/docs/guides/scopes-and-fanout) for the SDK helpers.
 
-## Lineage is an annotation, never a re-placement
+## lineage is an annotation, never a re-placement
 
-The `orcr top` tree is drawn by **paths**: every agent appears exactly once, at its path. Parent-to-child edges come from `ORCR_PARENT_*`.
+the `orcr top` tree is drawn by **paths**: every agent appears exactly once, at its path. parent-to-child edges come from `ORCR_PARENT_*`.
 
-Because a child can be created at an absolute path *outside* its parent's scope, lineage is shown as a row **annotation**, never a second placement. A row whose parent lives elsewhere in the tree gets a `↖ <parent path>` mark:
+because a child can be created at an absolute path *outside* its parent's scope, lineage is shown as a row **annotation**, never a second placement. a row whose parent lives elsewhere in the tree gets a `↖ <parent path>` mark:
 
 ```text
 ▼ verify
   └─ checker      ● working    codex  ↖ refactor/phase_1/file_1
 ```
 
-Selecting a row highlights its parent and children wherever they sit. One node, one place; cross-scope edges are visible but never duplicate or re-root the tree. See [monitor with orcr top](/docs/guides/monitor-with-top).
+selecting a row highlights its parent and children wherever they sit. one node, one place; cross-scope edges are visible but never duplicate or re-root the tree. see [monitor with orcr top](/docs/guides/monitor-with-top).
 
-## Graceful degradation when env is scrubbed
+## graceful degradation when env is scrubbed
 
-If a provider launders its subprocess environment, a child `orcr` call loses its `ORCR_*` variables and becomes a **root context**. Lineage breaks gracefully: the agent still runs, just un-parented, and it lands at the path you gave rather than nested under a scope it can no longer see.
+if a provider launders its subprocess environment, a child `orcr` call loses its `ORCR_*` variables and becomes a **root context**. lineage breaks gracefully: the agent still runs, just un-parented, and it lands at the path you gave rather than nested under a scope it can no longer see.
 
-When this matters, pass an absolute `--path` explicitly so placement does not depend on inherited scope. The skill teaches this. Runaway recursion is bounded regardless, by the path depth limit (8 segments or fewer) and the [concurrency caps](/docs/concepts/queue-and-concurrency): admission control, not polite requests.
+when this matters, pass an absolute `--path` explicitly so placement does not depend on inherited scope. the skill teaches this. runaway recursion is bounded regardless, by the path depth limit (8 segments or fewer) and the [concurrency caps](/docs/concepts/queue-and-concurrency): admission control, not polite requests.

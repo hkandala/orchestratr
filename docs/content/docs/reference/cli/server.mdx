@@ -1,9 +1,9 @@
 ---
 title: orcr server
-description: Operate the long-lived orcr server (start, stop, status, logs, enable, disable) and read the full server status JSON.
+description: operate the long-lived orcr server (start, stop, status, logs, enable, disable) and read the full server status JSON.
 ---
 
-`orcr server` operates the single long-lived process that owns the store, the admission queue, GC, loop scheduling, reconciliation, and the socket API. Any CLI or SDK call auto-starts it on demand, so these verbs are for upgrades, debugging, and start-at-login registration rather than a required first step.
+`orcr server` operates the single long-lived process that owns the store, the admission queue, GC, loop scheduling, reconciliation, and the socket API. any CLI or SDK call auto-starts it on demand, so these verbs are for upgrades, debugging, and start-at-login registration rather than a required first step.
 
 ```text
 orcr server start | stop | status | logs | enable | disable
@@ -11,31 +11,31 @@ orcr server start | stop | status | logs | enable | disable
 
 ## start
 
-Idempotent. If a healthy server already answers the readiness handshake, `start` exits 0 (`already_running` in JSON). Otherwise it starts under the single-instance lock and blocks until the handshake succeeds. Auto-start by other verbs is this same path.
+idempotent. if a healthy server already answers the readiness handshake, `start` exits 0 (`already_running` in JSON). otherwise it starts under the single-instance lock and blocks until the handshake succeeds. auto-start by other verbs is this same path.
 
 ```sh
 orcr server start
 orcr server start --foreground   # what the service unit runs
 ```
 
-`--foreground` runs the server in the foreground. Clients that lose a start race wait for readiness instead of spawning a second server. If the server cannot start, commands exit 2 with `environment_error` (`cause: server_start_failed`).
+`--foreground` runs the server in the foreground. clients that lose a start race wait for readiness instead of spawning a second server. if the server cannot start, commands exit 2 with `environment_error` (`cause: server_start_failed`).
 
 ## stop
 
-A graceful control-plane stop: stop accepting requests, close subscriptions with `server_stopping`, persist queue/GC/loop state, and release the socket. **Agent panes keep running**: stopping the server never kills agents (that is `agent kill`).
+a graceful control-plane stop: stop accepting requests, close subscriptions with `server_stopping`, persist queue/GC/loop state, and release the socket. **agent panes keep running**: stopping the server never kills agents (that is `agent kill`).
 
-While stopped: no loop fires (missed ones are skipped and logged on restart), no queue promotion, no GC (clocks are recomputed from persisted timestamps on restart), no unmanaged discovery. Any CLI call auto-starts the server again, so `stop` is not a pause switch. To pause loops, use `loop pause`.
+while stopped: no loop fires (missed ones are skipped and logged on restart), no queue promotion, no GC (clocks are recomputed from persisted timestamps on restart), no unmanaged discovery. any CLI call auto-starts the server again, so `stop` is not a pause switch. to pause loops, use `loop pause`.
 
 ## status
 
-A health probe. Reports the server version and protocol version, socket and store paths, the herdr binary, its reachability, version, protocol, session socket path and running state, per-provider integration state, fleet counts, whether loop firing is enabled, the loop schedule and next fires, and reconciliation drift.
+a health probe. reports the server version and protocol version, socket and store paths, the herdr binary, its reachability, version, protocol, session socket path and running state, per-provider integration state, fleet counts, whether loop firing is enabled, the loop schedule and next fires, and reconciliation drift.
 
 ```sh
 orcr server status
 orcr server status --json
 ```
 
-Use it to verify a setup: the `integrations` map shows which providers are usable, and the counts show the current fleet.
+use it to verify a setup: the `integrations` map shows which providers are usable, and the counts show the current fleet.
 
 JSON result:
 
@@ -57,7 +57,7 @@ JSON result:
 }
 ```
 
-The `counts` fields:
+the `counts` fields:
 
 | field | meaning |
 | --- | --- |
@@ -68,11 +68,11 @@ The `counts` fields:
 | `orphan_agent_panes` | owned-session agent panes with no store row (reported, never touched) |
 | `unmarked_panes` | plain shells in the owned session (reported, never touched) |
 
-See [managed vs unmanaged agents](/docs/concepts/managed-vs-unmanaged) and [durability and recovery](/docs/concepts/durability) for what orphan and unmarked panes mean.
+see [managed vs unmanaged agents](/docs/concepts/managed-vs-unmanaged) and [durability and recovery](/docs/concepts/durability) for what orphan and unmarked panes mean.
 
 ## logs
 
-The server's own log at `~/.orcr/logs/server.log`: startup, herdr connection events, reconciliation actions, GC decisions, and errors. `--tail <n>` and `--follow` behave as elsewhere.
+the server's own log at `~/.orcr/logs/server.log`: startup, herdr connection events, reconciliation actions, GC decisions, and errors. `--tail <n>` and `--follow` behave as elsewhere.
 
 ```sh
 orcr server logs --tail 100 --follow
@@ -80,7 +80,7 @@ orcr server logs --tail 100 --follow
 
 ## enable / disable
 
-Start-at-login registration. Auto-start-on-demand works regardless of this; registration matters mainly so loops fire after a reboot before any orcr command is run. `enable` registers and starts; `disable` removes the registration (a running server and the store are untouched). `enable` echoes the created unit path and the platform command to verify it.
+start-at-login registration. auto-start-on-demand works regardless of this; registration matters mainly so loops fire after a reboot before any orcr command is run. `enable` registers and starts; `disable` removes the registration (a running server and the store are untouched). `enable` echoes the created unit path and the platform command to verify it.
 
 | platform | mechanism |
 | --- | --- |
@@ -88,4 +88,4 @@ Start-at-login registration. Auto-start-on-demand works regardless of this; regi
 | Linux | systemd user unit `~/.config/systemd/user/orcr.service` (`Restart=on-failure`) |
 | Windows | a Task Scheduler logon task (`schtasks /create … /sc onlogon`), landing with general Windows support |
 
-Any other platform returns `environment_error` (`cause: unsupported_platform`, exit 2). See the [run as a service guide](/docs/guides/run-as-a-service).
+any other platform returns `environment_error` (`cause: unsupported_platform`, exit 2). see the [run as a service guide](/docs/guides/run-as-a-service).

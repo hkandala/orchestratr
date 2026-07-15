@@ -1,84 +1,84 @@
 ---
-title: Why orchestratr
-description: The single-player problem, the three things headless API orchestration loses, and how orcr answers each while keeping the whole tree in one place.
+title: why orchestratr
+description: the single-player problem, the three things headless API orchestration loses, and how orcr answers each while keeping the whole tree in one place.
 ---
 
-Coding agents such as Claude Code, Codex CLI, Pi, and OpenCode are single-player tools: one terminal, one session, one human watching. Real work wants many of them at once, often across different providers, since each has different strengths and each subscription has its own quota, for example a reviewer fanned out per concern, a worker iterating under a verifier, or a nightly job that triages issues.
+coding agents such as Claude Code, Codex CLI, Pi, and OpenCode are single-player tools: one terminal, one session, one human watching. real work wants many of them at once, often across different providers, since each has different strengths and each subscription has its own quota, for example a reviewer fanned out per concern, a worker iterating under a verifier, or a nightly job that triages issues.
 
-## The single-player problem
+## the single-player problem
 
-Running agents as headless API calls solves scale but loses three things that matter, and leaves a fourth gap.
+running agents as headless API calls solves scale but loses three things that matter, and leaves a fourth gap.
 
-### Headless loses plan pricing
+### headless loses plan pricing
 
-Interactive TUI sessions bill against flat subscription plans. API-mode invocations bill per token, so a fleet of agents multiplies the per-token cost while a flat plan does not.
+interactive TUI sessions bill against flat subscription plans. API-mode invocations bill per token, so a fleet of agents multiplies the per-token cost while a flat plan does not.
 
-### Headless loses steerability and visibility
+### headless loses steerability and visibility
 
-A headless agent can't be watched mid-flight, nudged with a correction, or taken over when it goes sideways. A real TUI can.
+a headless agent can't be watched mid-flight, nudged with a correction, or taken over when it goes sideways. a real TUI can.
 
-### Headless loses uniformity
+### headless loses uniformity
 
-Every provider has a different headless mode, different flags, different transcripts. A script that fans out across providers needs one interface.
+every provider has a different headless mode, different flags, different transcripts. a script that fans out across providers needs one interface.
 
-### Nobody owns the tree
+### nobody owns the tree
 
-Even where spawning works, there is no unified view of which agents are running, who spawned whom, what state each is in, or a single place to kill, steer, or watch any of them.
+even where spawning works, there is no unified view of which agents are running, who spawned whom, what state each is in, or a single place to kill, steer, or watch any of them.
 
-## How orcr answers
+## how orcr answers
 
 orcr runs every agent as a real interactive TUI in a herdr-managed terminal pane, and exposes the smallest surface that spawns, messages, awaits, reads, and stops them, from a shell, from any programming language, or from inside another agent.
 
-| What headless loses | orcr's answer |
+| what headless loses | orcr's answer |
 | --- | --- |
 | plan pricing | agents run as interactive TUI sessions, which bill against flat subscription plans |
 | steerability and visibility | attach to any pane, `send` mid-turn, take over a permission prompt; watch the whole tree live in `orcr top` |
 | uniformity | one contract across providers via per-provider integrations (claude and codex ship first) |
 | nobody owns the tree | every agent has a permanent uuid and a path; the server owns lifecycle and records lineage automatically |
 
-### How lineage is recorded
+### how lineage is recorded
 
-An environment contract records lineage without any provider cooperation. Every pane orcr launches carries the agent's ids (`ORCR_ID`/`ORCR_PATH`) and its parent's (`ORCR_PARENT_ID`/`ORCR_PARENT_PATH`). When an agent inside such a pane calls `orcr agent run`, the server reads the caller's identity, records the parent-child edge, and resolves the child's path relative to the caller's scope. `orcr top` then renders the resulting tree. See [Agents and lineage](/docs/concepts/agents-and-lineage) for the full contract.
+an environment contract records lineage without any provider cooperation. every pane orcr launches carries the agent's ids (`ORCR_ID`/`ORCR_PATH`) and its parent's (`ORCR_PARENT_ID`/`ORCR_PARENT_PATH`). when an agent inside such a pane calls `orcr agent run`, the server reads the caller's identity, records the parent-child edge, and resolves the child's path relative to the caller's scope. `orcr top` then renders the resulting tree. see [agents and lineage](/docs/concepts/agents-and-lineage) for the full contract.
 
-## What herdr provides, and what orcr adds
+## what herdr provides, and what orcr adds
 
 herdr solves the layer below: persistent named sessions, background TUIs, programmatic input and output to real interactive agent terminals, agent lifecycle detection, and remote attach over SSH. orcr's server speaks herdr's own socket API directly to launch panes, send input, read lifecycle state, and locate each provider's native transcript.
 
-Two facts shape the split:
+two facts shape the split:
 
-- herdr exposes no token or cost fields and no structured last message. Both come from orcr's per-provider transcript adapters.
-- herdr's state detection depends on herdr's own per-provider integrations being installed (`herdr integration install claude` and so on). Without the integration, an agent's status is `unknown`. This is why orcr requires the herdr integration for every supported provider.
+- herdr exposes no token or cost fields and no structured last message. both come from orcr's per-provider transcript adapters.
+- herdr's state detection depends on herdr's own per-provider integrations being installed (`herdr integration install claude` and so on). without the integration, an agent's status is `unknown`. this is why orcr requires the herdr integration for every supported provider.
 
-herdr is discovered, never embedded. orcr looks for the binary in this order: config `herdr.bin`, then `$ORCR_HERDR_BIN`, then `$PATH`. If it is missing, orcr prints an install pointer and exits 2.
+herdr is discovered, never embedded. orcr looks for the binary in this order: config `herdr.bin`, then `$ORCR_HERDR_BIN`, then `$PATH`. if it is missing, orcr prints an install pointer and exits 2.
 
-## Comparison
+## comparison
 
-### Compared to raw herdr
+### compared to raw herdr
 
-herdr gives you the panes and the socket API to drive them. On its own it has no notion of an agent's identity across panes, no path tree, no admission queue, no GC policy, no cross-provider contract, and no scheduler. orcr adds identity (uuid plus path), lifecycle, placement, scheduling, and the uniform contract on top of herdr, all inside one owned session so your own herdr workspace is never polluted.
+herdr gives you the panes and the socket API to drive them. on its own it has no notion of an agent's identity across panes, no path tree, no admission queue, no GC policy, no cross-provider contract, and no scheduler. orcr adds identity (uuid plus path), lifecycle, placement, scheduling, and the uniform contract on top of herdr, all inside one owned session so your own herdr workspace is never polluted.
 
-### Compared to headless API scripts
+### compared to headless API scripts
 
-A headless script bills per token, can't be steered or watched mid-flight, and reimplements each provider's headless quirks. orcr keeps plan pricing, makes every agent attachable and steerable, and gives one interface across providers.
+a headless script bills per token, can't be steered or watched mid-flight, and reimplements each provider's headless quirks. orcr keeps plan pricing, makes every agent attachable and steerable, and gives one interface across providers.
 
-orcr depends on herdr and on each provider's herdr integration. A provider is supported only when both layers are present, orcr's integration and herdr's integration for that provider. Anything else fails fast at `agent run` with the exact install commands, and unmanaged discovery skips it. There are no degraded half-modes.
+orcr depends on herdr and on each provider's herdr integration. a provider is supported only when both layers are present, orcr's integration and herdr's integration for that provider. anything else fails fast at `agent run` with the exact install commands, and unmanaged discovery skips it. there are no degraded half-modes.
 
-## Goals
+## goals
 
-- Agents as real TUIs: plan-pricing-safe, attachable, steerable, visible.
-- One interface across agent providers, via per-provider integrations (claude and codex first; the surface is designed for more).
-- Extreme-minimal primitives that compose from any language. The server's socket API is the API; the CLI and the SDK are thin clients of it.
-- Agents can orchestrate agents: any orcr-spawned agent can call `orcr` itself, and lineage and placement assemble automatically.
-- Safe at scale: a single queue with global and per-provider concurrency caps for RAM protection, automatic lifecycle GC, and one owned herdr session so your own workspace is never polluted.
-- Organized at scale: every agent lives at a path (slash-separated, filesystem style, last segment is its name) alongside a permanent uuid, so a large workflow stays legible, operable by glob (`wait`/`kill`), and visualizable in herdr's native UI and in `orcr top`.
-- Durable scheduling: run any command on a cadence, surviving the caller's shell.
+- agents as real TUIs: plan-pricing-safe, attachable, steerable, visible.
+- one interface across agent providers, via per-provider integrations (claude and codex first; the surface is designed for more).
+- extreme-minimal primitives that compose from any language. the server's socket API is the API; the CLI and the SDK are thin clients of it.
+- agents can orchestrate agents: any orcr-spawned agent can call `orcr` itself, and lineage and placement assemble automatically.
+- safe at scale: a single queue with global and per-provider concurrency caps for RAM protection, automatic lifecycle GC, and one owned herdr session so your own workspace is never polluted.
+- organized at scale: every agent lives at a path (slash-separated, filesystem style, last segment is its name) alongside a permanent uuid, so a large workflow stays legible, operable by glob (`wait`/`kill`), and visualizable in herdr's native UI and in `orcr top`.
+- durable scheduling: run any command on a cadence, surviving the caller's shell.
 
-## Non-goals
+## non-goals
 
-Non-goals for this version, along with the work that is explicitly deferred (Windows support, permission profiles, a Python SDK, remote orchestration, and more providers), are collected on the [Roadmap and limitations](/docs/resources/roadmap) page.
+non-goals for this version, along with the work that is explicitly deferred (Windows support, permission profiles, a Python SDK, remote orchestration, and more providers), are collected on the [roadmap and limitations](/docs/resources/roadmap) page.
 
-## Next
+## next
 
-- [Installation](/docs/getting-started/installation) sets up orcr, herdr, and the provider integrations.
-- [Architecture](/docs/concepts/architecture) covers the single-writer server, the socket API, and the herdr driver.
-- [Providers and integrations](/docs/concepts/providers) explains the two-layer requirement in depth.
+- [installation](/docs/getting-started/installation) sets up orcr, herdr, and the provider integrations.
+- [architecture](/docs/concepts/architecture) covers the single-writer server, the socket API, and the herdr driver.
+- [providers and integrations](/docs/concepts/providers) explains the two-layer requirement in depth.

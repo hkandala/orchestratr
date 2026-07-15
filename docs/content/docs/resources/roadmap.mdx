@@ -1,54 +1,54 @@
 ---
-title: Roadmap and limitations
-description: What the current release does not do yet, the behaviors worth knowing about today, and the full catalogue of deferred work in rough priority order.
+title: roadmap and limitations
+description: what the current release does not do yet, the behaviors worth knowing about today, and the full catalogue of deferred work in rough priority order.
 ---
 
-This page lists the current-release limitations you should plan around, how to orchestrate remote hosts today, and the deferred-feature catalogue. Runtime errors and specified edge-case behaviors live in [troubleshooting](/docs/resources/troubleshooting); this page is about capabilities that are not built yet.
+this page lists the current-release limitations you should plan around, how to orchestrate remote hosts today, and the deferred-feature catalogue. runtime errors and specified edge-case behaviors live in [troubleshooting](/docs/resources/troubleshooting); this page is about capabilities that are not built yet.
 
-## Known limitations today
+## known limitations today
 
-- **Windows is unsupported.** Loops, process groups, and `server enable` are POSIX-only; `service.rs` returns `unsupported_platform` elsewhere. macOS (arm64, x64) and Linux (x64) are the supported platforms.
-- **Everything runs permission-bypass.** Agents launch with the provider's bypass-permissions flags. There is no `--read-only` mode and no permission profiles yet. Treat every spawned agent as fully capable in its cwd.
-- **`blocked_kind` is best-effort.** Classification of *why* an agent is blocked (`question`, `limit`, `login`, `unknown`) comes from herdr's blocked message plus the transcript. There is no structured per-provider blocked-reason parsing and no rate-limit policy (a `limit` block is surfaced, not acted on).
-- **No data-dir retention GC.** `~/.orcr/data` grows unbounded. orcr guarantees each data dir exists and is unique, nothing else; there is no lifecycle or retention sweep. Any future sweep must be row-aware, since a run's folder contains its descendants' folders.
-- **`orcr top` is view-only.** It is a live status tree with no detail-panel actions (attach, send, kill, logs from inside the TUI) and no live activity feed. Act on agents with the CLI verbs or `herdr --session orcr`.
-- **Real-provider validation is best-effort.** The automated gate is the mock provider against live herdr. Real claude/codex smoke tests of recipes and logs, and live launchd/systemd `enable` round-trips, are manual-only. See [troubleshooting](/docs/resources/troubleshooting#known-caveats-with-real-providers) for the specific provider caveats (claude background subagents, wrapped-claude launchers, the intermittent codex completion timeout).
-- **Submit-confirm hardening is not re-validated under heavy load.** The adaptive-window, up-to-six re-deliveries submit-confirm path is flake-free in validation but has not been re-checked under heavy parallel real-provider boot load.
+- **Windows is unsupported.** loops, process groups, and `server enable` are POSIX-only; `service.rs` returns `unsupported_platform` elsewhere. macOS (arm64, x64) and Linux (x64) are the supported platforms.
+- **everything runs permission-bypass.** agents launch with the provider's bypass-permissions flags. there is no `--read-only` mode and no permission profiles yet. treat every spawned agent as fully capable in its cwd.
+- **`blocked_kind` is best-effort.** classification of *why* an agent is blocked (`question`, `limit`, `login`, `unknown`) comes from herdr's blocked message plus the transcript. there is no structured per-provider blocked-reason parsing and no rate-limit policy (a `limit` block is surfaced, not acted on).
+- **no data-dir retention GC.** `~/.orcr/data` grows unbounded. orcr guarantees each data dir exists and is unique, nothing else; there is no lifecycle or retention sweep. any future sweep must be row-aware, since a run's folder contains its descendants' folders.
+- **`orcr top` is view-only.** it is a live status tree with no detail-panel actions (attach, send, kill, logs from inside the TUI) and no live activity feed. act on agents with the CLI verbs or `herdr --session orcr`.
+- **real-provider validation is best-effort.** the automated gate is the mock provider against live herdr. real claude/codex smoke tests of recipes and logs, and live launchd/systemd `enable` round-trips, are manual-only. see [troubleshooting](/docs/resources/troubleshooting#known-caveats-with-real-providers) for the specific provider caveats (claude background subagents, wrapped-claude launchers, the intermittent codex completion timeout).
+- **submit-confirm hardening is not re-validated under heavy load.** the adaptive-window, up-to-six re-deliveries submit-confirm path is flake-free in validation but has not been re-checked under heavy parallel real-provider boot load.
 
-## Cross-host orchestration today
+## cross-host orchestration today
 
-herdr's remote story is per-host: `herdr --remote <ssh-target>` attaches your terminal to a herdr server running on the remote machine, and there is no cross-host pane management. orcr mirrors that shape. The orcr server talks to the herdr socket on **its own host**.
+herdr's remote story is per-host: `herdr --remote <ssh-target>` attaches your terminal to a herdr server running on the remote machine, and there is no cross-host pane management. orcr mirrors that shape. the orcr server talks to the herdr socket on **its own host**.
 
-So orchestrating agents on a remote machine works today by running orcr *on that machine*, over ssh. The entire lifecycle (queue, GC, loops, transcripts) is host-local and needs zero changes. What is not built is driving a remote host from a local `orcr` CLI: that would need the socket tunneled, remote transcript access, and remote process-group control for loops. That piece is on the roadmap below.
+so orchestrating agents on a remote machine works today by running orcr *on that machine*, over SSH. the entire lifecycle (queue, GC, loops, transcripts) is host-local and needs zero changes. what is not built is driving a remote host from a local `orcr` CLI: that would need the socket tunneled, remote transcript access, and remote process-group control for loops. that piece is on the roadmap below.
 
-## Future work
+## future work
 
-Deferred features, in rough priority order. None of these ship in the current release.
+deferred features, in rough priority order. none of these ship in the current release.
 
 - **pi and opencode integrations** plus `orcr integration add|rm|ls` to manage integrations the way herdr does.
-- **Degraded no-integration modes**: running or tracking providers with only one integration layer present. Cut deliberately for simplicity today; a provider needs [both layers](/docs/concepts/providers).
+- **degraded no-integration modes**: running or tracking providers with only one integration layer present. cut deliberately for simplicity today; a provider needs [both layers](/docs/concepts/providers).
 - **`top` actions**: a detail panel with attach, send, kill, and logs from inside the TUI. `top` is view-only in the current release.
 - **`send` steer and stop options**: interrupting an active turn or gracefully stopping the current task, per provider.
 - **`top` live activity feed**: tool calls and response summaries streamed into the tree from the transcripts.
-- **Background-subagent detection for claude**: so `gc auto` does not park or reap an agent while its subagents are still in flight. Until then, use `--gc never` for agents that fan out background work.
-- **Blocked-reason detail**: structured per-provider classification of why an agent is blocked, plus rate-limit-aware policies (backoff, reroute-on-limit).
-- **Cross-host orchestration from the local CLI**: socket tunneling, remote transcripts, and remote process groups. Running orcr on the remote host over ssh already works (see above).
-- **Permission policies**: `--read-only` (per-provider write-tool disabling), then policy profiles. Everything runs bypass-permissions today.
-- **Notifications beyond the terminal**: herdr notifications and webhook or ntfy push on blocked agents or loop failures.
-- **Python SDK**: the socket schema makes this mostly generatable, alongside `orcr scaffold <lang>`. The SDK and scaffolding are TypeScript-only today.
-- **Coordination primitives**: inboxes, decision gates, task boards. Today the building blocks are files, paths, and the [SDK patterns](/docs/patterns).
-- **Git worktree provisioning**: per-agent isolated checkouts via herdr worktrees.
+- **background-subagent detection for claude**: so `gc auto` does not park or reap an agent while its subagents are still in flight. until then, use `--gc never` for agents that fan out background work.
+- **blocked-reason detail**: structured per-provider classification of why an agent is blocked, plus rate-limit-aware policies (backoff, reroute-on-limit).
+- **cross-host orchestration from the local CLI**: socket tunneling, remote transcripts, and remote process groups. running orcr on the remote host over SSH already works (see above).
+- **permission policies**: `--read-only` (per-provider write-tool disabling), then policy profiles. everything runs bypass-permissions today.
+- **notifications beyond the terminal**: herdr notifications and webhook or ntfy push on blocked agents or loop failures.
+- **Python SDK**: the socket schema makes this mostly generatable, alongside `orcr scaffold <lang>`. the SDK and scaffolding are TypeScript-only today.
+- **coordination primitives**: inboxes, decision gates, task boards. today the building blocks are files, paths, and the [SDK patterns](/docs/patterns).
+- **git worktree provisioning**: per-agent isolated checkouts via herdr worktrees.
 - **Windows support**: named-pipe transport, path conventions, and a Task Scheduler logon task for `enable`.
 - **TCP/HTTP listener** for the socket API (remote tooling, off by default).
-- **Data-dir lifecycle**: retention and GC for `~/.orcr/data`, row-aware so a shared ancestor is never deleted while a child row still has data below it.
-- **Presets**: saved agent, model, and flag bundles, for example `orcr agent run @review …`.
-- **herdr plugin packaging**: orcr is a herdr API client, not a plugin. A thin plugin on top would add `orcr top` as a herdr plugin pane (one keybinding to a dashboard overlay), context actions on agent panes, and one-command install via `herdr plugin install`. No orcr changes needed; the manifest just points at the CLI.
-- **Declarative workflows**: a small YAML format compiling onto the SDK, for reviewable and replayable pipelines, plus replay of recorded runs.
+- **data-dir lifecycle**: retention and GC for `~/.orcr/data`, row-aware so a shared ancestor is never deleted while a child row still has data below it.
+- **presets**: saved agent, model, and flag bundles, for example `orcr agent run @review …`.
+- **herdr plugin packaging**: orcr is a herdr API client, not a plugin. a thin plugin on top would add `orcr top` as a herdr plugin pane (one keybinding to a dashboard overlay), context actions on agent panes, and one-command install via `herdr plugin install`. no orcr changes needed; the manifest just points at the CLI.
+- **declarative workflows**: a small YAML format compiling onto the SDK, for reviewable and replayable pipelines, plus replay of recorded runs.
 
-## Release and distribution follow-ups
+## release and distribution follow-ups
 
-These affect how you get orcr, not what it does. See the [changelog](/docs/resources/changelog) for the current install story.
+these affect how you get orcr, not what it does. see the [changelog](/docs/resources/changelog) for the current install story.
 
-- Host the install script at `orchestratr.dev/install.sh` (the script is in the repo; it needs serving at that URL).
-- Publish to registries: claim the `orchestratr` crate on crates.io and the `@orchestratr` scope on npm, then wire the gated publish jobs. `@orchestratr/sdk` is unpublished (`0.0.0`) today, so `orcr scaffold` installs it pinned to the CLI version, with `ORCR_SDK_SPEC` for offline installs.
-- Consider further release automation (release-please or cargo-dist) to replace the hand-rolled release workflow and installer.
+- host the install script at `orchestratr.dev/install.sh` (the script is in the repo; it needs serving at that URL).
+- publish to registries: claim the `orchestratr` crate on crates.io and the `@orchestratr` scope on npm, then wire the gated publish jobs. `@orchestratr/sdk` is unpublished (`0.0.0`) today, so `orcr scaffold` installs it pinned to the CLI version, with `ORCR_SDK_SPEC` for offline installs.
+- consider further release automation (release-please or cargo-dist) to replace the hand-rolled release workflow and installer.

@@ -1,22 +1,22 @@
 ---
-title: Loop-until-done + durable handoff
-description: Work a queue interactively, then hand the rest to a self-terminating loop and exit; the loop does one increment per run and removes itself when the queue is empty.
+title: loop-until-done + durable handoff
+description: work a queue interactively, then hand the rest to a self-terminating loop and exit; the loop does one increment per run and removes itself when the queue is empty.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Do the work you can do now, then hand the rest to a loop that survives your shell and finishes on its own. The kickoff script works items interactively while it is cheap to; when the remaining work becomes "check back later," it creates a loop and exits. The loop's script does one increment per run and removes its own loop when the queue is empty.
+do the work you can do now, then hand the rest to a loop that survives your shell and finishes on its own. the kickoff script works items interactively while it is cheap to; when the remaining work becomes "check back later," it creates a loop and exits. the loop's script does one increment per run and removes its own loop when the queue is empty.
 
-## The scenario
+## the scenario
 
-You have a queue of work. Some of it is worth doing right now, while you (or the agent) are attending; the rest can trickle out over time. You do not want to hold a shell open for hours. So the flow splits in two:
+you have a queue of work. some of it is worth doing right now, while you (or the agent) are attending; the rest can trickle out over time. you do not want to hold a shell open for hours. so the flow splits in two:
 
 - **`kickoff.ts`** works items until a budget or cost gate is hit, then hands the remainder to a durable loop and exits.
-- **`resume.ts`** is the loop's command. Each fire does exactly one increment of work. When the queue drains, it removes its own loop, so the schedule stops itself.
+- **`resume.ts`** is the loop's command. each fire does exactly one increment of work. when the queue drains, it removes its own loop, so the schedule stops itself.
 
-This is the only pattern that outlives the process that started it. See [loops (scheduling model)](/docs/concepts/loops) for the run model.
+this is the only pattern that outlives the process that started it. see [loops (scheduling model)](/docs/concepts/loops) for the run model.
 
-## The annotated recipe
+## the annotated recipe
 
 `kickoff.ts` works now, then hands off:
 
@@ -59,36 +59,36 @@ if (queueSize() === 0) {
 }
 ```
 
-What each piece is doing:
+what each piece is doing:
 
-- **The kickoff budget** (`stillCheap()`, your own cost gate) decides how much to do now. Everything past it is handed off.
-- **`orcr.loop.create`** registers durable cron for one command. The loop owns *time only*: no prompts, no provider flags, no stop-condition logic. The stop condition lives in the script. `cron: "*/30 * * * *"` fires every 30 minutes; `timeout: "25m"` caps each run below the interval so runs never pile up.
-- **The `command` is an argv array** executed directly, no shell. It points at the loop's script by absolute path under `~/.orcr/workflows/burn_down`. The loop keeps the kickoff's cwd (the repo), which its agents inherit as their default cwd; Node still resolves the script's imports from the project's own `node_modules` by walking up from the file. See the [workflow-project convention](/docs/concepts/data-and-files).
-- **`orcr.context.fromEnv()`** reads the run's identity from the [env contract](/docs/concepts/agents-and-lineage) rather than hand-parsing `ORCR_PATH`. The guard `ctx.kind !== "loopRun"` makes `resume.ts` refuse to run outside a loop, so a stray `npx tsx resume.ts` fails loudly instead of doing half a thing.
-- **One increment per run.** Each fire does a single `workOneItem()`. Agents it spawns land under `burn_down/<run_id>/...` automatically, because the run command runs with `ORCR_PATH` set to the run path.
-- **Self-termination** is `orcr.loop.rm(ctx.loop.name)` once the queue is empty. Removing the loop stops future fires; the run that called `rm` and its agents finish normally. From a shell you can derive the same name with `orcr.loopNameFrom(process.env.ORCR_PATH!)` (the first segment of a run path), but inside a script `ctx.loop.name` is already parsed for you.
+- **the kickoff budget** (`stillCheap()`, your own cost gate) decides how much to do now. everything past it is handed off.
+- **`orcr.loop.create`** registers durable cron for one command. the loop owns *time only*: no prompts, no provider flags, no stop-condition logic. the stop condition lives in the script. `cron: "*/30 * * * *"` fires every 30 minutes; `timeout: "25m"` caps each run below the interval so runs never pile up.
+- **the `command` is an argv array** executed directly, no shell. it points at the loop's script by absolute path under `~/.orcr/workflows/burn_down`. the loop keeps the kickoff's cwd (the repo), which its agents inherit as their default cwd; Node still resolves the script's imports from the project's own `node_modules` by walking up from the file. see the [workflow-project convention](/docs/concepts/data-and-files).
+- **`orcr.context.fromEnv()`** reads the run's identity from the [env contract](/docs/concepts/agents-and-lineage) rather than hand-parsing `ORCR_PATH`. the guard `ctx.kind !== "loopRun"` makes `resume.ts` refuse to run outside a loop, so a stray `npx tsx resume.ts` fails loudly instead of doing half a thing.
+- **one increment per run.** each fire does a single `workOneItem()`. agents it spawns land under `burn_down/<run_id>/...` automatically, because the run command runs with `ORCR_PATH` set to the run path.
+- **self-termination** is `orcr.loop.rm(ctx.loop.name)` once the queue is empty. removing the loop stops future fires; the run that called `rm` and its agents finish normally. from a shell you can derive the same name with `orcr.loopNameFrom(process.env.ORCR_PATH!)` (the first segment of a run path), but inside a script `ctx.loop.name` is already parsed for you.
 
-<Callout title="The loop name is reserved while active">
-While `burn_down` is an active loop, nothing outside its own runs can create an agent anywhere under `burn_down/**`. Agents land there only as descendants of a run (`burn_down/r82c9s/...`), so the workspace stays exactly what the loop produced. Once the loop is removed, the name is free to reuse. See [identity and paths](/docs/concepts/identity).
+<Callout title="the loop name is reserved while active">
+while `burn_down` is an active loop, nothing outside its own runs can create an agent anywhere under `burn_down/**`. agents land there only as descendants of a run (`burn_down/r82c9s/...`), so the workspace stays exactly what the loop produced. once the loop is removed, the name is free to reuse. see [identity and paths](/docs/concepts/identity).
 </Callout>
 
-## Primitives it exercises
+## primitives it exercises
 
 - [`orcr.loop.create`](/docs/guides/loops) to register durable cron for the resume script.
 - [`orcr.context.fromEnv()`](/docs/concepts/agents-and-lineage) to read the run's identity and loop membership.
 - `orcr.loopNameFrom(path)` to derive a loop name from a run path (the `ctx.loop.name` equivalent for shell or hand-built paths).
 - [`orcr.loop.rm`](/docs/guides/loops) called from inside a run to self-terminate.
 
-## Failure and cleanup
+## failure and cleanup
 
-- **Pending runs are durable.** Every run is a durable row from the moment it is asked for, including at capacity. If a fire lands while a run is still going, `--overlap queue` (the default) holds at most one pending scheduled run and coalesces later fires into it; the pending run survives a server restart and starts when a slot frees. Fires missed while the machine slept or the server was down are skipped and logged, never replayed. See [loops (scheduling model)](/docs/concepts/loops).
-- **The stop condition carries a number.** `queueSize() === 0` is the terminating check; `timeout: "25m"` bounds each run. Give every unattended loop a stop condition with a number in it, never "until it's done".
-- **The script lives at the reusable home.** A loop is reusable by definition, so its script goes under `~/.orcr/workflows/<name>/`, not in an agent's disposable data dir. Remove and recreate the loop and the script survives; `data/burn_down/` holds only runtime state (`loop.json`, run dirs, cross-run scratch). See [data & file conventions](/docs/concepts/data-and-files).
-- If you need to stop a running loop by hand, `orcr loop rm burn_down --kill-active` ends the definition and kills its active run and agents; plain `orcr loop rm burn_down` ends the definition but lets the active run finish. See [schedule work with loops](/docs/guides/loops).
+- **pending runs are durable.** every run is a durable row from the moment it is asked for, including at capacity. if a fire lands while a run is still going, `--overlap queue` (the default) holds at most one pending scheduled run and coalesces later fires into it; the pending run survives a server restart and starts when a slot frees. fires missed while the machine slept or the server was down are skipped and logged, never replayed. see [loops (scheduling model)](/docs/concepts/loops).
+- **the stop condition carries a number.** `queueSize() === 0` is the terminating check; `timeout: "25m"` bounds each run. give every unattended loop a stop condition with a number in it, never "until it's done".
+- **the script lives at the reusable home.** a loop is reusable by definition, so its script goes under `~/.orcr/workflows/<name>/`, not in an agent's disposable data dir. remove and recreate the loop and the script survives; `data/burn_down/` holds only runtime state (`loop.json`, run dirs, cross-run scratch). see [data & file conventions](/docs/concepts/data-and-files).
+- if you need to stop a running loop by hand, `orcr loop rm burn_down --kill-active` ends the definition and kills its active run and agents; plain `orcr loop rm burn_down` ends the definition but lets the active run finish. see [schedule work with loops](/docs/guides/loops).
 
-## Run it
+## run it
 
-The loop's script is not a one-off, so it goes to the reusable home rather than a scratch project:
+the loop's script is not a one-off, so it goes to the reusable home rather than a scratch project:
 
 ```sh
 # 1. scaffold the reusable project the loop will point at
@@ -102,4 +102,4 @@ orcr scaffold burn-down-kickoff && cd burn-down-kickoff
 npx tsx workflow.ts
 ```
 
-After kickoff exits, `orcr loop ls` shows `burn_down` and `orcr loop run ls burn_down` shows its runs. The loop keeps firing every 30 minutes until `resume.ts` empties the queue and calls `loop.rm` on itself. Watch it with `orcr top --loops`.
+after kickoff exits, `orcr loop ls` shows `burn_down` and `orcr loop run ls burn_down` shows its runs. the loop keeps firing every 30 minutes until `resume.ts` empties the queue and calls `loop.rm` on itself. watch it with `orcr top --loops`.

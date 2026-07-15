@@ -1,6 +1,6 @@
 ---
 title: orcr scaffold
-description: "The one purely-local command: it generates a ready-to-run TypeScript workflow project and runs npm install, without touching the server."
+description: "the one purely-local command: it generates a ready-to-run TypeScript workflow project and runs npm install, without touching the server."
 ---
 
 `orcr scaffold` sets up a minimal, ready-to-run TypeScript workflow project, the recommended way to write anything with real control flow (fan-out with retries, classify-and-act, a loop's script) instead of chaining `--json` and jq in bash.
@@ -9,7 +9,7 @@ description: "The one purely-local command: it generates a ready-to-run TypeScri
 orcr scaffold [<dir>] [--json]
 ```
 
-It creates exactly three files in `<dir>` (default: the current directory; created if missing) and runs `npm install`:
+it creates exactly three files in `<dir>` (default: the current directory; created if missing) and runs `npm install`:
 
 | file | contents |
 | --- | --- |
@@ -17,22 +17,22 @@ It creates exactly three files in `<dir>` (default: the current directory; creat
 | `tsconfig.json` | a minimal TypeScript config |
 | `workflow.ts` | a runnable ~15-line example: `scope` → `run --name` → `wait` → last-response, with one comment pointing at the skill reference |
 
-Run it with `npx tsx workflow.ts`; add more `.ts` files freely. It is a plain npm project, so any extra dependency the workflow needs (a GitHub client, a CSV parser) is one `npm install` away, and a human can review the code like any other code.
+run it with `npx tsx workflow.ts`; add more `.ts` files freely. it is a plain npm project, so any extra dependency the workflow needs (a GitHub client, a CSV parser) is one `npm install` away, and a human can review the code like any other code.
 
-## Rules
+## rules
 
-- **Requires Node ≥ 20 and npm** on the machine. Missing → `environment_error` with an install pointer, and nothing is created. This is the only orcr feature that needs Node; the CLI itself does not.
-- **Never overwrites.** If any of the three files already exists in `<dir>`, the command fails with `state_conflict` and touches nothing.
-- **Purely local.** This is the one command that does not talk to the server: no store row, no auto-start. The project it generates talks to the server like any SDK client, and the socket version check catches CLI/SDK drift loudly.
+- **requires Node ≥ 20 and npm** on the machine. missing → `environment_error` with an install pointer, and nothing is created. this is the only orcr feature that needs Node; the CLI itself does not.
+- **never overwrites.** if any of the three files already exists in `<dir>`, the command fails with `state_conflict` and touches nothing.
+- **purely local.** this is the one command that does not talk to the server: no store row, no auto-start. the project it generates talks to the server like any SDK client, and the socket version check catches CLI/SDK drift loudly.
 - **`ORCR_SDK_SPEC` overrides the dependency spec**: set it to a local tarball or path for offline/local installs; otherwise the pinned CLI version is used.
 
 TypeScript only in the first release; a language argument (`orcr scaffold py`) is future work.
 
-## Where to put projects
+## where to put projects
 
-This is convention, not CLI behavior: the CLI never enforces where a project lives, and the [skill](/docs/guides/the-skill) teaches it:
+this is convention, not CLI behavior: the CLI never enforces where a project lives, and the [skill](/docs/guides/the-skill) teaches it:
 
-- A **one-time dynamic workflow** goes to `$ORCR_AGENT_DATA_DIR/workflows/`: it dies with the agent's other artifacts, but stays auditable.
-- Anything **reusable, including every loop's script**, goes to `~/.orcr/workflows/<name>/`. A loop is by definition reusable, so its command points at this project while `data/<loop>/` keeps only runtime state.
+- a **one-time dynamic workflow** goes to `$ORCR_AGENT_DATA_DIR/workflows/`: it dies with the agent's other artifacts, but stays auditable.
+- anything **reusable, including every loop's script**, goes to `~/.orcr/workflows/<name>/`. a loop is by definition reusable, so its command points at this project while `data/<loop>/` keeps only runtime state.
 
-See [data and file conventions](/docs/concepts/data-and-files) and the [SDK workflows guide](/docs/guides/sdk-workflows).
+see [data and file conventions](/docs/concepts/data-and-files) and the [SDK workflows guide](/docs/guides/sdk-workflows).

@@ -1,11 +1,11 @@
 ---
-title: Architecture
-description: The single-writer orcr server, the socket API that every client speaks, and the herdr driver underneath it.
+title: architecture
+description: the single-writer orcr server, the socket API that every client speaks, and the herdr driver underneath it.
 ---
 
-orchestratr is one binary, `orcr`, with a server at its center. The server is a single long-lived process and the single writer of all state. Everything else (the CLI, the TypeScript SDK, `orcr top`) is a thin client that talks to the server over a Unix socket.
+orchestratr is one binary, `orcr`, with a server at its center. the server is a single long-lived process and the single writer of all state. everything else (the CLI, the TypeScript SDK, `orcr top`) is a thin client that talks to the server over a Unix socket.
 
-## The pieces
+## the pieces
 
 ```text
 you / a script / another agent
@@ -22,41 +22,41 @@ you / a script / another agent
         └─ integrations read each provider's native transcript files
 ```
 
-## The server owns everything
+## the server owns everything
 
-The server is the only process that touches the store. It owns:
+the server is the only process that touches the store. it owns:
 
-- the **store** (sqlite, WAL, under `~/.orcr/`),
+- the **store** (SQLite, WAL, under `~/.orcr/`),
 - the **admission queue** (global and per-provider concurrency caps),
 - **GC** (parking and reaping idle agent panes),
 - **loop scheduling** (durable cron for any command),
 - **reconciliation** (the periodic drift repair between what the store says and what herdr actually shows: re-finding lost panes, finishing half-done moves, discovering unmanaged agents),
 - the **event stream** that `wait`, `orcr top`, and the SDK's `watch()` ride.
 
-It exposes all of this over a Unix socket, the same shape herdr itself uses. Any CLI or SDK call auto-starts the server if it is not already running; `orcr server enable` registers it to start at login so loops fire after a reboot. If the server cannot start, commands exit 2 with `server_start_failed`.
+it exposes all of this over a Unix socket, the same shape herdr itself uses. any CLI or SDK call auto-starts the server if it is not already running; `orcr server enable` registers it to start at login so loops fire after a reboot. if the server cannot start, commands exit 2 with `server_start_failed`.
 
-## The socket API is the API
+## the socket API is the API
 
-The server's socket API is the real interface. The CLI and the SDK are thin clients of it, and every CLI verb maps 1:1 to a socket method (`agent.run`, `agent.send`, `loop.create`, `server.status`, and so on). `orcr api schema` publishes the versioned JSON schema of every method's params, results, event payloads, and error codes, so the protocol is self-describing for any language. The schema is the contract; the CLI is one client of it.
+the server's socket API is the real interface. the CLI and the SDK are thin clients of it, and every CLI verb maps 1:1 to a socket method (`agent.run`, `agent.send`, `loop.create`, `server.status`, and so on). `orcr api schema` publishes the versioned JSON schema of every method's params, results, event payloads, and error codes, so the protocol is self-describing for any language. the schema is the contract; the CLI is one client of it.
 
-The transport is newline-delimited JSON envelopes over one multiplexed connection. Requests are `{protocol, id, method, params}`; responses correlate by id; subscription events interleave with responses. See [durability and recovery](/docs/concepts/durability) for the event and cursor model, and the [socket API reference](/docs/reference/socket-api) for the full method list.
+the transport is newline-delimited JSON envelopes over one multiplexed connection. requests are `{protocol, id, method, params}`; responses correlate by id; subscription events interleave with responses. see [durability and recovery](/docs/concepts/durability) for the event and cursor model, and the [socket API reference](/docs/reference/socket-api) for the full method list.
 
-## The herdr driver speaks herdr's socket directly
+## the herdr driver speaks herdr's socket directly
 
 herdr supplies the terminal substrate: persistent named sessions, background TUIs, programmatic input and output to real interactive agent terminals, and per-provider lifecycle detection. orcr is a client of herdr, not a fork of it.
 
-The server speaks **herdr's own socket API directly**, a versioned JSON protocol whose schema herdr publishes via `herdr api schema`. It does not shell out to herdr CLI subcommands for pane lifecycle or mutations. herdr's sockets are **per-session**, discovered from `herdr session list --json` rather than a single global socket. On connect the driver handshakes the protocol version and fails with a clear `herdr_unreachable` or version-skew error rather than guessing.
+the server speaks **herdr's own socket API directly**, a versioned JSON protocol whose schema herdr publishes via `herdr api schema`. it does not shell out to herdr CLI subcommands for pane lifecycle or mutations. herdr's sockets are **per-session**, discovered from `herdr session list --json` rather than a single global socket. on connect the driver handshakes the protocol version and fails with a clear `herdr_unreachable` or version-skew error rather than guessing.
 
-The herdr *binary* is still discovered (config `herdr.bin` then `$ORCR_HERDR_BIN` then `$PATH`; missing gives a friendly install pointer, exit 2) for the few things a socket cannot do: bootstrapping the owned session's herdr server headless, running `orcr agent attach` (which execs `herdr agent attach` in your terminal), and enumerating sessions.
+the herdr *binary* is still discovered (config `herdr.bin` then `$ORCR_HERDR_BIN` then `$PATH`; missing gives a friendly install pointer, exit 2) for the few things a socket cannot do: bootstrapping the owned session's herdr server headless, running `orcr agent attach` (which execs `herdr agent attach` in your terminal), and enumerating sessions.
 
-The driver's operation set is pinned to named herdr socket methods with fixed shapes: an in-code contract table checked against the installed herdr's live `api schema`, so herdr version drift fails the conformance check rather than breaking silently at runtime. See [the driver contract](/docs/concepts/providers#the-herdr-driver-contract) for the pinned method set.
+the driver's operation set is pinned to named herdr socket methods with fixed shapes: an in-code contract table checked against the installed herdr's live `api schema`, so herdr version drift fails the conformance check rather than breaking silently at runtime. see [the driver contract](/docs/concepts/providers#the-herdr-driver-contract) for the pinned method set.
 
-## Integrations are per-provider modules
+## integrations are per-provider modules
 
-Each supported agent provider has one orcr integration module: launch argv (bypass flags, model and effort mapping), a startup recipe, completion-detection parameters, a graceful-shutdown recipe, and a transcript adapter. claude and codex ship built-in. A provider is supported only when both orcr's integration and herdr's integration for that provider are present; anything else fails fast. See [providers and integrations](/docs/concepts/providers).
+each supported agent provider has one orcr integration module: launch argv (bypass flags, model and effort mapping), a startup recipe, completion-detection parameters, a graceful-shutdown recipe, and a transcript adapter. claude and codex ship built-in. a provider is supported only when both orcr's integration and herdr's integration for that provider are present; anything else fails fast. see [providers and integrations](/docs/concepts/providers).
 
-## Runtime shape
+## runtime shape
 
-The server runtime is threaded and blocking, not async. It runs a `Mutex<Store>` as the single writer, one thread per connection, and one pump thread per subscription. This keeps the single-writer guarantee simple: every state transition is a store transaction serialized through the one writer.
+the server runtime is threaded and blocking, not async. it runs a `Mutex<Store>` as the single writer, one thread per connection, and one pump thread per subscription. this keeps the single-writer guarantee simple: every state transition is a store transaction serialized through the one writer.
 
-orcr's own socket protocol is distinct from herdr's. orcr speaks socket protocol 1; the herdr driver requires herdr protocol 16 or newer, checked at the handshake. Both sockets are version-checked independently, so a mismatch on either side surfaces as a clear error (`unsupported_version` for orcr client-to-server; a named herdr-version error for the driver) rather than a garbled response. See [durability and recovery](/docs/concepts/durability#version-skew) for how version skew is handled across restarts and upgrades.
+orcr's own socket protocol is distinct from herdr's. orcr speaks socket protocol 1; the herdr driver requires herdr protocol 16 or newer, checked at the handshake. both sockets are version-checked independently, so a mismatch on either side surfaces as a clear error (`unsupported_version` for orcr client-to-server; a named herdr-version error for the driver) rather than a garbled response. see [durability and recovery](/docs/concepts/durability#version-skew) for how version skew is handled across restarts and upgrades.

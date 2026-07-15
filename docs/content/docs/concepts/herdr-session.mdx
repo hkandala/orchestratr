@@ -1,41 +1,41 @@
 ---
-title: The owned herdr session
-description: How orcr maps its path tree onto herdr workspaces, tabs, and panes inside one dedicated session that never touches your daily work.
+title: the owned herdr session
+description: how orcr maps its path tree onto herdr workspaces, tabs, and panes inside one dedicated session that never touches your daily work.
 ---
 
-All orcr-managed agents live in one dedicated herdr session (default name `orcr`, config `herdr.session`). Your daily herdr session never sees a subagent pane. This is the boundary that keeps a 200-agent workflow from polluting the workspace you actually work in.
+all orcr-managed agents live in one dedicated herdr session (default name `orcr`, config `herdr.session`). your daily herdr session never sees a subagent pane. this is the boundary that keeps a 200-agent workflow from polluting the workspace you actually work in.
 
-## One owned session
+## one owned session
 
-First use auto-starts the session's herdr server headless. From then on:
+first use auto-starts the session's herdr server headless. from then on:
 
 - `herdr --session orcr` opens the native herdr UI over that session: the same tree you see in `orcr top`, but interactive.
-- `orcr agent attach` wraps `herdr agent attach`, which streams a pane's terminal into your current terminal from anywhere, with no session switching. See [attach and steer](/docs/guides/attach-and-steer).
+- `orcr agent attach` wraps `herdr agent attach`, which streams a pane's terminal into your current terminal from anywhere, with no session switching. see [attach and steer](/docs/guides/attach-and-steer).
 
-## The mapping
+## the mapping
 
-herdr's hierarchy is session then workspace then tab then pane. Workspaces are per-session, purely visual containers with a label and no cwd; only panes have a cwd and a process. orcr uses the levels like this:
+herdr's hierarchy is session then workspace then tab then pane. workspaces are per-session, purely visual containers with a label and no cwd; only panes have a cwd and a process. orcr uses the levels like this:
 
 | herdr level | orcr's use |
 | --- | --- |
-| workspace | the path's **level-1 segment** when the path has one. Everything under `refactor/**` maps to workspace `refactor`; each loop gets its own workspace. A **scope-less** single-segment path like `worker` maps to workspace `default`, so stray one-offs do not each spawn a workspace. GC-parked agents move to workspace `idle`. |
-| tab | one per agent; the label is the agent's **full path**. Path `refactor/phase_1/review/worker` maps to workspace `refactor`, tab `refactor/phase_1/review/worker`. |
-| pane | the agent's TUI. Its cwd is the caller's cwd, or `--cwd`. |
+| workspace | the path's **level-1 segment** when the path has one. everything under `refactor/**` maps to workspace `refactor`; each loop gets its own workspace. a **scope-less** single-segment path like `worker` maps to workspace `default`, so stray one-offs do not each spawn a workspace. GC-parked agents move to workspace `idle`. |
+| tab | one per agent; the label is the agent's **full path**. path `refactor/phase_1/review/worker` maps to workspace `refactor`, tab `refactor/phase_1/review/worker`. |
+| pane | the agent's TUI. its cwd is the caller's cwd, or `--cwd`. |
 
-herdr requires each agent's name (which is also its tab label) to be **unique across the whole session**. A label built from the path-after-the-first-segment would collide across distinct level-1 scopes: `review_a/fanout/file_0` and `review_b/fanout/file_0` would both reduce to `fanout/file_0`. So orcr uses the full effective path as the label, which is unique among active agents by construction (see [identity](/docs/concepts/identity#path-uniqueness)).
+herdr requires each agent's name (which is also its tab label) to be **unique across the whole session**. a label built from the path-after-the-first-segment would collide across distinct level-1 scopes: `review_a/fanout/file_0` and `review_b/fanout/file_0` would both reduce to `fanout/file_0`. so orcr uses the full effective path as the label, which is unique among active agents by construction (see [identity](/docs/concepts/identity#path-uniqueness)).
 
-A pane's location ids are **not** agent identifiers. GC moves agents across panes and workspaces over their lifetime; the store tracks the agent's current pane as a location column, nothing more. See [durability and recovery](/docs/concepts/durability) for how a pane is re-matched to its row by label after a herdr restart.
+a pane's location ids are **not** agent identifiers. GC moves agents across panes and workspaces over their lifetime; the store tracks the agent's current pane as a location column, nothing more. see [durability and recovery](/docs/concepts/durability) for how a pane is re-matched to its row by label after a herdr restart.
 
-## Ownership marker
+## ownership marker
 
-Every pane orcr creates carries `ORCR_ID` in its environment, plus an internal launch token, and has a matching store row. That marker is how reconciliation decides what it may touch:
+every pane orcr creates carries `ORCR_ID` in its environment, plus an internal launch token, and has a matching store row. that marker is how reconciliation decides what it may touch:
 
-- A live pane it can positively tie to its store row (by herdr label) is orcr's to move, park, or close.
-- A herdr-reported agent pane with **no matching row** (the store was moved or reset under a live session) is reported in `server status` as an orphan agent pane and **left alone**: clean it up through herdr directly.
-- An unmarked pane in the owned session (a shell you opened while debugging) is reported and never touched either.
+- a live pane it can positively tie to its store row (by herdr label) is orcr's to move, park, or close.
+- a herdr-reported agent pane with **no matching row** (the store was moved or reset under a live session) is reported in `server status` as an orphan agent pane and **left alone**: clean it up through herdr directly.
+- an unmarked pane in the owned session (a shell you opened while debugging) is reported and never touched either.
 
 herdr's socket cannot read `ORCR_ID` back off a live pane, so the label is the practical re-matching key; the launch token stays injected and persisted as the correctness anchor for a future herdr that exposes pane env.
 
 ## orcr always closes its panes
 
-herdr removes a workspace automatically once it has no panes. So orcr always **closes** panes it is done with: on kill, on reap, on `gc immediate`. Closing the last pane closes the tab, and emptying the workspace removes it. Leaving a stray pane behind would pin the workspace forever, which is why the lifecycle is careful to close panes rather than just abandon them. See [agent lifecycle and GC](/docs/concepts/lifecycle).
+herdr removes a workspace automatically once it has no panes. so orcr always **closes** panes it is done with: on kill, on reap, on `gc immediate`. closing the last pane closes the tab, and emptying the workspace removes it. leaving a stray pane behind would pin the workspace forever, which is why the lifecycle is careful to close panes rather than just abandon them. see [agent lifecycle and GC](/docs/concepts/lifecycle).

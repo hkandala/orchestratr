@@ -1,11 +1,11 @@
 ---
-title: Status, exit_reason, and wait tokens
-description: "The exhaustive tables: the managed and unmanaged status vocabularies, exit_reason groups, blocked_kind, and the status × exit_reason mapping to wait reason tokens with exit contributions."
+title: status, exit_reason, and wait tokens
+description: "the exhaustive tables: the managed and unmanaged status vocabularies, exit_reason groups, blocked_kind, and the status × exit_reason mapping to wait reason tokens with exit contributions."
 ---
 
-Every agent has exactly one `status` at a time, and the same value appears in the store, `ls`, `top`, `wait` results, JSON, and events. This page is the exhaustive lookup for that vocabulary. For how a turn is verified complete, see [status and completion](/docs/concepts/status-and-completion).
+every agent has exactly one `status` at a time, and the same value appears in the store, `ls`, `top`, `wait` results, JSON, and events. this page is the exhaustive lookup for that vocabulary. for how a turn is verified complete, see [status and completion](/docs/concepts/status-and-completion).
 
-## Managed status vocabulary
+## managed status vocabulary
 
 | status | meaning |
 | --- | --- |
@@ -18,9 +18,9 @@ Every agent has exactly one `status` at a time, and the same value appears in th
 | `ended` | gone; `exit_reason` says why |
 | `lost` | the pane vanished outside orcr's control (herdr crash, manual close); the path stays reserved until reconciliation confirms the terminal is really gone (herdr reachable plus one confirming poll, or an explicit kill), then it becomes `ended` with `exit_reason: lost` |
 
-## Unmanaged status vocabulary
+## unmanaged status vocabulary
 
-Unmanaged agents are tracked from herdr's reporting only (no queue, no parking, no start tracking), so their set is smaller:
+unmanaged agents are tracked from herdr's reporting only (no queue, no parking, no start tracking), so their set is smaller:
 
 | status | meaning |
 | --- | --- |
@@ -30,11 +30,11 @@ Unmanaged agents are tracked from herdr's reporting only (no queue, no parking, 
 | `unknown` | herdr's own catch-all, and the permanent status when the provider's herdr integration is not installed |
 | `ended` | the pane closed |
 
-See [managed vs unmanaged agents](/docs/concepts/managed-vs-unmanaged).
+see [managed vs unmanaged agents](/docs/concepts/managed-vs-unmanaged).
 
 ## exit_reason
 
-When an agent ends, `exit_reason` answers one question (did the work finish?) in four groups:
+when an agent ends, `exit_reason` answers one question (did the work finish?) in four groups:
 
 | group | exit_reason | meaning |
 | --- | --- | --- |
@@ -48,7 +48,7 @@ When an agent ends, `exit_reason` answers one question (did the work finish?) in
 
 ## blocked_kind
 
-When `status` is `blocked`, `blocked_kind` categorizes why (best-effort classification from herdr's blocked message and the transcript; detailed per-provider parsing is future work):
+when `status` is `blocked`, `blocked_kind` categorizes why (best-effort classification from herdr's blocked message and the transcript; detailed per-provider parsing is future work):
 
 | blocked_kind | meaning |
 | --- | --- |
@@ -59,7 +59,7 @@ When `status` is `blocked`, `blocked_kind` categorizes why (best-effort classifi
 
 ## wait reason tokens
 
-`wait` reports one line per agent, `<path> <reason>`, mapping exhaustively from `status × exit_reason`. Each token carries an `ok` flag and contributes to the process exit code:
+`wait` reports one line per agent, `<path> <reason>`, mapping exhaustively from `status × exit_reason`. each token carries an `ok` flag and contributes to the process exit code:
 
 | observed | reason token | ok | exit contribution |
 | --- | --- | --- | --- |
@@ -72,7 +72,7 @@ When `status` is `blocked`, `blocked_kind` categorizes why (best-effort classifi
 | `ended` + `lost`, or status `lost` confirmed | `lost` | no | 5 |
 | unsettled when the wait's own `--timeout` expires | `wait_timeout` (current status shown) | no | 3 |
 
-The overall wait exit code is the worst among its targets: `0` only if every target settled successfully, `4` if any is blocked, `5` if any died, `3` if the wait timed out, `6` if no target matched at all. Every target is listed on every outcome, including a timed-out wait, where settled targets show their real reason and unsettled ones show `wait_timeout`.
+the overall wait exit code is the worst among its targets: `0` only if every target settled successfully, `4` if any is blocked, `5` if any died, `3` if the wait timed out, `6` if no target matched at all. every target is listed on every outcome, including a timed-out wait, where settled targets show their real reason and unsettled ones show `wait_timeout`.
 
 ```text
 refactor/phase_1/file_1  turn_complete
@@ -80,4 +80,4 @@ refactor/phase_1/review  blocked:question
 refactor/phase_1/file_2  wait_timeout
 ```
 
-In JSON, each target is `{uuid, path, status, ok, reason, exit_reason?, next:{kind, command}}`, alongside `all_ok`, `timed_out`, and `decision_seq`. `next` comes from a stable enum (`logs_last_response`, `attach`, `logs_history`, `none`). See the [`agent wait`](/docs/reference/cli/agent) verb and the [error codes reference](/docs/reference/errors) for the wait-timeout vs agent-timeout distinction.
+in JSON, each target is `{uuid, path, status, ok, reason, exit_reason?, next:{kind, command}}`, alongside `all_ok`, `timed_out`, and `decision_seq`. `next` comes from a stable enum (`logs_last_response`, `attach`, `logs_history`, `none`). see the [`agent wait`](/docs/reference/cli/agent) verb and the [error codes reference](/docs/reference/errors) for the wait-timeout vs agent-timeout distinction.

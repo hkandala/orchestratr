@@ -1,13 +1,13 @@
 ---
-title: Write workflows with the SDK
-description: Author real control flow (branching, retries, fan-out, schedules) in TypeScript.
+title: write workflows with the SDK
+description: author real control flow (branching, retries, fan-out, schedules) in TypeScript.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The CLI is for one or two agents. The moment a workflow needs branching, retries, fan-out over a computed list, or a schedule, write it in TypeScript with `@orchestratr/sdk`. The SDK is a typed client of the socket API: anything the CLI can do, the SDK can do, and anything the SDK does, a shell script can do with `orcr … --json`. There is no private surface.
+the CLI is for one or two agents. the moment a workflow needs branching, retries, fan-out over a computed list, or a schedule, write it in TypeScript with `@orchestratr/sdk`. the SDK is a typed client of the socket API: anything the CLI can do, the SDK can do, and anything the SDK does, a shell script can do with `orcr … --json`. there is no private surface.
 
-## Scaffold a project
+## scaffold a project
 
 `orcr scaffold` sets up a ready-to-run project and installs dependencies:
 
@@ -17,7 +17,7 @@ cd my-workflow
 npx tsx workflow.ts
 ```
 
-It creates exactly three files and runs `npm install`:
+it creates exactly three files and runs `npm install`:
 
 ```text
 package.json    @orchestratr/sdk (pinned to this CLI's version) · tsx · typescript
@@ -25,26 +25,26 @@ tsconfig.json
 workflow.ts     a ~15-line runnable example: scope → run --name → wait → last-response
 ```
 
-Rules to know:
+rules to know:
 
-- Requires Node 20 or newer plus npm. Missing → `environment_error` with an install pointer, and nothing is created. This is the only orcr feature that needs Node; the CLI itself does not.
-- Never overwrites. If any of the three files already exists in the directory, it fails with `state_conflict` and touches nothing.
-- Purely local. `scaffold` is the one command that does not talk to the server; the project it generates talks to the server like any client, and the socket version check catches CLI/SDK drift loudly.
+- requires Node 20 or newer plus npm. missing → `environment_error` with an install pointer, and nothing is created. this is the only orcr feature that needs Node; the CLI itself does not.
+- never overwrites. if any of the three files already exists in the directory, it fails with `state_conflict` and touches nothing.
+- purely local. `scaffold` is the one command that does not talk to the server; the project it generates talks to the server like any client, and the socket version check catches CLI/SDK drift loudly.
 
-It is a plain npm project, so you can add more `.ts` files freely and `npm install` any dependency the workflow needs (a GitHub client, a CSV parser). A human can review it like any other code.
+it is a plain npm project, so you can add more `.ts` files freely and `npm install` any dependency the workflow needs (a GitHub client, a CSV parser). a human can review it like any other code.
 
-## Where projects live
+## where projects live
 
-This is convention, not CLI behavior (the [skill](/docs/guides/the-skill) teaches it), split by lifetime:
+this is convention, not CLI behavior (the [skill](/docs/guides/the-skill) teaches it), split by lifetime:
 
 ```text
 one-time dynamic workflow → $ORCR_AGENT_DATA_DIR/workflows/   (disposable, but auditable)
 reusable workflow / loop   → ~/.orcr/workflows/<name>/         (the shared library)
 ```
 
-A one-time script written by an agent for one task dies with that agent's other artifacts but stays auditable. Anything reusable, and every loop's script, goes in the shared home, because a loop is by definition reusable. Two loops can share one project; removing and recreating a loop leaves its script untouched. A loop's cwd stays the workspace, so a script living in the shared home is invoked by absolute path (`<project>/node_modules/.bin/tsx <project>/x.ts`); Node finds the project's dependencies by walking up from the script file.
+a one-time script written by an agent for one task dies with that agent's other artifacts but stays auditable. anything reusable, and every loop's script, goes in the shared home, because a loop is by definition reusable. two loops can share one project; removing and recreating a loop leaves its script untouched. a loop's cwd stays the workspace, so a script living in the shared home is invoked by absolute path (`<project>/node_modules/.bin/tsx <project>/x.ts`); Node finds the project's dependencies by walking up from the script file.
 
-## Spawn an agent
+## spawn an agent
 
 `orcr.agent.run` returns an `AgentHandle` immediately, matching `agent run` semantics:
 
@@ -64,7 +64,7 @@ a.name;               // "worker" (last segment)
 a.dataDir;            // = ORCR_AGENT_DATA_DIR (the data convention)
 ```
 
-The handle has the per-agent verbs:
+the handle has the per-agent verbs:
 
 ```ts
 await a.wait({ timeout });               // settles: turn complete | blocked | ended
@@ -75,9 +75,9 @@ await a.lastResponse();                  // → string (throws TranscriptUnavail
 await a.kill();
 ```
 
-## The one-liner: ask
+## the one-liner: ask
 
-`ask` is documented sugar for `run({ gc: "immediate" })` then `wait()` then `lastResponse()`. Naming rules are identical to `run`.
+`ask` is documented sugar for `run({ gc: "immediate" })` then `wait()` then `lastResponse()`. naming rules are identical to `run`.
 
 ```ts
 const answer: string = await orcr.ask({
@@ -85,9 +85,9 @@ const answer: string = await orcr.ask({
 });
 ```
 
-## Collections
+## collections
 
-The collection helpers take glob patterns (relative to your scope, `/` for absolute, `*`/`**` wildcards):
+the collection helpers take glob patterns (relative to your scope, `/` for absolute, `*`/`**` wildcards):
 
 ```ts
 await orcr.agent.wait("phase_1/*", { timeout });   // relative to my scope
@@ -96,11 +96,11 @@ await orcr.agent.ls({ pattern, agent, status, managed, all });
 await orcr.agent.kill("fanout/*", { force });      // no interactive confirm in the SDK
 ```
 
-The SDK never prompts. Destructive helpers behave like non-interactive CLI calls (`-y` semantics).
+the SDK never prompts. destructive helpers behave like non-interactive CLI calls (`-y` semantics).
 
-## Scopes and fan-out
+## scopes and fan-out
 
-`orcr.scope()` prefixes every relative path created or targeted inside it, using `AsyncLocalStorage` (not a process global), and scopes nest. Fan-out is plain `Promise.all` over `run`/`ask`:
+`orcr.scope()` prefixes every relative path created or targeted inside it, using `AsyncLocalStorage` (not a process global), and scopes nest. fan-out is plain `Promise.all` over `run`/`ask`:
 
 ```ts
 await orcr.scope("review", async () => {
@@ -110,11 +110,11 @@ await orcr.scope("review", async () => {
 }, { killOnThrow: true });             // barrier-kill review/** on throw
 ```
 
-This is its own topic: see [Scopes, lineage, and fan-out](/docs/guides/scopes-and-fanout).
+this is its own topic: see [scopes, lineage, and fan-out](/docs/guides/scopes-and-fanout).
 
-## Context from the environment
+## context from the environment
 
-Inside a spawned agent or a loop run, derive your context from the env contract, never hand-parse `ORCR_PATH`:
+inside a spawned agent or a loop run, derive your context from the env contract, never hand-parse `ORCR_PATH`:
 
 ```ts
 const ctx = orcr.context.fromEnv();
@@ -122,9 +122,9 @@ const ctx = orcr.context.fromEnv();
 //     loop?: { name, runId, path, dataDir } }
 ```
 
-`dataDir` is `ORCR_AGENT_DATA_DIR` for agents; loop membership is detected via `ORCR_LOOP_DATA_DIR`. See [Data and file conventions](/docs/concepts/data-and-files).
+`dataDir` is `ORCR_AGENT_DATA_DIR` for agents; loop membership is detected via `ORCR_LOOP_DATA_DIR`. see [data and file conventions](/docs/concepts/data-and-files).
 
-## Live events
+## live events
 
 `watch` is snapshot-then-subscribe, the same feed `orcr top` renders:
 
@@ -135,7 +135,7 @@ for await (const ev of sub) {
 }
 ```
 
-## Loops
+## loops
 
 ```ts
 await orcr.loop.create({
@@ -154,9 +154,9 @@ await orcr.loop.resume("burn_down");
 await orcr.loop.rm(orcr.loopNameFrom(process.env.ORCR_PATH!));   // self-terminate
 ```
 
-## Attach is terminal-mediated
+## attach is terminal-mediated
 
-The SDK does not fake an interactive method. `prepareAttach` returns the command for you to exec:
+the SDK does not fake an interactive method. `prepareAttach` returns the command for you to exec:
 
 ```ts
 const at = await orcr.agent.prepareAttach("review/worker", { takeover: false });
@@ -164,29 +164,29 @@ const at = await orcr.agent.prepareAttach("review/worker", { takeover: false });
 await at.run();   // spawns it, heartbeats the lease while it lives, releases on exit
 ```
 
-## Parity and server helpers
+## parity and server helpers
 
-The generated protocol client covers **every** socket method 1:1 (`server.*`, `api.*`, `loop.run.*`, `events.*`, `watch.open`, and the rest); the helpers above are the curated layer on top. Nothing the CLI can do is missing from the SDK.
+the generated protocol client covers **every** socket method 1:1 (`server.*`, `api.*`, `loop.run.*`, `events.*`, `watch.open`, and the rest); the helpers above are the curated layer on top. nothing the CLI can do is missing from the SDK.
 
 ```ts
 await orcr.server.status();
 await orcr.api.snapshot();
 ```
 
-## Typed errors
+## typed errors
 
-Failures become typed errors carrying `{ code, message, details }` from the protocol error enum, one class per code:
+failures become typed errors carrying `{ code, message, details }` from the protocol error enum, one class per code:
 
 ```text
 NotFound · InvalidRequest · StateConflict · Blocked · Timeout
 IntegrationMissing · TranscriptUnavailable · EnvironmentError · ServerError
 ```
 
-A force-required kill is a `StateConflict` with `err.forceRequired`. The socket version check surfaces as `EnvironmentError` (cause `unsupported_version`).
+a force-required kill is a `StateConflict` with `err.forceRequired`. the socket version check surfaces as `EnvironmentError` (cause `unsupported_version`).
 
-## Next
+## next
 
-- [Scopes, lineage, and fan-out](/docs/guides/scopes-and-fanout): compose paths correctly.
-- [Orchestration patterns](/docs/patterns): the runnable recipes.
-- [Data and file conventions](/docs/concepts/data-and-files): getting structured output from agents.
+- [scopes, lineage, and fan-out](/docs/guides/scopes-and-fanout): compose paths correctly.
+- [orchestration patterns](/docs/patterns): the runnable recipes.
+- [data and file conventions](/docs/concepts/data-and-files): getting structured output from agents.
 - [SDK reference](/docs/reference/sdk): the full typed surface.

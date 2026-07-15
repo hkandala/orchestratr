@@ -1,49 +1,49 @@
 ---
-title: Socket API and protocol reference
-description: "The wire contract for any language: transport and framing, version negotiation, the method catalogue, the event catalogue, error codes, and the herdr driver contract."
+title: socket API and protocol reference
+description: "the wire contract for any language: transport and framing, version negotiation, the method catalogue, the event catalogue, error codes, and the herdr driver contract."
 ---
 
-The orcr server exposes everything over a Unix domain socket. The socket API **is** the API; the [CLI](/docs/reference/cli) and the [SDK](/docs/reference/sdk) are thin clients of it. This page describes the wire contract so a client in any language can speak it directly.
+the orcr server exposes everything over a Unix domain socket. the socket API **is** the API; the [CLI](/docs/reference/cli) and the [SDK](/docs/reference/sdk) are thin clients of it. this page describes the wire contract so a client in any language can speak it directly.
 
-> This reference is rendered from `orcr api schema`. Run [`orcr api schema --json`](/docs/reference/cli/api) to get the machine-readable document (methods, params/results, event kinds, error codes, protocol version). The schema is the contract; these pages describe it in prose.
+> this reference is rendered from `orcr api schema`. run [`orcr api schema --json`](/docs/reference/cli/api) to get the machine-readable document (methods, params/results, event kinds, error codes, protocol version). the schema is the contract; these pages describe it in prose.
 
-## Transport
+## transport
 
-- **Socket** at `~/.orcr/orcr.sock`, created with umask 077 and mode 0600. There is no TCP port; filesystem permissions are the only authentication, so only processes running as your uid can open the socket, the same approach herdr uses.
-- **Home safety**: the server refuses to start (`environment_error`, `cause: unsafe_home`) unless `~/.orcr` is owned by the current uid and is not group- or world-writable. Socket paths are `lstat`-validated (symlinks rejected); a stale socket is unlinked only while holding the instance lock and only if it is owned by the same uid.
-- **Single instance and auto-start**: startup takes an exclusive `flock` on `~/.orcr/orcr.lock`; the server refuses to open the store without it. A client auto-starting the server first validates any existing socket with a handshake; losers of a start race wait for readiness rather than spawning a second server. Readiness is a `server.handshake` response carrying pid, protocol version, and store path.
-- **Failure modes** are distinct errors: `server_unreachable` (cannot connect), `server_start_failed` (spawn failed), `herdr_unreachable` (server fine, herdr not).
+- **socket** at `~/.orcr/orcr.sock`, created with umask 077 and mode 0600. there is no TCP port; filesystem permissions are the only authentication, so only processes running as your uid can open the socket, the same approach herdr uses.
+- **home safety**: the server refuses to start (`environment_error`, `cause: unsafe_home`) unless `~/.orcr` is owned by the current uid and is not group- or world-writable. socket paths are `lstat`-validated (symlinks rejected); a stale socket is unlinked only while holding the instance lock and only if it is owned by the same uid.
+- **single instance and auto-start**: startup takes an exclusive `flock` on `~/.orcr/orcr.lock`; the server refuses to open the store without it. a client auto-starting the server first validates any existing socket with a handshake; losers of a start race wait for readiness rather than spawning a second server. readiness is a `server.handshake` response carrying pid, protocol version, and store path.
+- **failure modes** are distinct errors: `server_unreachable` (cannot connect), `server_start_failed` (spawn failed), `herdr_unreachable` (server fine, herdr not).
 
-## Framing and envelopes
+## framing and envelopes
 
-Newline-delimited JSON envelopes over one multiplexed connection. A maximum frame size is enforced.
+newline-delimited JSON envelopes over one multiplexed connection. a maximum frame size is enforced.
 
-Requests carry the protocol version, a client-chosen id, a method, and params:
+requests carry the protocol version, a client-chosen id, a method, and params:
 
 ```json
 { "protocol": 1, "id": 7, "method": "agent.run", "params": { "path": "/review/worker", "prompt": "…" } }
 ```
 
-Responses correlate by id:
+responses correlate by id:
 
 ```json
 { "id": 7, "ok": true, "result": { } }
 { "id": 7, "ok": false, "error": { "code": "state_conflict", "message": "…", "details": { } } }
 ```
 
-Subscription events interleave with responses on the same connection:
+subscription events interleave with responses on the same connection:
 
 ```json
 { "subscription": 2, "seq": 4821, "event": { "kind": "agent.status_changed", "…": "…" } }
 ```
 
-## Version negotiation
+## version negotiation
 
-The protocol version is negotiated on the first request. A mismatch returns `environment_error` with `cause: unsupported_version`. Unknown fields are ignored, so the protocol evolves additively. The current orcr protocol version is `1` (distinct from herdr's own protocol version).
+the protocol version is negotiated on the first request. a mismatch returns `environment_error` with `cause: unsupported_version`. unknown fields are ignored, so the protocol evolves additively. the current orcr protocol version is `1` (distinct from herdr's own protocol version).
 
-## Methods
+## methods
 
-Every CLI verb maps 1:1 to a method. The full set:
+every CLI verb maps 1:1 to a method. the full set:
 
 | method | CLI verb | streaming |
 | --- | --- | --- |
@@ -74,17 +74,17 @@ Every CLI verb maps 1:1 to a method. The full set:
 | `events.subscribe` | (SDK `watch` / clients) | yes |
 | `watch.open` | `orcr top`, SDK `watch` | yes |
 
-`attach` is the one CLI verb that is not a single method: it is terminal-mediated, so the CLI calls `agent.attach.prepare` and then execs `herdr agent attach` locally. Params and result shapes for each method are in the schema and, in prose, on the matching CLI page (for example [`agent`](/docs/reference/cli/agent) and [`loop`](/docs/reference/cli/loop)).
+`attach` is the one CLI verb that is not a single method: it is terminal-mediated, so the CLI calls `agent.attach.prepare` and then execs `herdr agent attach` locally. params and result shapes for each method are in the schema and, in prose, on the matching CLI page (for example [`agent`](/docs/reference/cli/agent) and [`loop`](/docs/reference/cli/loop)).
 
-## Events and cursors
+## events and cursors
 
-Event rows are written in the same transaction as the store change they describe, so `events.seq` is a monotonic cursor with no gaps. Transitions that depend on an external side effect (a pane move or close, a process signal, a spawn) use an intent/applied pair: a `*_requested` event is persisted before the herdr or OS call, a `*_applied` event after the observed fact. Reconciliation emits repair events for anything it derives after a crash, so subscribers never see a state the recovery path skipped.
+event rows are written in the same transaction as the store change they describe, so `events.seq` is a monotonic cursor with no gaps. transitions that depend on an external side effect (a pane move or close, a process signal, a spawn) use an intent/applied pair: a `*_requested` event is persisted before the herdr or OS call, a `*_applied` event after the observed fact. reconciliation emits repair events for anything it derives after a crash, so subscribers never see a state the recovery path skipped.
 
-Subscriptions accept `since_seq`; snapshots carry `snapshot_seq`. **`watch.open` creates a snapshot plus a subscription under one server-side cursor pin**, so high churn cannot expire `snapshot_seq` before the subscribe lands (no re-snapshot livelock). Replay retention is bounded; a too-old cursor on an unpinned subscribe gets `server_error` (`cause: cursor_expired`) and re-snapshots.
+subscriptions accept `since_seq`; snapshots carry `snapshot_seq`. **`watch.open` creates a snapshot plus a subscription under one server-side cursor pin**, so high churn cannot expire `snapshot_seq` before the subscribe lands (no re-snapshot livelock). replay retention is bounded; a too-old cursor on an unpinned subscribe gets `server_error` (`cause: cursor_expired`) and re-snapshots.
 
-## Event catalogue
+## event catalogue
 
-Every payload carries enough fields to update an `api snapshot` state incrementally.
+every payload carries enough fields to update an `api snapshot` state incrementally.
 
 | group | kinds |
 | --- | --- |
@@ -95,15 +95,15 @@ Every payload carries enough fields to update an `api snapshot` state incrementa
 | loop run | `loop_run.started`, `loop_run.ended`, `loop_run.stopping` |
 | control | `server_stopping` |
 
-## Error codes
+## error codes
 
-Responses carry a stable error code and detail. The nine codes and their exit mappings are documented in full on the [error codes reference](/docs/reference/errors); the schema exposes them under `ERROR_CODES`.
+responses carry a stable error code and detail. the nine codes and their exit mappings are documented in full on the [error codes reference](/docs/reference/errors); the schema exposes them under `ERROR_CODES`.
 
-## The herdr driver contract
+## the herdr driver contract
 
-orcr's server speaks herdr's own socket API directly (JSON protocol, versioned, schema published by `herdr api schema`; sockets are per-session, discovered from `herdr session list --json`). The driver's operation set is pinned to named herdr methods with fixed shapes in an in-code contract table, whose methods and result types are checked against the installed herdr's live `api schema`: version drift fails the conformance check.
+orcr's server speaks herdr's own socket API directly (JSON protocol, versioned, schema published by `herdr api schema`; sockets are per-session, discovered from `herdr session list --json`). the driver's operation set is pinned to named herdr methods with fixed shapes in an in-code contract table, whose methods and result types are checked against the installed herdr's live `api schema`: version drift fails the conformance check.
 
-The pinned operations:
+the pinned operations:
 
 - `agent.start {name, argv, cwd?, env?, workspace_id?, focus:false}`: herdr creates the tab and pane; the returned workspace/tab/pane/terminal ids are authoritative. orcr does not pre-create tabs.
 - `pane.move` (destination forms for park/un-park), `pane.close`.
@@ -113,4 +113,4 @@ The pinned operations:
 - session enumeration: sessions are per-socket; the driver discovers them via `herdr session list --json` and fans out over each session's socket for cross-session reads.
 - notification, and herdr integration-state reads (which method reports whether a provider's integration is installed).
 
-A minimum herdr protocol version is declared and handshake-checked. See [providers and integrations](/docs/concepts/providers) for why a provider needs both a herdr integration and an orcr integration.
+a minimum herdr protocol version is declared and handshake-checked. see [providers and integrations](/docs/concepts/providers) for why a provider needs both a herdr integration and an orcr integration.

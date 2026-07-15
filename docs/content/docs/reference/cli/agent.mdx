@@ -1,9 +1,9 @@
 ---
 title: orcr agent
-description: Every orcr agent command (run, ask, send, logs, wait, attach, kill, ls) with its flags, behavior, and JSON result shape.
+description: every orcr agent command (run, ask, send, logs, wait, attach, kill, ls) with its flags, behavior, and JSON result shape.
 ---
 
-`orcr agent` spawns, messages, awaits, reads, and stops agents. Paths and patterns follow the [path grammar](/docs/reference/path-grammar) throughout: relative to the caller's scope, leading `/` for absolute, `*` and `**` as the only wildcards (bulk verbs only), quote patterns in the shell.
+`orcr agent` spawns, messages, awaits, reads, and stops agents. paths and patterns follow the [path grammar](/docs/reference/path-grammar) throughout: relative to the caller's scope, leading `/` for absolute, `*` and `**` as the only wildcards (bulk verbs only), quote patterns in the shell.
 
 ```text
 orcr agent run    (--name <name> | --path <path>) [-a <provider>] [-p <prompt>]
@@ -20,29 +20,29 @@ orcr agent ls     [<pattern|uuid>] [-a <provider>] [--status <s>]
                   [--managed|--unmanaged] [--all] [--json]
 ```
 
-## Shared rules
+## shared rules
 
-**Naming is mandatory** on `run` and `ask`: pass exactly one of `--name <name>` (the agent lands directly in your scope; the value is its name) or `--path <path>` (the last segment is the name, the rest is where it lives; relative to your scope, `/` for absolute). `{rand}` expands to 5 random lowercase alphanumeric characters anywhere in the value. There are no auto-generated agent names.
+**naming is mandatory** on `run` and `ask`: pass exactly one of `--name <name>` (the agent lands directly in your scope; the value is its name) or `--path <path>` (the last segment is the name, the rest is where it lives; relative to your scope, `/` for absolute). `{rand}` expands to 5 random lowercase alphanumeric characters anywhere in the value. there are no auto-generated agent names.
 
-**Prompts**: `run` and `ask` take `-p/--prompt <text>`; `send` takes the prompt as its positional argument (and also accepts `-p`). In all of them, `-p -` reads the prompt from stdin, which is the long-prompt escape hatch; there is no file flag.
+**prompts**: `run` and `ask` take `-p/--prompt <text>`; `send` takes the prompt as its positional argument (and also accepts `-p`). in all of them, `-p -` reads the prompt from stdin, which is the long-prompt escape hatch; there is no file flag.
 
-**Provider**: `-a <provider>` is optional on `run`, `ask`, and `ls`. It falls back to `defaults.agent` in [config](/docs/reference/configuration) (default `claude`); precedence is CLI over config. The provider must have both integration layers installed or `run` fails with `integration_missing` (see [providers and integrations](/docs/concepts/providers)).
+**provider**: `-a <provider>` is optional on `run`, `ask`, and `ls`. it falls back to `defaults.agent` in [config](/docs/reference/configuration) (default `claude`); precedence is CLI over config. the provider must have both integration layers installed or `run` fails with `integration_missing` (see [providers and integrations](/docs/concepts/providers)).
 
 ## run
 
-Async, always. `run` validates, enqueues, prints `<path> <uuid>` on one stdout line, and returns. The server processes the queue and manages the whole lifecycle. There is no blocking flag; request/response is `run` then `wait` then `logs --last-response` (one call in the SDK: `ask()`).
+async, always. `run` validates, enqueues, prints `<path> <uuid>` on one stdout line, and returns. the server processes the queue and manages the whole lifecycle. there is no blocking flag; request/response is `run` then `wait` then `logs --last-response` (one call in the SDK: `ask()`).
 
 ```sh
 orcr agent run --path refactor/reviewer -a codex -p "Review the diff on this branch."
 # → refactor/reviewer 018f3c…-…
 ```
 
-- `--gc auto|immediate|never` governs pane lifetime only, never store history. `auto` (default) parks then reaps on idle; `immediate` closes the pane after the first turn's final response is captured; `never` keeps it alive until an explicit kill. See [lifecycle and GC](/docs/concepts/lifecycle).
+- `--gc auto|immediate|never` governs pane lifetime only, never store history. `auto` (default) parks then reaps on idle; `immediate` closes the pane after the first turn's final response is captured; `never` keeps it alive until an explicit kill. see [lifecycle and GC](/docs/concepts/lifecycle).
 - `--model <m>` and `--effort <e>` map to the provider's model / reasoning-effort flags (empty means the provider default).
 - `--cwd <dir>` sets the pane's working directory (default: the caller's cwd).
-- `--timeout <dur>` kills the agent with `exit_reason: timeout` when it expires. There is no default timeout; without this flag an agent never times out.
+- `--timeout <dur>` kills the agent with `exit_reason: timeout` when it expires. there is no default timeout; without this flag an agent never times out.
 
-On a TTY, `run` also prints a stderr hint with the follow-up commands (`wait`, `logs --last-response`, `attach`).
+on a TTY, `run` also prints a stderr hint with the follow-up commands (`wait`, `logs --last-response`, `attach`).
 
 JSON result:
 
@@ -62,31 +62,31 @@ JSON result:
 
 ## ask
 
-The request/response one-liner, as a real verb. It is documented sugar for `run --gc immediate` then `wait` then `logs --last-response`, and nothing more: it spawns, blocks through the queue and the first completion, prints the final response on stdout, and cleans up the pane.
+the request/response one-liner, as a real verb. it is documented sugar for `run --gc immediate` then `wait` then `logs --last-response`, and nothing more: it spawns, blocks through the queue and the first completion, prints the final response on stdout, and cleans up the pane.
 
 ```sh
 answer=$(orcr agent ask --name quick_check -a claude -p "Is this regex safe? …")
 ```
 
-Naming rules are identical to `run`, so parallel asks need distinct names (`verify/check_1`, `verify/check_2`). A blocked agent exits 4; no identifiable response is `transcript_unavailable` (exit 1).
+naming rules are identical to `run`, so parallel asks need distinct names (`verify/check_1`, `verify/check_2`). a blocked agent exits 4; no identifiable response is `transcript_unavailable` (exit 1).
 
-JSON result: `{uuid, path, response:{text, final}}`. Without `--json`, only the response text goes to stdout.
+JSON result: `{uuid, path, response:{text, final}}`. without `--json`, only the response text goes to stdout.
 
 ## send
 
-Exact target only. `send` types the prompt into the agent's TUI and submits it, whatever status the agent is in; provider TUIs queue mid-turn input natively. It waits for delivery to be confirmed on the pane and returns success or failure. It confirms terminal delivery, not provider acceptance (see [status and completion](/docs/concepts/status-and-completion)).
+exact target only. `send` types the prompt into the agent's TUI and submits it, whatever status the agent is in; provider TUIs queue mid-turn input natively. it waits for delivery to be confirmed on the pane and returns success or failure. it confirms terminal delivery, not provider acceptance (see [status and completion](/docs/concepts/status-and-completion)).
 
 ```sh
 orcr agent send refactor/reviewer "Also check error handling in parser.rs."
 ```
 
-Sending to a parked agent un-parks it atomically, before delivery, and resets its GC clocks. An ended target returns `not_found` (exit 6).
+sending to a parked agent un-parks it atomically, before delivery, and resets its GC clocks. an ended target returns `not_found` (exit 6).
 
 JSON result: `{uuid, path, delivered_while:"working|idle|blocked|parked", input_seq}`. `delivered_while` is the agent's status at the moment of delivery.
 
 ## logs
 
-Exact target. A bare path resolves to the active agent first, else the most recent ended one; history is addressed by uuid (from `ls --all`). `logs` reads the provider's native transcript through the integration's adapter (ordered turns, tool calls, token counts where available). orcr keeps no response copies.
+exact target. a bare path resolves to the active agent first, else the most recent ended one; history is addressed by uuid (from `ls --all`). `logs` reads the provider's native transcript through the integration's adapter (ordered turns, tool calls, token counts where available). orcr keeps no response copies.
 
 ```sh
 orcr agent logs refactor/reviewer --tail 50 --follow
@@ -95,21 +95,21 @@ orcr agent logs refactor/reviewer --last-response
 
 - `--tail <n>` shows the last `n` entries.
 - `--follow` keeps streaming after that. `--tail` and `--follow` compose, the same as `tail -n` / `tail -f`.
-- `--last-response` prints only the final assistant message. It fails loudly rather than guessing: exit 1 `transcript_unavailable` when no final response is identifiable, exit 2 `integration_missing` when the provider has no orcr integration.
+- `--last-response` prints only the final assistant message. it fails loudly rather than guessing: exit 1 `transcript_unavailable` when no final response is identifiable, exit 2 `integration_missing` when the provider has no orcr integration.
 
-If a provider later rotates or deletes its transcript files, historical `--last-response` fails with `transcript_unavailable` rather than returning a stale copy.
+if a provider later rotates or deletes its transcript files, historical `--last-response` fails with `transcript_unavailable` rather than returning a stale copy.
 
 JSON result: `{uuid, path, resolved:"active|latest_ended", entries:[…]}`, or with `--last-response`, `{uuid, path, resolved, response:{text, final}}`.
 
 ## wait
 
-Targets are patterns and/or uuids. Membership is the set of active agents matching any target, snapshotted at invocation; ended rows are never wait targets, and no match at all exits 6. There is no status flag. Waiting has one meaning: block until every target settles.
+targets are patterns and/or uuids. membership is the set of active agents matching any target, snapshotted at invocation; ended rows are never wait targets, and no match at all exits 6. there is no status flag. waiting has one meaning: block until every target settles.
 
 ```sh
 orcr agent wait "refactor/**" --timeout 20m
 ```
 
-A target settles at one of these points:
+a target settles at one of these points:
 
 | settle point | outcome |
 | --- | --- |
@@ -118,9 +118,9 @@ A target settles at one of these points:
 | `blocked` | needs a human (exit 4) |
 | `ended` any other way, or `lost` | cut short / never ran (exit 5) |
 
-A queued agent is waited through promotion and its first turn. Settle states can un-settle (a blocked agent gets a `send`, a parked one is revived, external input starts a new turn), so a multi-target wait returns only when all snapshotted targets are simultaneously settled at one event sequence (the `decision_seq`, included in the JSON). A target that un-settles discards its earlier reason and is waited on again, so the result is the actual state at decision time, not a stale reading.
+a queued agent is waited through promotion and its first turn. settle states can un-settle (a blocked agent gets a `send`, a parked one is revived, external input starts a new turn), so a multi-target wait returns only when all snapshotted targets are simultaneously settled at one event sequence (the `decision_seq`, included in the JSON). a target that un-settles discards its earlier reason and is waited on again, so the result is the actual state at decision time, not a stale reading.
 
-The human-readable result is one line per agent, `<path> <reason>`, on every outcome:
+the human-readable result is one line per agent, `<path> <reason>`, on every outcome:
 
 ```text
 refactor/phase_1/file_1  turn_complete
@@ -128,7 +128,7 @@ refactor/phase_1/review  blocked:question
 refactor/phase_1/file_2  wait_timeout
 ```
 
-The reason tokens map exhaustively from `status × exit_reason`; the full table with exit contributions is in the [status model reference](/docs/reference/status-model). Exit codes: `0` every target settled successfully, `4` any target blocked, `5` any target dead, `3` the wait's `--timeout` expired, `6` no target matched.
+the reason tokens map exhaustively from `status × exit_reason`; the full table with exit contributions is in the [status model reference](/docs/reference/status-model). exit codes: `0` every target settled successfully, `4` any target blocked, `5` any target dead, `3` the wait's `--timeout` expired, `6` no target matched.
 
 `wait` is idempotent: targets already settled report immediately, so running it again returns the same listing at once.
 
@@ -145,30 +145,30 @@ JSON result:
 }
 ```
 
-`next` is structured from a stable enum (`logs_last_response`, `attach`, `logs_history`, `none`) and rendered as a command string by the CLI. On a wait `--timeout`, the envelope stays `ok:true` with `timed_out:true` and exit 3.
+`next` is structured from a stable enum (`logs_last_response`, `attach`, `logs_history`, `none`) and rendered as a command string by the CLI. on a wait `--timeout`, the envelope stays `ok:true` with `timed_out:true` and exit 3.
 
 ## attach
 
-Exact target. This is the one terminal-mediated verb. The CLI calls `agent.attach.prepare`, which validates the target, inserts the attach lease first, then reads the pane locator under the same transaction (so GC can never move or reap between resolution and lease), and returns the exec command. The CLI then execs `herdr agent attach` locally, heartbeating the lease while it runs and releasing it on exit. If the pane moved between prepare and attach, the CLI refreshes once by `terminal_id`.
+exact target. this is the one terminal-mediated verb. the CLI calls `agent.attach.prepare`, which validates the target, inserts the attach lease first, then reads the pane locator under the same transaction (so GC can never move or reap between resolution and lease), and returns the exec command. the CLI then execs `herdr agent attach` locally, heartbeating the lease while it runs and releasing it on exit. if the pane moved between prepare and attach, the CLI refreshes once by `terminal_id`.
 
 ```sh
 orcr agent attach refactor/reviewer            # observe
 orcr agent attach refactor/reviewer --takeover  # claim input
 ```
 
-Observe is the default; `--takeover` claims input (typed input creates a synthetic external turn; see [status and completion](/docs/concepts/status-and-completion)). Queued or ended targets return `state_conflict`. `attach` has no `--json`; the SDK exposes `prepareAttach()`, which returns the command rather than a fake interactive method.
+observe is the default; `--takeover` claims input (typed input creates a synthetic external turn; see [status and completion](/docs/concepts/status-and-completion)). queued or ended targets return `state_conflict`. `attach` has no `--json`; the SDK exposes `prepareAttach()`, which returns the command rather than a fake interactive method.
 
 ## kill
 
-Targets are patterns and/or uuids. On a TTY, `kill` confirms by default: it shows every matched agent as a tree with a count, then asks. `-y` skips the prompt; non-interactive callers (no TTY, or `--json`) proceed.
+targets are patterns and/or uuids. on a TTY, `kill` confirms by default: it shows every matched agent as a tree with a count, then asks. `-y` skips the prompt; non-interactive callers (no TTY, or `--json`) proceed.
 
 ```sh
 orcr agent kill "refactor/**" -y
 ```
 
-A matched managed agent gets the graceful per-integration shutdown recipe (`shutdown_grace_ms`), then its pane is closed so herdr can clear empty tabs and workspaces. Its status ends `ended` (`exit_reason: killed`); history remains. Queued agents are dequeued (`canceled`); `starting` agents are canceled via the `cancel_requested` interlock. Unmanaged targets require `--force` (killing a pane orcr does not own).
+a matched managed agent gets the graceful per-integration shutdown recipe (`shutdown_grace_ms`), then its pane is closed so herdr can clear empty tabs and workspaces. its status ends `ended` (`exit_reason: killed`); history remains. queued agents are dequeued (`canceled`); `starting` agents are canceled via the `cancel_requested` interlock. unmanaged targets require `--force` (killing a pane orcr does not own).
 
-Result classification:
+result classification:
 
 - no matched targets → exit 6.
 - matched but every target skipped (already ended, or needs `--force`) → exit 7.
@@ -178,7 +178,7 @@ JSON result: `{killed:[{uuid,path}], skipped:[{uuid,path,reason:"ended|force_req
 
 ## ls
 
-Active agents (managed and unmanaged) as a flat table sorted by path: ancestors before descendants, grouped by level-1 segment, so it reads in tree order and stays greppable. The indented tree view is [`orcr top`](/docs/reference/cli/top).
+active agents (managed and unmanaged) as a flat table sorted by path: ancestors before descendants, grouped by level-1 segment, so it reads in tree order and stays greppable. the indented tree view is [`orcr top`](/docs/reference/cli/top).
 
 ```sh
 orcr agent ls --status blocked          # who needs a human
@@ -186,7 +186,7 @@ orcr agent ls "review/**" --managed --json
 orcr agent ls --all                     # include ended history
 ```
 
-Filters: a pattern or uuid, `-a <provider>`, `--status <s>`, `--managed` / `--unmanaged`, `--all` (include ended agents: full history, including every past loop run; reused paths are disambiguated by uuid and `created_at`). TTY columns are `PATH UUID STATUS AGENT AGE` (uuid shown as a short prefix).
+filters: a pattern or uuid, `-a <provider>`, `--status <s>`, `--managed` / `--unmanaged`, `--all` (include ended agents: full history, including every past loop run; reused paths are disambiguated by uuid and `created_at`). TTY columns are `PATH UUID STATUS AGENT AGE` (uuid shown as a short prefix).
 
 JSON rows are flat:
 
@@ -199,4 +199,4 @@ JSON rows are flat:
 }
 ```
 
-Optional fields appear only when they apply. See the [status model reference](/docs/reference/status-model) for the `status` and `blocked_kind` vocabularies.
+optional fields appear only when they apply. see the [status model reference](/docs/reference/status-model) for the `status` and `blocked_kind` vocabularies.

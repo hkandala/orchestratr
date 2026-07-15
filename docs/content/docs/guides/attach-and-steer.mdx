@@ -1,75 +1,75 @@
 ---
-title: Steer and attach to a running agent
-description: Watch a live agent, take over its input, nudge it mid-turn, and revive a parked one.
+title: steer and attach to a running agent
+description: watch a live agent, take over its input, nudge it mid-turn, and revive a parked one.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Because every agent runs as a real interactive TUI in a herdr pane, you can watch it, type into it, and correct it while it works. Two verbs cover this: `attach` streams the pane into your terminal, and `send` delivers a follow-up prompt without attaching.
+because every agent runs as a real interactive TUI in a herdr pane, you can watch it, type into it, and correct it while it works. two verbs cover this: `attach` streams the pane into your terminal, and `send` delivers a follow-up prompt without attaching.
 
 ## send: nudge without attaching
 
-`send` types a prompt into an agent's TUI and submits it, whatever status the agent is in. It targets one active agent by exact path or uuid (no wildcards).
+`send` types a prompt into an agent's TUI and submits it, whatever status the agent is in. it targets one active agent by exact path or uuid (no wildcards).
 
 ```sh
 orcr agent send reviewer "Also check the refresh-token path."
 orcr agent send reviewer -p -   # long prompt from stdin
 ```
 
-Provider TUIs queue mid-turn input natively, so a `send` to a `working` agent is accepted and processed after the current turn. The verb waits for the pane to confirm delivery, then returns:
+provider TUIs queue mid-turn input natively, so a `send` to a `working` agent is accepted and processed after the current turn. the verb waits for the pane to confirm delivery, then returns:
 
 ```json
 { "uuid": "...", "path": "reviewer", "delivered_while": "working", "input_seq": 3 }
 ```
 
-### Delivery is not acceptance
+### delivery is not acceptance
 
-orcr confirms **terminal delivery**, not provider acceptance. The integration tests send-while-working per provider, but a TUI that buffers input without submitting, or opens a modal, surfaces as the turn never completing rather than a silent loss. You see that in `orcr top` and in a `wait` that does not settle, so watch the agent after a mid-turn `send` if the provider is one you have not exercised this way.
+orcr confirms **terminal delivery**, not provider acceptance. the integration tests send-while-working per provider, but a TUI that buffers input without submitting, or opens a modal, surfaces as the turn never completing rather than a silent loss. you see that in `orcr top` and in a `wait` that does not settle, so watch the agent after a mid-turn `send` if the provider is one you have not exercised this way.
 
-Each delivered input increments the agent's `input_seq` before delivery, and `delivered_while` is the status at that moment (`working`, `idle`, `blocked`, or `parked`). This is why an old idle can never satisfy a newer `send`: completion is tracked per input epoch, so the agent's public status only flips back to `idle` once the turn started by *this* input finishes. See [Status model and completion](/docs/concepts/status-and-completion).
+each delivered input increments the agent's `input_seq` before delivery, and `delivered_while` is the status at that moment (`working`, `idle`, `blocked`, or `parked`). this is why an old idle can never satisfy a newer `send`: completion is tracked per input epoch, so the agent's public status only flips back to `idle` once the turn started by *this* input finishes. see [status model and completion](/docs/concepts/status-and-completion).
 
-An ended target fails with `not_found` (exit 6).
+an ended target fails with `not_found` (exit 6).
 
-## Reviving a parked agent
+## reviving a parked agent
 
-Under `--gc auto`, an agent that has been idle past `timings.idle_after` is parked: its pane moves to the `idle` workspace (status `parked`), still alive and resumable. A `send` un-parks it atomically before delivering: the server cancels any pending reap, completes or rolls back a half-done move by its move token, moves the pane back to the agent's home workspace (recreating the tab if the original is gone), confirms the location, sets status to `idle`, and only then delivers your input against the live `terminal_id`.
+under `--gc auto`, an agent that has been idle past `timings.idle_after` is parked: its pane moves to the `idle` workspace (status `parked`), still alive and resumable. a `send` un-parks it atomically before delivering: the server cancels any pending reap, completes or rolls back a half-done move by its move token, moves the pane back to the agent's home workspace (recreating the tab if the original is gone), confirms the location, sets status to `idle`, and only then delivers your input against the live `terminal_id`.
 
 ```sh
 orcr agent send worker "Here is the next batch of files."   # revives it if parked
 ```
 
-Sending to a parked agent revives it automatically; you pass no special flag, and the agent returns to its home workspace with its GC clocks reset. Parking is described in [Agent lifecycle and GC](/docs/concepts/lifecycle).
+sending to a parked agent revives it automatically; you pass no special flag, and the agent returns to its home workspace with its GC clocks reset. parking is described in [agent lifecycle and GC](/docs/concepts/lifecycle).
 
 ## attach: stream the pane into your terminal
 
-`attach` targets one active agent by exact path or uuid. By default you observe; `--takeover` claims input so you can drive the TUI yourself.
+`attach` targets one active agent by exact path or uuid. by default you observe; `--takeover` claims input so you can drive the TUI yourself.
 
 ```sh
 orcr agent attach reviewer              # observe
 orcr agent attach reviewer --takeover   # take over input
 ```
 
-Attach is the one terminal-mediated verb, the documented exception to the rule that every CLI verb maps 1:1 to a socket method. Under the hood the CLI calls `agent.attach.prepare`, which validates the target, **inserts the attach lease first**, then reads the current pane locator under the same transaction, and returns an exec command. The CLI then execs `herdr agent attach` locally, heartbeats the lease while it runs, and releases it on exit. If the CLI dies abruptly, the lease expires by heartbeat (`timings.attach_lease_ttl`, default 30s). If the pane moved between prepare and attach, the CLI refreshes once by `terminal_id`.
+attach is the one terminal-mediated verb, the documented exception to the rule that every CLI verb maps 1:1 to a socket method. under the hood the CLI calls `agent.attach.prepare`, which validates the target, **inserts the attach lease first**, then reads the current pane locator under the same transaction, and returns an exec command. the CLI then execs `herdr agent attach` locally, heartbeats the lease while it runs, and releases it on exit. if the CLI dies abruptly, the lease expires by heartbeat (`timings.attach_lease_ttl`, default 30s). if the pane moved between prepare and attach, the CLI refreshes once by `terminal_id`.
 
-Queued or ended targets fail with `state_conflict`: there is no pane to attach to yet, or any more.
+queued or ended targets fail with `state_conflict`: there is no pane to attach to yet, or any more.
 
-### Attach leases hold off GC
+### attach leases hold off GC
 
-An attach lease is a persisted row (agent, mode, connection, started_at, heartbeat). GC never moves or reaps a pane with a fresh lease, and because the lease is persisted, the guard survives a server restart. Reading the lease *before* the pane locator, in one transaction, is what closes the race: GC cannot move or reap the agent between the moment attach resolves it and the moment the lease exists. Leases are cleaned up on socket disconnect or heartbeat expiry.
+an attach lease is a persisted row (agent, mode, connection, started_at, heartbeat). GC never moves or reaps a pane with a fresh lease, and because the lease is persisted, the guard survives a server restart. reading the lease *before* the pane locator, in one transaction, is what closes the race: GC cannot move or reap the agent between the moment attach resolves it and the moment the lease exists. leases are cleaned up on socket disconnect or heartbeat expiry.
 
 <Callout type="info">
-Typing into an agent through `attach --takeover` (or directly in the herdr UI) is input orcr did not deliver. orcr cannot see the keystrokes, but it sees the consequence (a `working` transition with no pending orcr delivery) and records a synthetic external turn (`turns.source = external`) so completion tracking, `wait`, and GC clocks stay correct.
+typing into an agent through `attach --takeover` (or directly in the herdr UI) is input orcr did not deliver. orcr cannot see the keystrokes, but it sees the consequence (a `working` transition with no pending orcr delivery) and records a synthetic external turn (`turns.source = external`) so completion tracking, `wait`, and GC clocks stay correct.
 </Callout>
 
-## From the SDK
+## from the SDK
 
-The SDK does not fake an interactive method. `send` and revival work exactly as in the CLI:
+the SDK does not fake an interactive method. `send` and revival work exactly as in the CLI:
 
 ```ts
 await handle.send("Also check the refresh-token path.");
 ```
 
-For attach, the SDK exposes `prepareAttach()`, which returns the command for you to exec yourself:
+for attach, the SDK exposes `prepareAttach()`, which returns the command for you to exec yourself:
 
 ```ts
 const at = await orcr.agent.prepareAttach("review/worker", { takeover: false });
@@ -77,10 +77,10 @@ const at = await orcr.agent.prepareAttach("review/worker", { takeover: false });
 await at.run();   // spawns the command, heartbeats the lease while it lives, releases on exit
 ```
 
-You can also drive it manually with the returned `command` plus `at.heartbeat()` and `at.release()`. See [Write workflows with the SDK](/docs/guides/sdk-workflows).
+you can also drive it manually with the returned `command` plus `at.heartbeat()` and `at.release()`. see [write workflows with the SDK](/docs/guides/sdk-workflows).
 
-## Next
+## next
 
-- [Run and manage agents](/docs/guides/run-agents): the rest of the `orcr agent` verbs.
-- [Agent lifecycle and GC](/docs/concepts/lifecycle): parking, reaping, and revival in detail.
-- [Monitor with orcr top](/docs/guides/monitor-with-top): watch the tree while you steer.
+- [run and manage agents](/docs/guides/run-agents): the rest of the `orcr agent` verbs.
+- [agent lifecycle and GC](/docs/concepts/lifecycle): parking, reaping, and revival in detail.
+- [monitor with orcr top](/docs/guides/monitor-with-top): watch the tree while you steer.

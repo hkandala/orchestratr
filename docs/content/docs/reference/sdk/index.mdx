@@ -1,22 +1,22 @@
 ---
 title: SDK reference
-description: "The typed @orchestratr/sdk surface: the generated protocol client, the orcr.* convenience helpers, handles, scopes, watch, context, and the one error class per error code."
+description: "the typed @orchestratr/sdk surface: the generated protocol client, the orcr.* convenience helpers, handles, scopes, watch, context, and the one error class per error code."
 ---
 
-`@orchestratr/sdk` is a typed client of the [socket API](/docs/reference/socket-api). It has two layers:
+`@orchestratr/sdk` is a typed client of the [socket API](/docs/reference/socket-api). it has two layers:
 
-1. A **generated protocol client** covering every socket method 1:1. Everything the CLI can do, the SDK can do.
-2. **Convenience helpers** on top (`orcr.*`), the curated surface most workflows use. Each helper documents exactly which protocol calls it makes; anything the SDK does, a shell script can do with `orcr … --json`.
+1. a **generated protocol client** covering every socket method 1:1. everything the CLI can do, the SDK can do.
+2. **convenience helpers** on top (`orcr.*`), the curated surface most workflows use. each helper documents exactly which protocol calls it makes; anything the SDK does, a shell script can do with `orcr … --json`.
 
-> This page is generated via TypeDoc from `sdk/ts/src/` (`client.ts`, `generated.ts`, `scope.ts`, `context.ts`, `errors.ts`). The signatures below are the public surface; regenerate to pick up changes.
+> this page is generated via TypeDoc from `sdk/ts/src/` (`client.ts`, `generated.ts`, `scope.ts`, `context.ts`, `errors.ts`). the signatures below are the public surface; regenerate to pick up changes.
 
-Install a project with [`orcr scaffold`](/docs/reference/cli/scaffold), which pins the SDK to the CLI version. Import the default singleton:
+install a project with [`orcr scaffold`](/docs/reference/cli/scaffold), which pins the SDK to the CLI version. import the default singleton:
 
 ```ts
 import { orcr } from "@orchestratr/sdk";
 ```
 
-Paths are resolved client-side (the same grammar as the CLI) and sent as absolute selectors, so composed effective paths match the CLI exactly. The SDK auto-starts the server on first use and forwards the caller's `ORCR_ID`/`ORCR_PATH` from the environment for lineage.
+paths are resolved client-side (the same grammar as the CLI) and sent as absolute selectors, so composed effective paths match the CLI exactly. the SDK auto-starts the server on first use and forwards the caller's `ORCR_ID`/`ORCR_PATH` from the environment for lineage.
 
 ## orcr.agent
 
@@ -26,7 +26,7 @@ Paths are resolved client-side (the same grammar as the CLI) and sent as absolut
 orcr.agent.run(opts: RunOptions): Promise<AgentHandle>
 ```
 
-`RunOptions` is `{ agent?, prompt, name?, path?, model?, effort?, cwd?, timeout?, gc? }`. Exactly one of `name` or `path` is required (naming is mandatory; passing both or neither throws `InvalidRequest`). `gc` is `"auto" | "immediate" | "never"`. Returns an `AgentHandle` immediately (this is `agent run` semantics; the agent runs in the background). Calls `agent.run`.
+`RunOptions` is `{ agent?, prompt, name?, path?, model?, effort?, cwd?, timeout?, gc? }`. exactly one of `name` or `path` is required (naming is mandatory; passing both or neither throws `InvalidRequest`). `gc` is `"auto" | "immediate" | "never"`. returns an `AgentHandle` immediately (this is `agent run` semantics; the agent runs in the background). calls `agent.run`.
 
 ### wait, ls, kill (collections)
 
@@ -36,7 +36,7 @@ orcr.agent.ls(opts?: LsOptions): Promise<AgentRow[]>
 orcr.agent.kill(pattern?: string, opts?: { force?: boolean }): Promise<AgentKillResult>
 ```
 
-Collections take patterns relative to the current scope (`/` for absolute). A missing pattern expands to `<scope>/**` inside a scope, and throws `InvalidRequest` at root (pass an explicit `"**"` if you truly mean every active agent). `LsOptions` is `{ pattern?, agent?, status?, managed?, unmanaged?, all? }`. `kill` never prompts (it behaves like a `-y` CLI call). These call `agent.wait`, `agent.ls`, and `agent.kill`.
+collections take patterns relative to the current scope (`/` for absolute). a missing pattern expands to `<scope>/**` inside a scope, and throws `InvalidRequest` at root (pass an explicit `"**"` if you truly mean every active agent). `LsOptions` is `{ pattern?, agent?, status?, managed?, unmanaged?, all? }`. `kill` never prompts (it behaves like a `-y` CLI call). these call `agent.wait`, `agent.ls`, and `agent.kill`.
 
 ### prepareAttach
 
@@ -44,11 +44,11 @@ Collections take patterns relative to the current scope (`/` for absolute). A mi
 orcr.agent.prepareAttach(target: string, opts?: { takeover?: boolean }): Promise<AttachHandle>
 ```
 
-Returns an `AttachHandle`; attach is terminal-mediated, so there is no fake interactive method. Calls `agent.attach.prepare`.
+returns an `AttachHandle`; attach is terminal-mediated, so there is no fake interactive method. calls `agent.attach.prepare`.
 
 ## AgentHandle
 
-The return of `orcr.agent.run()`. Properties: `uuid`, `path`, `name` (the last segment), `dataDir` (the agent's data dir, equal to `ORCR_AGENT_DATA_DIR`).
+the return of `orcr.agent.run()`. properties: `uuid`, `path`, `name` (the last segment), `dataDir` (the agent's data dir, equal to `ORCR_AGENT_DATA_DIR`).
 
 ```ts
 handle.wait(opts?: { timeout?: string }): Promise<AgentWaitResult>   // agent.wait, targets by uuid
@@ -59,11 +59,11 @@ handle.lastResponse(): Promise<string>                               // agent.lo
 handle.kill(opts?: { force?: boolean }): Promise<AgentKillResult>    // agent.kill
 ```
 
-The handle targets by uuid, which is unambiguous across generations of a reused path. `followLogs` is a separate call from `logs` (streaming vs snapshot); it yields entries as they appear and stops once the agent has ended and its transcript is drained.
+the handle targets by uuid, which is unambiguous across generations of a reused path. `followLogs` is a separate call from `logs` (streaming vs snapshot); it yields entries as they appear and stops once the agent has ended and its transcript is drained.
 
 ## AttachHandle
 
-The return of `prepareAttach`. Properties: `command` (the exec argv), `leaseId`, `uuid`, `path`, `ttlMs`.
+the return of `prepareAttach`. properties: `command` (the exec argv), `leaseId`, `uuid`, `path`, `ttlMs`.
 
 ```ts
 attach.run(): Promise<number>       // spawn `command` (inherit stdio), heartbeat the lease, release on exit
@@ -71,7 +71,7 @@ attach.heartbeat(): Promise<void>   // agent.attach.heartbeat
 attach.release(): Promise<void>     // agent.attach.release
 ```
 
-`run()` execs the attach command for you, heartbeats the lease while the child lives so GC will not park or reap the agent mid-attach, and releases on exit. Use the manual `command` plus `heartbeat`/`release` primitives when driving the child yourself.
+`run()` execs the attach command for you, heartbeats the lease while the child lives so GC will not park or reap the agent mid-attach, and releases on exit. use the manual `command` plus `heartbeat`/`release` primitives when driving the child yourself.
 
 ## orcr.ask
 
@@ -79,7 +79,7 @@ attach.release(): Promise<void>     // agent.attach.release
 orcr.ask(opts: SpawnOptions): Promise<string>
 ```
 
-The one-liner: documented sugar for `agent.run({ …, gc: "immediate" })` → `wait` → `lastResponse`. Naming rules are identical to `run` (`name` or `path` required). Returns the response text, or throws `TranscriptUnavailable` if there is no identifiable response. Calls `agent.ask`.
+the one-liner: documented sugar for `agent.run({ …, gc: "immediate" })` → `wait` → `lastResponse`. naming rules are identical to `run` (`name` or `path` required). returns the response text, or throws `TranscriptUnavailable` if there is no identifiable response. calls `agent.ask`.
 
 ## orcr.scope
 
@@ -87,7 +87,7 @@ The one-liner: documented sugar for `agent.run({ …, gc: "immediate" })` → `w
 orcr.scope<T>(scopePath: string, fn: (scope: string) => Promise<T>, opts?: { killOnThrow?: boolean }): Promise<T>
 ```
 
-Runs `fn` in a new path scope. Every relative path created or targeted inside `fn` (including collection patterns and no-arg collection sugar) resolves under `scopePath`. Scopes are backed by `AsyncLocalStorage`, not a process global, so concurrent scopes (two fan-outs) never leak into each other. Scopes nest (prefixes stack); a leading `/` resets to absolute. The base scope comes from `context.fromEnv()`, so the SDK running inside an agent or loop-run composes on top of its own path.
+runs `fn` in a new path scope. every relative path created or targeted inside `fn` (including collection patterns and no-arg collection sugar) resolves under `scopePath`. scopes are backed by `AsyncLocalStorage`, not a process global, so concurrent scopes (two fan-outs) never leak into each other. scopes nest (prefixes stack); a leading `/` resets to absolute. the base scope comes from `context.fromEnv()`, so the SDK running inside an agent or loop-run composes on top of its own path.
 
 `{ killOnThrow: true }` barrier-kills `<scope>/**` before re-throwing, so a crash cleans up the whole subtree.
 
@@ -105,7 +105,7 @@ await orcr.scope("review", async () => {
 orcr.watch(opts?: WatchOptions): Promise<Watch>
 ```
 
-Snapshot-then-subscribe, the same stream `orcr top` renders. `WatchOptions` is `{ pattern?, agent?, status?, managed?, sinceSeq? }`. The `Watch` is an async iterable of typed events, with `snapshot` (the pinned initial document) and `snapshotSeq` accessors and a `close()` method. Calls `watch.open`.
+snapshot-then-subscribe, the same stream `orcr top` renders. `WatchOptions` is `{ pattern?, agent?, status?, managed?, sinceSeq? }`. the `Watch` is an async iterable of typed events, with `snapshot` (the pinned initial document) and `snapshotSeq` accessors and a `close()` method. calls `watch.open`.
 
 ```ts
 const w = await orcr.watch({ pattern: "refactor/**" });
@@ -118,7 +118,7 @@ for await (const ev of w) { /* agent.status_changed, queue.promoted, … */ }
 orcr.context.fromEnv(env?): OrcrContext
 ```
 
-The canonical env-derivation helper; never hand-parse `ORCR_PATH`. Returns `{ kind: "agent" | "loopRun" | "root", id?, path?, scope?, dataDir?, parent?, loop? }`. An agent is distinguished from a loop-run command by the presence of `ORCR_AGENT_DATA_DIR`; loop membership is detected via `ORCR_LOOP_DATA_DIR`. For an agent, `scope` is its path minus its name; for a loop run, `scope` is its full path. `loop` is `{ name, runId, path, dataDir }` when set. See the [environment reference](/docs/reference/environment).
+the canonical env-derivation helper; never hand-parse `ORCR_PATH`. returns `{ kind: "agent" | "loopRun" | "root", id?, path?, scope?, dataDir?, parent?, loop? }`. an agent is distinguished from a loop-run command by the presence of `ORCR_AGENT_DATA_DIR`; loop membership is detected via `ORCR_LOOP_DATA_DIR`. for an agent, `scope` is its path minus its name; for a loop run, `scope` is its full path. `loop` is `{ name, runId, path, dataDir }` when set. see the [environment reference](/docs/reference/environment).
 
 `orcr.loopNameFrom(path)` extracts a loop name from a run path (the first segment).
 
@@ -155,13 +155,13 @@ orcr.api.schema(): Promise<Record<string, unknown>>      // api.schema
 orcr.api.snapshot(): Promise<ApiSnapshotResult>          // api.snapshot
 ```
 
-## The generated client
+## the generated client
 
-`orcr.gen` is the generated protocol client (`GeneratedClient`). It exposes one method per socket method (`agentRun`, `agentWait`, `loopCreate`, `serverStatus`, …) plus `call(method, params)` as an escape hatch for any method by name. The parity rule is that this client covers every socket method; `sdk/ts/src/generated.ts` also exports `PROTOCOL_METHODS`, `STREAMING_METHODS`, `EVENT_KINDS`, and `ERROR_CODES` as the source-of-truth lists.
+`orcr.gen` is the generated protocol client (`GeneratedClient`). it exposes one method per socket method (`agentRun`, `agentWait`, `loopCreate`, `serverStatus`, …) plus `call(method, params)` as an escape hatch for any method by name. the parity rule is that this client covers every socket method; `sdk/ts/src/generated.ts` also exports `PROTOCOL_METHODS`, `STREAMING_METHODS`, `EVENT_KINDS`, and `ERROR_CODES` as the source-of-truth lists.
 
-## Errors
+## errors
 
-Protocol failures become typed errors carrying `{ code, message, details }`, one class per [error code](/docs/reference/errors):
+protocol failures become typed errors carrying `{ code, message, details }`, one class per [error code](/docs/reference/errors):
 
 | class | code |
 | --- | --- |
@@ -175,7 +175,7 @@ Protocol failures become typed errors carrying `{ code, message, details }`, one
 | `EnvironmentError` | `environment_error` |
 | `ServerError` | `server_error` |
 
-All extend `OrcrError` (with `.code` and `.details`). `StateConflict` has a `.forceRequired` getter (true when `details.reason === "force_required"`, the unmanaged-kill barrier). `errorFromWire(err)` reconstructs the right class from a wire error object.
+all extend `OrcrError` (with `.code` and `.details`). `StateConflict` has a `.forceRequired` getter (true when `details.reason === "force_required"`, the unmanaged-kill barrier). `errorFromWire(err)` reconstructs the right class from a wire error object.
 
 ```ts
 import { orcr, StateConflict, Blocked } from "@orchestratr/sdk";
@@ -189,4 +189,4 @@ try {
 }
 ```
 
-The SDK never prompts; destructive helpers behave like non-interactive CLI calls. See the [SDK workflows guide](/docs/guides/sdk-workflows) and the [patterns](/docs/patterns) for worked examples.
+the SDK never prompts; destructive helpers behave like non-interactive CLI calls. see the [SDK workflows guide](/docs/guides/sdk-workflows) and the [patterns](/docs/patterns) for worked examples.

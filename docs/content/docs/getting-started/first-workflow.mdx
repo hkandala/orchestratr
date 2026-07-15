@@ -1,25 +1,25 @@
 ---
-title: Your first workflow
-description: Build a parallel code-review workflow end to end, fanning out one reviewer per changed file and merging the findings.
+title: your first workflow
+description: build a parallel code-review workflow end to end, fanning out one reviewer per changed file and merging the findings.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-This tutorial builds a real workflow: review every changed file in parallel, one agent per file, then merge the findings into one report. Along the way you will use scopes, the file convention for structured output, and automatic cleanup.
+this tutorial builds a real workflow: review every changed file in parallel, one agent per file, then merge the findings into one report. along the way you will use scopes, the file convention for structured output, and automatic cleanup.
 
-You need a working setup ([Installation](/docs/getting-started/installation)) with both claude and codex supported, and a git repository with some uncommitted changes against `main`.
+you need a working setup ([installation](/docs/getting-started/installation)) with both claude and codex supported, and a git repository with some uncommitted changes against `main`.
 
-## 1. Scaffold the project
+## 1. scaffold the project
 
 ```sh
 orcr scaffold review-workflow && cd review-workflow
 ```
 
-This gives you a plain npm project with `@orchestratr/sdk` installed. You will replace the generated `workflow.ts` with the code below.
+this gives you a plain npm project with `@orchestratr/sdk` installed. you will replace the generated `workflow.ts` with the code below.
 
-## 2. Write the workflow
+## 2. write the workflow
 
-Open `workflow.ts` and replace its contents:
+open `workflow.ts` and replace its contents:
 
 ```ts
 import { orcr } from "@orchestratr/sdk";
@@ -54,42 +54,42 @@ await orcr.scope("review", async () => {
 });
 ```
 
-## 3. What each part does
+## 3. what each part does
 
-**The scope.** `orcr.scope("review", ...)` roots the whole workflow under the `review` path. Every relative path created inside the callback lands under it: `fanout/file_0` becomes `review/fanout/file_0`, and the wait target `fanout/*` resolves to the direct children of `review/fanout`. Rooting under one descriptive path is how the parallel agents stay organized and avoid colliding with each other.
+**the scope.** `orcr.scope("review", ...)` roots the whole workflow under the `review` path. every relative path created inside the callback lands under it: `fanout/file_0` becomes `review/fanout/file_0`, and the wait target `fanout/*` resolves to the direct children of `review/fanout`. rooting under one descriptive path is how the parallel agents stay organized and avoid colliding with each other.
 
-**The fan-out.** `Promise.all` over the changed files starts one reviewer each, at `fanout/file_${i}`. Each carries `gc: "immediate"`, so its pane closes as soon as its first turn completes and its final response has been captured. There is nothing to reap by hand.
+**the fan-out.** `Promise.all` over the changed files starts one reviewer each, at `fanout/file_${i}`. each carries `gc: "immediate"`, so its pane closes as soon as its first turn completes and its final response has been captured. there is nothing to reap by hand.
 
-**The file convention.** A prompt cannot rely on the agent's chat output for a guaranteed format, so it tells the agent where to write. The rule has two parts: the prompt tells the agent to expand `$ORCR_AGENT_DATA_DIR` and write to a named file (`response.md`) and to say `DONE` when it finishes; the caller reads the same path from the handle's `dataDir` and validates it. orcr guarantees the directory exists and is unique per agent (it mirrors the agent's path and ends in the uuid); the contents are entirely yours.
+**the file convention.** a prompt cannot rely on the agent's chat output for a guaranteed format, so it tells the agent where to write. the rule has two parts: the prompt tells the agent to expand `$ORCR_AGENT_DATA_DIR` and write to a named file (`response.md`) and to say `DONE` when it finishes; the caller reads the same path from the handle's `dataDir` and validates it. orcr guarantees the directory exists and is unique per agent (it mirrors the agent's path and ends in the uuid); the contents are entirely yours.
 
-**The wait.** `orcr.agent.wait("fanout/*")` blocks until every reviewer settles. For `gc: "immediate"` agents that means `ended` with `exit_reason: completed`, which is exactly the done signal here. Because completion is verified (working seen after the prompt, then stable idle, then the transcript settled), a reviewer is only reported done once its `response.md` is actually written.
+**the wait.** `orcr.agent.wait("fanout/*")` blocks until every reviewer settles. for `gc: "immediate"` agents that means `ended` with `exit_reason: completed`, which is exactly the done signal here. because completion is verified (working seen after the prompt, then stable idle, then the transcript settled), a reviewer is only reported done once its `response.md` is actually written.
 
-**The merge.** `orcr.ask` spawns one synthesizer at `merge/synthesizer`, blocks for its answer, prints it, and closes its pane. `ask` is the request-and-response one-liner, so the synthesizer cleans itself up like the reviewers do.
+**the merge.** `orcr.ask` spawns one synthesizer at `merge/synthesizer`, blocks for its answer, prints it, and closes its pane. `ask` is the request-and-response one-liner, so the synthesizer cleans itself up like the reviewers do.
 
-## 4. Watch it live
+## 4. watch it live
 
-Before you run it, split a pane in your herdr session and point `orcr top` at the workflow's subtree:
+before you run it, split a pane in your herdr session and point `orcr top` at the workflow's subtree:
 
 ```sh
 orcr top "review/**"
 ```
 
-`orcr top` draws the live tree: `review` at the top, `fanout/file_0`, `fanout/file_1`, and so on underneath, each row showing its status glyph, provider and model, and age. Statuses update in real time as reviewers move from `working` to `idle` to `ended`, then the synthesizer appears under `merge`. It is view-only; you act on agents with the CLI verbs.
+`orcr top` draws the live tree: `review` at the top, `fanout/file_0`, `fanout/file_1`, and so on underneath, each row showing its status glyph, provider and model, and age. statuses update in real time as reviewers move from `working` to `idle` to `ended`, then the synthesizer appears under `merge`. it is view-only; you act on agents with the CLI verbs.
 
-## 5. Run it
+## 5. run it
 
 ```sh
 npx tsx workflow.ts
 ```
 
-The reviewers run in parallel (bounded by the concurrency caps), each writes its `response.md`, the wait returns when they have all finished, the synthesizer merges the files, and the report prints to stdout.
+the reviewers run in parallel (bounded by the concurrency caps), each writes its `response.md`, the wait returns when they have all finished, the synthesizer merges the files, and the report prints to stdout.
 
-## Cleanup and failures
+## cleanup and failures
 
-Every agent in this workflow tidies itself: the reviewers use `gc: "immediate"` and the synthesizer runs through `ask`, so all panes close after capturing their final response. No explicit `kill` is needed.
+every agent in this workflow tidies itself: the reviewers use `gc: "immediate"` and the synthesizer runs through `ask`, so all panes close after capturing their final response. no explicit `kill` is needed.
 
-<Callout title="Guard against crashes">
-Wrap the scope with `killOnThrow` so a crash mid-flow tears down the whole subtree instead of leaving agents running:
+<Callout title="guard against crashes">
+wrap the scope with `killOnThrow` so a crash mid-flow tears down the whole subtree instead of leaving agents running:
 
 ```ts
 await orcr.scope("review", async () => {
@@ -98,10 +98,10 @@ await orcr.scope("review", async () => {
 ```
 </Callout>
 
-This flow is a singleton by design: a second concurrent copy fails fast with `path_in_use`, which is usually what you want. To run several at once, parameterize the root, for example `orcr.scope("review_" + prNumber, ...)`, or use the `{rand}` placeholder in a path.
+this flow is a singleton by design: a second concurrent copy fails fast with `path_in_use`, which is usually what you want. to run several at once, parameterize the root, for example `orcr.scope("review_" + prNumber, ...)`, or use the `{rand}` placeholder in a path.
 
-## Next steps
+## next steps
 
-- [Fan-out and merge](/docs/patterns/fan-out-and-merge) and the rest of the [patterns cookbook](/docs/patterns) generalize this shape.
-- [Scopes, lineage and fan-out](/docs/guides/scopes-and-fanout) covers path composition in depth.
-- [Schedule work with loops](/docs/guides/loops) turns a workflow into a recurring job.
+- [fan-out and merge](/docs/patterns/fan-out-and-merge) and the rest of the [patterns cookbook](/docs/patterns) generalize this shape.
+- [scopes, lineage and fan-out](/docs/guides/scopes-and-fanout) covers path composition in depth.
+- [schedule work with loops](/docs/guides/loops) turns a workflow into a recurring job.

@@ -1,57 +1,57 @@
 ---
-title: Durability and recovery
-description: The single-writer guarantees behind spawn, the reconciliation that repairs drift after a crash, and how orcr behaves across sleep, reboot, herdr restart, and version skew.
+title: durability and recovery
+description: the single-writer guarantees behind spawn, the reconciliation that repairs drift after a crash, and how orcr behaves across sleep, reboot, herdr restart, and version skew.
 ---
 
-The server is the single writer, and every state transition is a store transaction. That is what lets orcr survive crashes, sleep, reboots, and a herdr restart without losing agents or double-spawning them. This page is how those guarantees are built.
+the server is the single writer, and every state transition is a store transaction. that is what lets orcr survive crashes, sleep, reboots, and a herdr restart without losing agents or double-spawning them. this page is how those guarantees are built.
 
-## Durable state before side effects
+## durable state before side effects
 
-The spawn pipeline records durable state *before* it takes any external action, so a crash at any point is recoverable.
+the spawn pipeline records durable state *before* it takes any external action, so a crash at any point is recoverable.
 
-1. The server resolves the integration and the effective path, then in **one `BEGIN IMMEDIATE` transaction** validates grammar and limits, allocates the uuid, allocates or validates the name against the partial unique index, and inserts the agent row with status `queued`. The data dir and its `launch.json` audit payload are written *before* this insert, because the queue worker can promote and begin the pipeline (which reads `launch.json`) within one tick. A failed insert (for example `path_in_use`) removes the just-created data dir. Once the row is inserted the identity is durable and the verb returns `<path> <uuid>`.
-2. Queue promotion picks it up (`queued` to `starting`, stuck-start guard armed): ensure the owned session's herdr server, ensure the level-1 workspace, start the agent in a new tab over herdr's socket. The row is updated with `workspace_id`, `tab_id`, and `pane_id` immediately after each herdr call, and `cancel_requested` is checked before and after each one.
-3. Capture `agent_session_*` as soon as herdr reports it: the gate for `logs`. Progress markers reset the stuck-start guard.
-4. Deliver the first prompt (turn 1, two-call rule). Status `starting` to `working`.
+1. the server resolves the integration and the effective path, then in **one `BEGIN IMMEDIATE` transaction** validates grammar and limits, allocates the uuid, allocates or validates the name against the partial unique index, and inserts the agent row with status `queued`. the data dir and its `launch.json` audit payload are written *before* this insert, because the queue worker can promote and begin the pipeline (which reads `launch.json`) within one tick. a failed insert (for example `path_in_use`) removes the just-created data dir. once the row is inserted the identity is durable and the verb returns `<path> <uuid>`.
+2. queue promotion picks it up (`queued` to `starting`, stuck-start guard armed): ensure the owned session's herdr server, ensure the level-1 workspace, start the agent in a new tab over herdr's socket. the row is updated with `workspace_id`, `tab_id`, and `pane_id` immediately after each herdr call, and `cancel_requested` is checked before and after each one.
+3. capture `agent_session_*` as soon as herdr reports it: the gate for `logs`. progress markers reset the stuck-start guard.
+4. deliver the first prompt (turn 1, two-call rule). status `starting` to `working`.
 
-## The launch token is the recovery anchor
+## the launch token is the recovery anchor
 
-herdr's socket exposes no pane env, so `ORCR_ID` and the launch token cannot be read back off a live pane. Recovery instead matches a pane to its row by herdr's **label** (the agent's full path), which [active-path uniqueness](/docs/concepts/identity#path-uniqueness) makes unambiguous. This is re-matching by identity, not location guessing.
+herdr's socket exposes no pane env, so `ORCR_ID` and the launch token cannot be read back off a live pane. recovery instead matches a pane to its row by herdr's **label** (the agent's full path), which [active-path uniqueness](/docs/concepts/identity#path-uniqueness) makes unambiguous. this is re-matching by identity, not location guessing.
 
-The launch token (unique per attempt) stays injected in pane env and persisted (row plus `launch.json`) as the correctness anchor, ready for a future herdr that exposes pane env. On restart, a row with a recorded `pane_id` is confirmed against the live snapshot: present means repaired (`starting` to `working`); gone means `failed` if it was `starting`, else `lost`. A `starting` row that never recorded a `pane_id` becomes `failed`, and a matching orphan pane found by label is closed. No duplicate pane survives either way.
+the launch token (unique per attempt) stays injected in pane env and persisted (row plus `launch.json`) as the correctness anchor, ready for a future herdr that exposes pane env. on restart, a row with a recorded `pane_id` is confirmed against the live snapshot: present means repaired (`starting` to `working`); gone means `failed` if it was `starting`, else `lost`. a `starting` row that never recorded a `pane_id` becomes `failed`, and a matching orphan pane found by label is closed. no duplicate pane survives either way.
 
-## Reconciliation
+## reconciliation
 
-Reconciliation is the drift repair between the store and herdr reality, run on server start and periodically:
+reconciliation is the drift repair between the store and herdr reality, run on server start and periodically:
 
-- **Lost panes.** A managed agent whose pane vanished becomes `lost` (path reserved). It resolves to `ended (lost)` once herdr is reachable *and* one following poll still does not show the terminal, or on an explicit kill. A herdr outage alone never frees names, but there is no indefinite quarantine either.
-- **Orphan agent panes, reported not touched.** An owned-session pane herdr reports as running an agent, with no matching store row (the store was moved or reset under a live session, or a crashed duplicate attempt), is **counted and reported in `server status` as an orphan agent pane, never touched**. Clean it up via herdr.
-- **Unmarked panes, reported not touched.** A plain shell in the owned session (no agent) is counted and reported, never touched.
-- **Half-done moves.** A park or un-park with `move_state` set is completed or rolled back (see [agent lifecycle and GC](/docs/concepts/lifecycle#park-and-un-park-are-two-phase-and-crash-safe)).
-- **Unmanaged discovery.** herdr-detected agents in your other sessions are discovered as unmanaged rows keyed by `(session, terminal_id)` and kept current; rows whose terminal disappears are marked `ended`. See [managed vs unmanaged agents](/docs/concepts/managed-vs-unmanaged).
+- **lost panes.** a managed agent whose pane vanished becomes `lost` (path reserved). it resolves to `ended (lost)` once herdr is reachable *and* one following poll still does not show the terminal, or on an explicit kill. a herdr outage alone never frees names, but there is no indefinite quarantine either.
+- **orphan agent panes, reported not touched.** an owned-session pane herdr reports as running an agent, with no matching store row (the store was moved or reset under a live session, or a crashed duplicate attempt), is **counted and reported in `server status` as an orphan agent pane, never touched**. clean it up via herdr.
+- **unmarked panes, reported not touched.** a plain shell in the owned session (no agent) is counted and reported, never touched.
+- **half-done moves.** a park or un-park with `move_state` set is completed or rolled back (see [agent lifecycle and GC](/docs/concepts/lifecycle#park-and-un-park-are-two-phase-and-crash-safe)).
+- **unmanaged discovery.** herdr-detected agents in your other sessions are discovered as unmanaged rows keyed by `(session, terminal_id)` and kept current; rows whose terminal disappears are marked `ended`. see [managed vs unmanaged agents](/docs/concepts/managed-vs-unmanaged).
 
 `server status` surfaces the drift counts (`lost`, `repaired`, orphan agent panes, unmarked panes) so you can see what reconciliation is doing.
 
-## Events, cursors, and intent/applied pairs
+## events, cursors, and intent/applied pairs
 
-Event rows are written **in the same transaction** as the store change they describe. `events.seq` is the monotonic cursor, and the durable cursor is the `events` table itself; an in-memory bus only coordinates subscriber wakeups.
+event rows are written **in the same transaction** as the store change they describe. `events.seq` is the monotonic cursor, and the durable cursor is the `events` table itself; an in-memory bus only coordinates subscriber wakeups.
 
-Transitions that depend on an external side effect (pane move or close, process signal, spawn) use an **intent/applied pair**: a `*_requested` event persisted before the herdr or OS call, a `*_applied` event after the observed fact. Reconciliation emits repair events for anything it derives after a crash, so subscribers never see a state the recovery path skipped.
+transitions that depend on an external side effect (pane move or close, process signal, spawn) use an **intent/applied pair**: a `*_requested` event persisted before the herdr or OS call, a `*_applied` event after the observed fact. reconciliation emits repair events for anything it derives after a crash, so subscribers never see a state the recovery path skipped.
 
-Subscriptions accept `since_seq`; snapshots carry `snapshot_seq`. `watch.open` creates the snapshot and subscription under one server-side cursor pin, so high churn cannot expire `snapshot_seq` before the subscribe lands, with no re-snapshot livelock. Replay retention is bounded; a too-old cursor on an unpinned subscribe gets a `server_error` with `cause: cursor_expired` and re-snapshots. This snapshot-then-subscribe protocol is what `wait`, `orcr top`, and the SDK's `watch()` ride, so none of them miss or double-apply an update. The full event catalogue is in the [socket API reference](/docs/reference/socket-api).
+subscriptions accept `since_seq`; snapshots carry `snapshot_seq`. `watch.open` creates the snapshot and subscription under one server-side cursor pin, so high churn cannot expire `snapshot_seq` before the subscribe lands, with no re-snapshot livelock. replay retention is bounded; a too-old cursor on an unpinned subscribe gets a `server_error` with `cause: cursor_expired` and re-snapshots. this snapshot-then-subscribe protocol is what `wait`, `orcr top`, and the SDK's `watch()` ride, so none of them miss or double-apply an update. the full event catalogue is in the [socket API reference](/docs/reference/socket-api).
 
-## Behavior across disruptions
+## behavior across disruptions
 
-- **Sleep and reboot.** Missed loop fires are skipped and logged, never replayed. GC clocks are recomputed from persisted timestamps. The reconciler resolves `lost` panes and half-done moves on server start. See [loops](/docs/concepts/loops#cadence-timezone-stored-dst-correct).
-- **herdr restart or crash.** The driver reconnects with backoff; agents keep running (panes are herdr-server-side). A herdr that comes back with different pane ids is re-matched by **label** (the full path), never by location.
-- **Transcript drift.** Provider transcript formats are unstable private APIs; adapters are version-pinned and smoke-tested per provider release.
+- **sleep and reboot.** missed loop fires are skipped and logged, never replayed. GC clocks are recomputed from persisted timestamps. the reconciler resolves `lost` panes and half-done moves on server start. see [loops](/docs/concepts/loops#cadence-timezone-stored-dst-correct).
+- **herdr restart or crash.** the driver reconnects with backoff; agents keep running (panes are herdr-server-side). a herdr that comes back with different pane ids is re-matched by **label** (the full path), never by location.
+- **transcript drift.** provider transcript formats are unstable private APIs; adapters are version-pinned and smoke-tested per provider release.
 
-## Version skew
+## version skew
 
-Both sockets are version-negotiated:
+both sockets are version-negotiated:
 
 - **orcr client to orcr server**: protocol negotiation on the first request; a mismatch returns `unsupported_version`.
 - **orcr server to herdr**: the herdr protocol number is handshake-checked, with a clear error naming the required herdr version.
-- **Two orcr versions sharing one store**: a schema version check with refusal-and-message (`store_version_mismatch`), so an older binary cannot corrupt a newer store.
+- **two orcr versions sharing one store**: a schema version check with refusal-and-message (`store_version_mismatch`), so an older binary cannot corrupt a newer store.
 
-Unknown protocol fields are ignored (additive evolution), and a max frame size is enforced. See [architecture](/docs/concepts/architecture#runtime-shape) for the protocol versions in play.
+unknown protocol fields are ignored (additive evolution), and a max frame size is enforced. see [architecture](/docs/concepts/architecture#runtime-shape) for the protocol versions in play.

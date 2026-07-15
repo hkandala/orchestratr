@@ -1,40 +1,40 @@
 ---
-title: Manage the server
-description: "Operate the long-lived orcr server: start, stop, status, and logs."
+title: manage the server
+description: "operate the long-lived orcr server: start, stop, status, and logs."
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The orcr server is the single long-lived process and the single writer. It owns the store, the admission queue, GC, loop scheduling, reconciliation, and the event stream, and it exposes everything over a Unix socket. You rarely start it by hand, since any CLI or SDK call auto-starts it, but these verbs let you operate it directly.
+the orcr server is the single long-lived process and the single writer. it owns the store, the admission queue, GC, loop scheduling, reconciliation, and the event stream, and it exposes everything over a Unix socket. you rarely start it by hand, since any CLI or SDK call auto-starts it, but these verbs let you operate it directly.
 
 ```text
 orcr server start | stop | status | logs | enable | disable
 ```
 
-`enable` and `disable` are covered in [Run orcr as a service](/docs/guides/run-as-a-service).
+`enable` and `disable` are covered in [run orcr as a service](/docs/guides/run-as-a-service).
 
 ## start: idempotent
 
-If a healthy server already answers the handshake, `start` exits 0 (`already_running` in JSON). Otherwise it starts the server under the single-instance lock and blocks until the readiness handshake succeeds. Auto-start by other verbs is this same path.
+if a healthy server already answers the handshake, `start` exits 0 (`already_running` in JSON). otherwise it starts the server under the single-instance lock and blocks until the readiness handshake succeeds. auto-start by other verbs is this same path.
 
 ```sh
 orcr server start
 orcr server start --foreground   # run in the foreground (what the service unit uses)
 ```
 
-### Auto-start and single-instance locking
+### auto-start and single-instance locking
 
-Any CLI or SDK call auto-starts the server first if it is not running. Startup takes an exclusive lock file in `~/.orcr` (`flock`), and the server refuses to open the store without it. Two clients racing to auto-start do not spawn two servers: the loser of the start race waits for readiness instead. Readiness is a handshake response carrying the pid, protocol version, and store path. The lock is released on process exit, including `kill -9`, so a crashed server does not wedge the next start. Distinct errors separate the failure modes: `server_unreachable` (cannot connect), `server_start_failed` (spawn failed), `herdr_unreachable` (server fine, herdr not).
+any CLI or SDK call auto-starts the server first if it is not running. startup takes an exclusive lock file in `~/.orcr` (`flock`), and the server refuses to open the store without it. two clients racing to auto-start do not spawn two servers: the loser of the start race waits for readiness instead. readiness is a handshake response carrying the pid, protocol version, and store path. the lock is released on process exit, including `kill -9`, so a crashed server does not wedge the next start. distinct errors separate the failure modes: `server_unreachable` (cannot connect), `server_start_failed` (spawn failed), `herdr_unreachable` (server fine, herdr not).
 
 ## stop: a control-plane pause, not a kill switch
 
-`stop` is a graceful control-plane stop. It stops accepting requests, closes subscriptions with `server_stopping`, persists queue, GC, and loop state, and releases the socket.
+`stop` is a graceful control-plane stop. it stops accepting requests, closes subscriptions with `server_stopping`, persists queue, GC, and loop state, and releases the socket.
 
 <Callout type="warn">
-`stop` does not kill agents. Agent panes keep running, since they are herdr-server-side. Stopping the orcr server is for upgrades and debugging, not for pausing work. To kill agents, use `orcr agent kill`; to pause a schedule, use `orcr loop pause`.
+`stop` does not kill agents. agent panes keep running, since they are herdr-server-side. stopping the orcr server is for upgrades and debugging, not for pausing work. to kill agents, use `orcr agent kill`; to pause a schedule, use `orcr loop pause`.
 </Callout>
 
-While the server is stopped: no loop fires (missed ones are skipped and logged on restart), no queue promotion, no GC (clocks are recomputed from persisted timestamps on restart), and no unmanaged discovery. Because any CLI call auto-starts the server again, a `stop` followed by any other command brings it right back. That is expected: `stop` is not a switch that keeps it down.
+while the server is stopped: no loop fires (missed ones are skipped and logged on restart), no queue promotion, no GC (clocks are recomputed from persisted timestamps on restart), and no unmanaged discovery. because any CLI call auto-starts the server again, a `stop` followed by any other command brings it right back. that is expected: `stop` is not a switch that keeps it down.
 
 ## status: the health probe
 
@@ -43,7 +43,7 @@ orcr server status
 orcr server status --json
 ```
 
-`status` reports the server version and protocol version, the socket and store paths, the herdr binary with its reachability, version, protocol, session socket path and running state, fleet counts, whether loop firing is enabled, the loop schedule and next fires, and reconciliation drift. The JSON shape:
+`status` reports the server version and protocol version, the socket and store paths, the herdr binary with its reachability, version, protocol, session socket path and running state, fleet counts, whether loop firing is enabled, the loop schedule and next fires, and reconciliation drift. the JSON shape:
 
 ```json
 {
@@ -62,11 +62,11 @@ orcr server status --json
 }
 ```
 
-What to read it for:
+what to read it for:
 
-- **Integration state**: `integrations` shows which providers have both layers installed. A missing layer is why `agent run -a <p>` would fail with `integration_missing`. See [Providers and integrations](/docs/concepts/providers).
-- **Counts**: `live`/`queued`/`blocked`/`unmanaged` are the fleet at a glance. `orphan_agent_panes` and `unmarked_panes` are panes in the owned session that orcr reports but never touches (clean those up through herdr directly).
-- **Drift**: `lost` and `repaired` come from reconciliation, the periodic repair between what the store says and what herdr actually shows. See [Durability and recovery](/docs/concepts/durability).
+- **integration state**: `integrations` shows which providers have both layers installed. a missing layer is why `agent run -a <p>` would fail with `integration_missing`. see [providers and integrations](/docs/concepts/providers).
+- **counts**: `live`/`queued`/`blocked`/`unmanaged` are the fleet at a glance. `orphan_agent_panes` and `unmarked_panes` are panes in the owned session that orcr reports but never touches (clean those up through herdr directly).
+- **drift**: `lost` and `repaired` come from reconciliation, the periodic repair between what the store says and what herdr actually shows. see [durability and recovery](/docs/concepts/durability).
 
 ## logs: the server's own log
 
@@ -76,15 +76,15 @@ orcr server logs --tail 200
 orcr server logs --follow
 ```
 
-`logs` reads the server log at `~/.orcr/logs/server.log`: startup, herdr connection events, reconciliation actions, GC decisions, and errors. `--tail <n>` and `--follow` work as everywhere else. This is the server's own log; an agent's transcript is `orcr agent logs`, and a loop run's output is `orcr loop logs`.
+`logs` reads the server log at `~/.orcr/logs/server.log`: startup, herdr connection events, reconciliation actions, GC decisions, and errors. `--tail <n>` and `--follow` work as everywhere else. this is the server's own log; an agent's transcript is `orcr agent logs`, and a loop run's output is `orcr loop logs`.
 
-## The socket and home safety
+## the socket and home safety
 
-The socket is a Unix domain socket at `~/.orcr/orcr.sock`, created with umask 077 and mode 0600. Filesystem permissions are the only authentication: only processes running as your uid can open the socket, and there is no TCP port. The server refuses to start with `unsafe_home` unless `~/.orcr` is owned by your uid and is not group- or world-writable. Socket paths are validated against symlinks, and a stale socket is unlinked only while holding the instance lock and only if it is same-uid.
+the socket is a Unix domain socket at `~/.orcr/orcr.sock`, created with umask 077 and mode 0600. filesystem permissions are the only authentication: only processes running as your uid can open the socket, and there is no TCP port. the server refuses to start with `unsafe_home` unless `~/.orcr` is owned by your uid and is not group- or world-writable. socket paths are validated against symlinks, and a stale socket is unlinked only while holding the instance lock and only if it is same-uid.
 
-## Next
+## next
 
-- [Run orcr as a service](/docs/guides/run-as-a-service): start the server at login.
-- [Configure orchestratr](/docs/guides/configuration): the knobs the server reads.
-- [Architecture](/docs/concepts/architecture): the single-writer design.
-- [Durability and recovery](/docs/concepts/durability): reconciliation and crash safety.
+- [run orcr as a service](/docs/guides/run-as-a-service): start the server at login.
+- [configure orchestratr](/docs/guides/configuration): the knobs the server reads.
+- [architecture](/docs/concepts/architecture): the single-writer design.
+- [durability and recovery](/docs/concepts/durability): reconciliation and crash safety.

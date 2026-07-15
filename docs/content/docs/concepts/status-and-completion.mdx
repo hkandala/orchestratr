@@ -1,15 +1,15 @@
 ---
-title: Status model and completion
-description: The one status vocabulary every surface shares, the exit_reason groups, and how orcr verifies that a turn is genuinely complete instead of trusting a stale idle.
+title: status model and completion
+description: the one status vocabulary every surface shares, the exit_reason groups, and how orcr verifies that a turn is genuinely complete instead of trusting a stale idle.
 ---
 
-Every agent has exactly one `status` at a time, and the same value appears everywhere: the store, `ls`, `top`, `wait` results, JSON, and events. There is one public vocabulary and one completion discipline behind it, so a script and a human read the same state.
+every agent has exactly one `status` at a time, and the same value appears everywhere: the store, `ls`, `top`, `wait` results, JSON, and events. there is one public vocabulary and one completion discipline behind it, so a script and a human read the same state.
 
-## Two lifecycles
+## two lifecycles
 
-Managed and unmanaged agents have different lifecycles. Unmanaged agents cannot be queued, parked, or start-tracked, so their set is smaller.
+managed and unmanaged agents have different lifecycles. unmanaged agents cannot be queued, parked, or start-tracked, so their set is smaller.
 
-**Managed lifecycle:**
+**managed lifecycle:**
 
 | status | meaning |
 | --- | --- |
@@ -22,11 +22,11 @@ Managed and unmanaged agents have different lifecycles. Unmanaged agents cannot 
 | `ended` | gone; `exit_reason` says why |
 | `lost` | the pane vanished outside orcr's control (herdr crash, manual close); the path stays reserved until reconciliation confirms the terminal is really gone, then it becomes `ended` with `exit_reason: lost` |
 
-**Unmanaged lifecycle** (tracked from herdr's reporting only): `working`, `idle`, `blocked`, `unknown`, `ended`. No queue, no parking, no start tracking. `unknown` is herdr's own catch-all, and the permanent status when the provider's herdr integration is not installed; `ended` means the pane closed. See [managed vs unmanaged agents](/docs/concepts/managed-vs-unmanaged).
+**unmanaged lifecycle** (tracked from herdr's reporting only): `working`, `idle`, `blocked`, `unknown`, `ended`. no queue, no parking, no start tracking. `unknown` is herdr's own catch-all, and the permanent status when the provider's herdr integration is not installed; `ended` means the pane closed. see [managed vs unmanaged agents](/docs/concepts/managed-vs-unmanaged).
 
 ## exit_reason
 
-When an agent ends, `exit_reason` answers one scripting question (did the work finish?) in four groups:
+when an agent ends, `exit_reason` answers one scripting question (did the work finish?) in four groups:
 
 | group | exit_reason | meaning |
 | --- | --- | --- |
@@ -40,35 +40,35 @@ When an agent ends, `exit_reason` answers one scripting question (did the work f
 
 `wait` maps these to per-agent reason tokens with exit codes; the [status model reference](/docs/reference/status-model) has the exhaustive table.
 
-## Verified idle
+## verified idle
 
-Completion is defined per **turn**. Every delivered input (the first prompt, every `send`) increments the agent's `input_seq` *before* delivery. A turn is complete when, for the latest input:
+completion is defined per **turn**. every delivered input (the first prompt, every `send`) increments the agent's `input_seq` *before* delivery. a turn is complete when, for the latest input:
 
 1. `working` has been observed **after that input's delivery began** (a per-integration grace window covers fast turns), then
 2. **stable idle**: a minimum idle duration, and
 3. the transcript has **settled**: no new writes to the provider's transcript file for `transcript_settle_ms`, meaning the agent has genuinely stopped producing output, not just paused between tool calls.
 
-The public status flips `working` to `idle` only once this check passes. A first idle without input-scoped working is never completion. `blocked` is turn-scoped and clearable by `send`.
+the public status flips `working` to `idle` only once this check passes. a first idle without input-scoped working is never completion. `blocked` is turn-scoped and clearable by `send`.
 
-Turn progress is persisted in the `turns` table (one row per input, keyed by `agent_uuid` and `input_seq`, recording `source`, `delivered_at`, `working_seen_at`, `completed_at`, `blocked_kind`, and a transcript cursor), so `wait` and `gc immediate` survive a server restart. After a restart with missing turn fields the server is conservative: it waits for a fresh transition rather than trusting a stale idle.
+turn progress is persisted in the `turns` table (one row per input, keyed by `agent_uuid` and `input_seq`, recording `source`, `delivered_at`, `working_seen_at`, `completed_at`, `blocked_kind`, and a transcript cursor), so `wait` and `gc immediate` survive a server restart. after a restart with missing turn fields the server is conservative: it waits for a fresh transition rather than trusting a stale idle.
 
-## Why an old idle can never satisfy a newer send
+## why an old idle can never satisfy a newer send
 
-Because completion is scoped to `input_seq`, an idle observed *before* your `send` was delivered belongs to the previous turn. The new turn cannot be satisfied until `working` is seen after the new delivery, then stable idle, then transcript settle. Two consecutive sends therefore each get their own turn, and the second `wait` is never satisfied by the first idle, so `send` then `wait` then `logs --last-response` reads the response from the turn you actually started.
+because completion is scoped to `input_seq`, an idle observed *before* your `send` was delivered belongs to the previous turn. the new turn cannot be satisfied until `working` is seen after the new delivery, then stable idle, then transcript settle. two consecutive sends therefore each get their own turn, and the second `wait` is never satisfied by the first idle, so `send` then `wait` then `logs --last-response` reads the response from the turn you actually started.
 
-## External and synthetic turns
+## external and synthetic turns
 
-You can type into an agent directly, via `attach --takeover` or in the herdr UI. orcr cannot see that input, but it can see the consequence: a `working` transition with no pending orcr delivery. When that happens the server records a **synthetic turn** (`turns.source = external`, bumping `input_seq`), so completion tracking, `wait`, and GC clocks stay correct.
+you can type into an agent directly, via `attach --takeover` or in the herdr UI. orcr cannot see that input, but it can see the consequence: a `working` transition with no pending orcr delivery. when that happens the server records a **synthetic turn** (`turns.source = external`, bumping `input_seq`), so completion tracking, `wait`, and GC clocks stay correct.
 
-If a user interrupts a turn mid-flight (Esc in the TUI), the turn settles at the next stable idle and is recorded complete with whatever the transcript shows, possibly a partial response. orcr reports the transcript's reality rather than guessing intent.
+if a user interrupts a turn mid-flight (Esc in the TUI), the turn settles at the next stable idle and is recorded complete with whatever the transcript shows, possibly a partial response. orcr reports the transcript's reality rather than guessing intent.
 
-## Delivery, not acceptance
+## delivery, not acceptance
 
-`send` confirms **terminal delivery**, not provider acceptance. Input delivery is two herdr calls (send-text, then about one second later, enter, never one). Integrations test send-while-working per provider. A TUI that buffers input without submitting, or opens a modal, surfaces as the turn never completing, visible in `top`, not silently lost. A herdr-reported `done` state is normalized: treated as `idle` for the completion check, and as `ended` only when pane closure is also observed. herdr timeout values are milliseconds and never leak into orcr's user surface.
+`send` confirms **terminal delivery**, not provider acceptance. input delivery is two herdr calls (send-text, then about one second later, enter, never one). integrations test send-while-working per provider. a TUI that buffers input without submitting, or opens a modal, surfaces as the turn never completing, visible in `top`, not silently lost. a herdr-reported `done` state is normalized: treated as `idle` for the completion check, and as `ended` only when pane closure is also observed. herdr timeout values are milliseconds and never leak into orcr's user surface.
 
-## Integration tuning parameters
+## integration tuning parameters
 
-Completion timing is per-integration logic, with defaults shipped inside each integration. The named parameters are:
+completion timing is per-integration logic, with defaults shipped inside each integration. the named parameters are:
 
 - `fast_turn_grace_ms`: treat delivery-then-idle within this window as a completed fast turn rather than a never-started one.
 - `idle_stable_ms`: the minimum idle duration before stable idle.
@@ -76,4 +76,4 @@ Completion timing is per-integration logic, with defaults shipped inside each in
 - `transcript_freshness_timeout_ms`: how long to wait for the transcript to advance past the observed completion before reporting `transcript_unavailable`.
 - `shutdown_grace_ms`: the graceful-shutdown grace for `kill`.
 
-Any of them can be overridden per provider via `integrations.<provider>.*` in config. See [configuration](/docs/guides/configuration) and [providers and integrations](/docs/concepts/providers).
+any of them can be overridden per provider via `integrations.<provider>.*` in config. see [configuration](/docs/guides/configuration) and [providers and integrations](/docs/concepts/providers).

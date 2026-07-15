@@ -1,13 +1,13 @@
 ---
-title: Error codes and exit codes
-description: The nine stable error codes, each code's details shape and process exit code, the full exit-code table, and the wait-timeout vs agent-timeout distinction.
+title: error codes and exit codes
+description: the nine stable error codes, each code's details shape and process exit code, the full exit-code table, and the wait-timeout vs agent-timeout distinction.
 ---
 
-orcr has a deliberately small error enum: nine stable codes, with everything finer carried in `details`. Adding codes later is easy; removing them is not. Every `--json` error is `{"ok":false,"error":{code,message,details}}`, and the CLI maps each code to a process exit code.
+orcr has a deliberately small error enum: nine stable codes, with everything finer carried in `details`. adding codes later is easy; removing them is not. every `--json` error is `{"ok":false,"error":{code,message,details}}`, and the CLI maps each code to a process exit code.
 
-> The codes and exit mappings here come from `src/error.rs` and are exposed in the schema under `ERROR_CODES` (also exported by the SDK). Each code has one SDK error class; see the [SDK reference](/docs/reference/sdk).
+> the codes and exit mappings here come from `src/error.rs` and are exposed in the schema under `ERROR_CODES` (also exported by the SDK). each code has one SDK error class; see the [SDK reference](/docs/reference/sdk).
 
-## The nine codes
+## the nine codes
 
 | code | exit | when | `details` |
 | --- | --- | --- | --- |
@@ -23,7 +23,7 @@ orcr has a deliberately small error enum: nine stable codes, with everything fin
 
 ## environment_error causes
 
-`environment_error` covers the setup and platform failures. The `cause` field names the specific problem:
+`environment_error` covers the setup and platform failures. the `cause` field names the specific problem:
 
 | cause | meaning |
 | --- | --- |
@@ -36,9 +36,9 @@ orcr has a deliberately small error enum: nine stable codes, with everything fin
 | `unsupported_platform` | `server enable/disable` on a platform with no service unit |
 | `unsupported_version` | protocol version mismatch (orcr client to server, or server to herdr) |
 
-## The full exit-code table
+## the full exit-code table
 
-Exit codes come from two places: the error enum above (a failed command), and the outcome of `wait` and `kill` (which can exit non-zero without an error envelope). The complete set:
+exit codes come from two places: the error enum above (a failed command), and the outcome of `wait` and `kill` (which can exit non-zero without an error envelope). the complete set:
 
 | code | meaning |
 | --- | --- |
@@ -51,13 +51,13 @@ Exit codes come from two places: the error enum above (a failed command), and th
 | `6` | not found |
 | `7` | state conflict (wrong state; `force_required` for unmanaged kills) |
 
-Exit code 5 is a command outcome, not an error code: it comes only from a `wait` observing a dead target (killed, canceled, timeout, failed, or lost). A `kill` never exits 5: a kill where every matched target is skipped (already ended, or needs `--force`) exits 7 (`state_conflict`), and a kill that matches nothing exits 6 (`not_found`). See the [status model reference](/docs/reference/status-model) for how each observed state maps to a wait reason token and exit contribution.
+exit code 5 is a command outcome, not an error code: it comes only from a `wait` observing a dead target (killed, canceled, timeout, failed, or lost). a `kill` never exits 5: a kill where every matched target is skipped (already ended, or needs `--force`) exits 7 (`state_conflict`), and a kill that matches nothing exits 6 (`not_found`). see the [status model reference](/docs/reference/status-model) for how each observed state maps to a wait reason token and exit contribution.
 
-## Wait-timeout vs agent-timeout
+## wait-timeout vs agent-timeout
 
-These look similar but are not the same:
+these look similar but are not the same:
 
-- An **agent's or run's own `--timeout`** expiring is the `timeout` **error code** (exit 3, `details.elapsed`). The agent is killed with `exit_reason: timeout`. A `wait` observing it reports the `timeout` reason token (exit 5, because the target died).
-- A **wait-style command's own `--timeout`** expiring is **not** an error. The envelope stays `ok:true` with a partial result (`timed_out:true`), and the process exits 3. The call succeeded; the targets just had not all settled. Unsettled targets show the `wait_timeout` reason token with their current status.
+- an **agent's or run's own `--timeout`** expiring is the `timeout` **error code** (exit 3, `details.elapsed`). the agent is killed with `exit_reason: timeout`. a `wait` observing it reports the `timeout` reason token (exit 5, because the target died).
+- a **wait-style command's own `--timeout`** expiring is **not** an error. the envelope stays `ok:true` with a partial result (`timed_out:true`), and the process exits 3. the call succeeded; the targets just had not all settled. unsettled targets show the `wait_timeout` reason token with their current status.
 
-The single rule: `ok:true + timed_out` is a partial success; the `timeout` error code is reserved for a deadline the command itself set on an agent or run.
+the single rule: `ok:true + timed_out` is a partial success; the `timeout` error code is reserved for a deadline the command itself set on an agent or run.

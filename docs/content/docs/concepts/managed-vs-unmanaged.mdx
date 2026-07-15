@@ -1,30 +1,30 @@
 ---
-title: Managed vs unmanaged agents
-description: What orcr creates and fully manages, what it merely tracks from your own herdr sessions, and the exact behavior contract that separates the two.
+title: managed vs unmanaged agents
+description: what orcr creates and fully manages, what it merely tracks from your own herdr sessions, and the exact behavior contract that separates the two.
 ---
 
-orcr tracks **all** agents herdr can see, including ones you started by hand in your own sessions. It only *manages* the ones it created. The distinction decides which verbs work, whether GC touches the pane, and how identity is assigned.
+orcr tracks **all** agents herdr can see, including ones you started by hand in your own sessions. it only *manages* the ones it created. the distinction decides which verbs work, whether GC touches the pane, and how identity is assigned.
 
-## The two kinds
+## the two kinds
 
-- **Managed**: created by `agent run` in the [owned session](/docs/concepts/herdr-session). Full lifecycle: queue, concurrency caps, custom naming, parent lineage, verified-idle completion, GC.
-- **Unmanaged (detected)**: agents herdr detects in your *own* sessions. The server discovers them into the store and keeps them current while it runs (state changes and closure, polled or streamed from herdr every few seconds).
+- **managed**: created by `agent run` in the [owned session](/docs/concepts/herdr-session). full lifecycle: queue, concurrency caps, custom naming, parent lineage, verified-idle completion, GC.
+- **unmanaged (detected)**: agents herdr detects in your *own* sessions. the server discovers them into the store and keeps them current while it runs (state changes and closure, polled or streamed from herdr every few seconds).
 
-## Discovery is for supported providers only
+## discovery is for supported providers only
 
-Unmanaged discovery tracks **supported providers only**: providers with both integration layers present (see [providers and integrations](/docs/concepts/providers)). Agents of any other provider are ignored entirely: not stored, not shown. `server status` reports per-provider integration state so the gap is visible.
+unmanaged discovery tracks **supported providers only**: providers with both integration layers present (see [providers and integrations](/docs/concepts/providers)). agents of any other provider are ignored entirely: not stored, not shown. `server status` reports per-provider integration state so the gap is visible.
 
-Each unmanaged row is keyed internally by `(herdr session, terminal_id)`. herdr's `terminal_id` is globally unique and never reused, so no wider tuple is needed: a new terminal in the same pane slot is a new row with a new uuid, and rows whose terminal disappears are marked `ended` (still queryable under `ls --all`).
+each unmanaged row is keyed internally by `(herdr session, terminal_id)`. herdr's `terminal_id` is globally unique and never reused, so no wider tuple is needed: a new terminal in the same pane slot is a new row with a new uuid, and rows whose terminal disappears are marked `ended` (still queryable under `ls --all`).
 
-## Identity is auto-assigned
+## identity is auto-assigned
 
-An unmanaged agent gets a uuid like any other row, and a path under `unmanaged/<session_slug>` with the leaf derived from the pane, for example `unmanaged/main/w6_p1`. Slug collisions after normalization get a deterministic `_<short hash>` suffix inside the insertion transaction. The tree groups unmanaged agents by session. You cannot choose an unmanaged agent's name or path: that is what managed means.
+an unmanaged agent gets a uuid like any other row, and a path under `unmanaged/<session_slug>` with the leaf derived from the pane, for example `unmanaged/main/w6_p1`. slug collisions after normalization get a deterministic `_<short hash>` suffix inside the insertion transaction. the tree groups unmanaged agents by session. you cannot choose an unmanaged agent's name or path: that is what managed means.
 
-## Status set
+## status set
 
-Unmanaged agents are tracked from herdr's reporting only: `working`, `idle`, `blocked`, `unknown`, `ended`. There is no queue, no parking, no start tracking. `unknown` is herdr's catch-all. Compare the full managed lifecycle in [status model and completion](/docs/concepts/status-and-completion).
+unmanaged agents are tracked from herdr's reporting only: `working`, `idle`, `blocked`, `unknown`, `ended`. there is no queue, no parking, no start tracking. `unknown` is herdr's catch-all. compare the full managed lifecycle in [status model and completion](/docs/concepts/status-and-completion).
 
-## The behavior contract
+## the behavior contract
 
 | feature | managed | unmanaged |
 | --- | --- | --- |
@@ -42,8 +42,8 @@ Unmanaged agents are tracked from herdr's reporting only: `working`, `idle`, `bl
 | `kill` | yes | requires `--force` (closes a pane orcr does not own) |
 | `ls` / `top` | yes | yes (grouped under `unmanaged/<session>`) |
 
-The `--force` requirement on unmanaged `kill` is the guardrail: closing a pane you opened by hand is possible but never accidental. `kill` on an unmanaged target without `--force` returns `state_conflict` with `reason: "force_required"`.
+the `--force` requirement on unmanaged `kill` is the guardrail: closing a pane you opened by hand is possible but never accidental. `kill` on an unmanaged target without `--force` returns `state_conflict` with `reason: "force_required"`.
 
-## Reconciliation
+## reconciliation
 
-Discovery is part of the server's broader [reconciliation](/docs/concepts/durability): on start and periodically, it repairs drift between the store and herdr reality. Unmanaged rows are discovered and kept current; rows whose terminal vanished are ended. Panes in the *owned* session with no matching store row are reported in `server status` and left alone, never adopted as unmanaged.
+discovery is part of the server's broader [reconciliation](/docs/concepts/durability): on start and periodically, it repairs drift between the store and herdr reality. unmanaged rows are discovered and kept current; rows whose terminal vanished are ended. panes in the *owned* session with no matching store row are reported in `server status` and left alone, never adopted as unmanaged.

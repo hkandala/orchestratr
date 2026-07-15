@@ -1,102 +1,102 @@
 ---
-title: "Quickstart: CLI"
-description: Spawn an agent, wait for it, read its answer, steer it, and clean up, all from the shell.
+title: "quickstart: CLI"
+description: spawn an agent, wait for it, read its answer, steer it, and clean up, all from the shell.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-This runs one agent from the shell and covers the five verbs you will use most: `run`, `wait`, `logs`, `send`, and `kill`. It assumes you have finished [Installation](/docs/getting-started/installation) and `orcr server status` shows a supported provider.
+this runs one agent from the shell and covers the five verbs you will use most: `run`, `wait`, `logs`, `send`, and `kill`. it assumes you have finished [installation](/docs/getting-started/installation) and `orcr server status` shows a supported provider.
 
-## Spawn an agent
+## spawn an agent
 
 ```sh
 orcr agent run --name reviewer -a codex -p "Review src/auth.ts for auth bugs. Say DONE."
 ```
 
-`orcr agent run` is always asynchronous. It validates the request, enqueues it, and prints one line to stdout, the agent's absolute path and its uuid, separated by a space:
+`orcr agent run` is always asynchronous. it validates the request, enqueues it, and prints one line to stdout, the agent's absolute path and its uuid, separated by a space:
 
 ```text
 reviewer 0192f1a4-9c7e-7b3a-8f21-2d6c4e0b9a11
 ```
 
-The two identifiers matter later: the **path** (`reviewer` here, the last segment is the name) is the live address you target, and the **uuid** is permanent and never reused. On a terminal, `run` also prints a hint to stderr with the follow-up commands.
+the two identifiers matter later: the **path** (`reviewer` here, the last segment is the name) is the live address you target, and the **uuid** is permanent and never reused. on a terminal, `run` also prints a hint to stderr with the follow-up commands.
 
-Naming is mandatory. Pass exactly one of `--name <name>` (the agent lands in your current scope) or `--path <path>` (the last segment is the name, the rest is where it lives). There are no auto-generated names.
+naming is mandatory. pass exactly one of `--name <name>` (the agent lands in your current scope) or `--path <path>` (the last segment is the name, the rest is where it lives). there are no auto-generated names.
 
-The `-a` flag chooses the provider. It is optional and falls back to `defaults.agent` in your config (default `claude`). `-p` is the prompt; `-p -` reads the prompt from stdin for long prompts.
+the `-a` flag chooses the provider. it is optional and falls back to `defaults.agent` in your config (default `claude`). `-p` is the prompt; `-p -` reads the prompt from stdin for long prompts.
 
-## Wait for it to settle
+## wait for it to settle
 
 ```sh
 orcr agent wait reviewer
 ```
 
-`wait` blocks until the agent settles: its turn completes (`idle`), it finishes and its pane is tidied (`ended` with `completed` or `reaped`), or it needs a human (`blocked`). It prints one line per agent, `<path> <reason>`:
+`wait` blocks until the agent settles: its turn completes (`idle`), it finishes and its pane is tidied (`ended` with `completed` or `reaped`), or it needs a human (`blocked`). it prints one line per agent, `<path> <reason>`:
 
 ```text
 reviewer turn_complete
 ```
 
-Exit codes tell a script what happened without parsing: `0` settled successfully, `4` blocked (needs a human), `5` the agent was killed or died, `3` the wait's own `--timeout` expired, `6` no agent matched.
+exit codes tell a script what happened without parsing: `0` settled successfully, `4` blocked (needs a human), `5` the agent was killed or died, `3` the wait's own `--timeout` expired, `6` no agent matched.
 
-## Read the answer
+## read the answer
 
 ```sh
 orcr agent logs reviewer --last-response
 ```
 
-`logs` reads the provider's native transcript through orcr's integration. `--last-response` prints only the final assistant message. It fails loudly rather than guessing: if no final response is identifiable it exits `1` with `transcript_unavailable`. Add `--tail <n>` for the last _n_ entries and `--follow` to keep streaming; they compose (`--tail 50 --follow`).
+`logs` reads the provider's native transcript through orcr's integration. `--last-response` prints only the final assistant message. it fails loudly rather than guessing: if no final response is identifiable it exits `1` with `transcript_unavailable`. add `--tail <n>` for the last _n_ entries and `--follow` to keep streaming; they compose (`--tail 50 --follow`).
 
-## Steer it
+## steer it
 
 ```sh
 orcr agent send reviewer "Also check the refresh-token path."
 ```
 
-`send` types the prompt into the agent's TUI and submits it, whatever state the agent is in. It waits for the pane to confirm delivery and reports `delivered_while` (the agent's status at delivery) and the new `input_seq`. Sending to a parked agent revives it first. `send` confirms terminal delivery, not that the provider accepted the input.
+`send` types the prompt into the agent's TUI and submits it, whatever state the agent is in. it waits for the pane to confirm delivery and reports `delivered_while` (the agent's status at delivery) and the new `input_seq`. sending to a parked agent revives it first. `send` confirms terminal delivery, not that the provider accepted the input.
 
-<Callout title="Exact targets vs patterns">
-`send`, `logs`, and `attach` act on exactly one agent and reject wildcards. The bulk verbs `wait`, `kill`, and `ls` accept glob patterns.
+<Callout title="exact targets vs patterns">
+`send`, `logs`, and `attach` act on exactly one agent and reject wildcards. the bulk verbs `wait`, `kill`, and `ls` accept glob patterns.
 </Callout>
 
-## Clean up
+## clean up
 
 ```sh
 orcr agent kill reviewer -y
 ```
 
-`kill` runs each provider's graceful shutdown recipe and closes the pane. By default it confirms on a terminal by listing the matched agents; `-y` skips the prompt. It ends the agents with `exit_reason: killed`; history stays in the store. Killing an agent that orcr did not create (an unmanaged one) needs `--force`.
+`kill` runs each provider's graceful shutdown recipe and closes the pane. by default it confirms on a terminal by listing the matched agents; `-y` skips the prompt. it ends the agents with `exit_reason: killed`; history stays in the store. killing an agent that orcr did not create (an unmanaged one) needs `--force`.
 
-`kill` also takes glob patterns for clearing a whole subtree at once, for example `orcr agent kill "review/**" -y`. Wildcards match whole path segments and are anchored, so `review/**` matches everything under a `review` scope but never an agent named `reviewer`.
+`kill` also takes glob patterns for clearing a whole subtree at once, for example `orcr agent kill "review/**" -y`. wildcards match whole path segments and are anchored, so `review/**` matches everything under a `review` scope but never an agent named `reviewer`.
 
-<Callout type="warn" title="Quote your patterns">
-Always quote a pattern like `"review/**"` in the shell, or your shell expands it against real files before orcr sees it.
+<Callout type="warn" title="quote your patterns">
+always quote a pattern like `"review/**"` in the shell, or your shell expands it against real files before orcr sees it.
 </Callout>
 
-## The one-liner: orcr agent ask
+## the one-liner: orcr agent ask
 
-When you want a single request and its answer in one call, use `ask`:
+when you want a single request and its answer in one call, use `ask`:
 
 ```sh
 orcr agent ask --name quick_check -a codex -p "Is src/auth.ts safe against replay? One paragraph."
 ```
 
-`ask` is documented sugar for `run --gc immediate`, then `wait`, then `logs --last-response`. It spawns the agent, blocks through the queue and the first turn, prints the final response to stdout, and closes the pane. A blocked agent exits `4`; no identifiable response gives `transcript_unavailable`. Parallel asks need distinct names.
+`ask` is documented sugar for `run --gc immediate`, then `wait`, then `logs --last-response`. it spawns the agent, blocks through the queue and the first turn, prints the final response to stdout, and closes the pane. a blocked agent exits `4`; no identifiable response gives `transcript_unavailable`. parallel asks need distinct names.
 
-## Watch the live view
+## watch the live view
 
 ```sh
 orcr top
 ```
 
-`orcr top` is a live, view-only tree of every active agent arranged by path, with statuses updating in real time and loops shown as subtrees. It is a status display, not a control surface; act on agents with the CLI verbs above. Filter with a pattern (`orcr top "review/**"`) or with `-a`, `--status`, and `--loops`.
+`orcr top` is a live, view-only tree of every active agent arranged by path, with statuses updating in real time and loops shown as subtrees. it is a status display, not a control surface; act on agents with the CLI verbs above. filter with a pattern (`orcr top "review/**"`) or with `-a`, `--status`, and `--loops`.
 
-## Path rules in one line
+## path rules in one line
 
-Paths are relative to your scope (a plain shell has no scope, so relative and absolute are the same there); a leading `/` anchors to the root; `*` matches one whole path segment and `**` matches any number of segments; wildcards are whole segments only and work only with the bulk verbs; quote patterns in the shell.
+paths are relative to your scope (a plain shell has no scope, so relative and absolute are the same there); a leading `/` anchors to the root; `*` matches one whole path segment and `**` matches any number of segments; wildcards are whole segments only and work only with the bulk verbs; quote patterns in the shell.
 
-## Next steps
+## next steps
 
-- [Quickstart: SDK](/docs/getting-started/quickstart-sdk) for real control flow in TypeScript.
-- [Your first workflow](/docs/getting-started/first-workflow) fans out a review across every changed file.
-- The [identity model](/docs/concepts/identity) explains paths, scopes, and globs in full.
+- [quickstart: SDK](/docs/getting-started/quickstart-sdk) for real control flow in TypeScript.
+- [your first workflow](/docs/getting-started/first-workflow) fans out a review across every changed file.
+- the [identity model](/docs/concepts/identity) explains paths, scopes, and globs in full.

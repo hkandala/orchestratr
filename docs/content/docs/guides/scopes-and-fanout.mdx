@@ -1,15 +1,15 @@
 ---
-title: Scopes, lineage, and fan-out
-description: "Compose paths correctly when you fan out: scopes, relative selectors, and collision-free roots."
+title: scopes, lineage, and fan-out
+description: "compose paths correctly when you fan out: scopes, relative selectors, and collision-free roots."
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Fan-out is orcr's most common workflow: run one agent per item in parallel, then merge the results. Getting it right is mostly about paths. This page covers `orcr.scope()`, how relative and absolute selectors resolve, and how to keep parallel copies from colliding. Read [Identity: paths and uuids](/docs/concepts/identity) first for the grammar.
+fan-out is orcr's most common workflow: run one agent per item in parallel, then merge the results. getting it right is mostly about paths. this page covers `orcr.scope()`, how relative and absolute selectors resolve, and how to keep parallel copies from colliding. read [identity: paths and uuids](/docs/concepts/identity) first for the grammar.
 
-## Scopes prefix every relative path
+## scopes prefix every relative path
 
-`orcr.scope(prefix, fn)` runs `fn` with `prefix` applied to every relative path created or targeted inside it. It uses `AsyncLocalStorage`, not a process global, so concurrent scopes in the same process do not interfere.
+`orcr.scope(prefix, fn)` runs `fn` with `prefix` applied to every relative path created or targeted inside it. it uses `AsyncLocalStorage`, not a process global, so concurrent scopes in the same process do not interfere.
 
 ```ts
 await orcr.scope("review", async (sc /* "review", or the nested full path */) => {
@@ -20,11 +20,11 @@ await orcr.scope("review", async (sc /* "review", or the nested full path */) =>
 });
 ```
 
-A leading `/` anchors a selector to the root and ignores the scope, exactly like a filesystem path. At a plain shell there is no scope, so relative and absolute are the same thing.
+a leading `/` anchors a selector to the root and ignores the scope, exactly like a filesystem path. at a plain shell there is no scope, so relative and absolute are the same thing.
 
-### Scopes nest
+### scopes nest
 
-Nested scopes stack their prefixes:
+nested scopes stack their prefixes:
 
 ```ts
 await orcr.scope("review", async () => {
@@ -34,11 +34,11 @@ await orcr.scope("review", async () => {
 });
 ```
 
-The base scope, before any `orcr.scope()` call, comes from your context: inside a spawned agent or a loop run, it is `orcr.context.fromEnv().scope`, so a workflow script's paths land under the right place automatically.
+the base scope, before any `orcr.scope()` call, comes from your context: inside a spawned agent or a loop run, it is `orcr.context.fromEnv().scope`, so a workflow script's paths land under the right place automatically.
 
-## No-arg collection sugar
+## no-arg collection sugar
 
-Inside a scope, the collection helpers with no argument expand to the whole scope:
+inside a scope, the collection helpers with no argument expand to the whole scope:
 
 ```ts
 await orcr.scope("review", async () => {
@@ -47,11 +47,11 @@ await orcr.scope("review", async () => {
 });
 ```
 
-At the root, a no-arg helper throws `InvalidRequest`; pass an explicit `"**"` if you really mean every active agent, so you never wipe the whole fleet by forgetting a scope.
+at the root, a no-arg helper throws `InvalidRequest`; pass an explicit `"**"` if you really mean every active agent, so you never wipe the whole fleet by forgetting a scope.
 
 ## killOnThrow: a barrier that cleans up
 
-`orcr.scope(prefix, fn, { killOnThrow: true })` barrier-kills `<scope>/**` if `fn` throws. This is the standard cleanup for a workflow: any crash tears down the whole subtree it created rather than leaving orphans.
+`orcr.scope(prefix, fn, { killOnThrow: true })` barrier-kills `<scope>/**` if `fn` throws. this is the standard cleanup for a workflow: any crash tears down the whole subtree it created rather than leaving orphans.
 
 ```ts
 await orcr.scope("fix_build", async () => {
@@ -61,11 +61,11 @@ await orcr.scope("fix_build", async () => {
 }, { killOnThrow: true });   // any crash cleans up fix_build/**
 ```
 
-The barrier kill is not a plain loop over matches. It puts a tombstone on the scope that rejects or cancels new `agent run`s landing under it, then kills in a loop until a final snapshot under the write lock shows no active matches, so cleanup cannot race a spawn that is still in flight.
+the barrier kill is not a plain loop over matches. it puts a tombstone on the scope that rejects or cancels new `agent run`s landing under it, then kills in a loop until a final snapshot under the write lock shows no active matches, so cleanup cannot race a spawn that is still in flight.
 
-## Fan-out with Promise.all
+## fan-out with Promise.all
 
-Fan-out is plain JavaScript: map a list to `run` or `ask` and await them together. There is no fan-out primitive to learn.
+fan-out is plain JavaScript: map a list to `run` or `ask` and await them together. there is no fan-out primitive to learn.
 
 ```ts
 import { readFile } from "node:fs/promises";
@@ -92,12 +92,12 @@ await orcr.scope("review", async () => {
 });
 ```
 
-## Roots that do not collide
+## roots that do not collide
 
-Two facts shape how you name a workflow's root:
+two facts shape how you name a workflow's root:
 
-1. A full path must be unique among **active** agents. A second concurrent copy at the same path fails fast with `state_conflict` (`path_in_use`), and that is usually what you want: no two `fix_build`s fighting over one repo. Recipes are singletons by design.
-2. When you genuinely want N copies, parameterize the top scope yourself, or add `{rand}`.
+1. a full path must be unique among **active** agents. a second concurrent copy at the same path fails fast with `state_conflict` (`path_in_use`), and that is usually what you want: no two `fix_build`s fighting over one repo. recipes are singletons by design.
+2. when you genuinely want N copies, parameterize the top scope yourself, or add `{rand}`.
 
 ```ts
 // parameterize the scope with a real key
@@ -107,22 +107,22 @@ await orcr.scope(`review_${prNumber}`, async () => { … });
 await orcr.agent.run({ path: "review_{rand}/file_1", ... });
 ```
 
-`{rand}` expands to 5 random lowercase alphanumeric characters at creation time, anywhere in a `--name`/`--path` value. It is a creation-only placeholder, never in a selector.
+`{rand}` expands to 5 random lowercase alphanumeric characters at creation time, anywhere in a `--name`/`--path` value. it is a creation-only placeholder, never in a selector.
 
 <Callout type="info">
-Root a workflow under a path that names the actual problem (`payment_bug_1423/…`, `orcr_design_review/…`), not a generic `review/…` or `fix/…`. Specific roots are how parallel workflows avoid colliding by default.
+root a workflow under a path that names the actual problem (`payment_bug_1423/…`, `orcr_design_review/…`), not a generic `review/…` or `fix/…`. specific roots are how parallel workflows avoid colliding by default.
 </Callout>
 
-## Lineage is recorded for you
+## lineage is recorded for you
 
-You do not wire up parent-child edges. Every pane orcr launches carries the agent's ids and its parent's (`ORCR_ID`/`ORCR_PATH` and `ORCR_PARENT_ID`/`ORCR_PARENT_PATH`). When an agent inside such a pane calls `orcr agent run`, the server reads the caller's identity, records lineage, and resolves the child's path relative to the caller's scope. A child created at an absolute path outside its parent's scope still records lineage; `orcr top` shows that as a `↖ parent` annotation rather than moving the node. See [Agents and subagents (lineage)](/docs/concepts/agents-and-lineage).
+you do not wire up parent-child edges. every pane orcr launches carries the agent's ids and its parent's (`ORCR_ID`/`ORCR_PATH` and `ORCR_PARENT_ID`/`ORCR_PARENT_PATH`). when an agent inside such a pane calls `orcr agent run`, the server reads the caller's identity, records lineage, and resolves the child's path relative to the caller's scope. a child created at an absolute path outside its parent's scope still records lineage; `orcr top` shows that as a `↖ parent` annotation rather than moving the node. see [agents and subagents (lineage)](/docs/concepts/agents-and-lineage).
 
-## How resolution works under the hood
+## how resolution works under the hood
 
-The SDK resolves scopes **client-side** and sends **absolute** selectors over the socket. The server never re-applies the caller's scope, so a path is composed exactly once. The client-side path logic is a 1:1 port of the server's grammar, so an SDK-composed path for a given nested scope equals what the CLI produces for the same scope. You can reason about the final path from the code in front of you.
+the SDK resolves scopes **client-side** and sends **absolute** selectors over the socket. the server never re-applies the caller's scope, so a path is composed exactly once. the client-side path logic is a 1:1 port of the server's grammar, so an SDK-composed path for a given nested scope equals what the CLI produces for the same scope. you can reason about the final path from the code in front of you.
 
-## Next
+## next
 
-- [Write workflows with the SDK](/docs/guides/sdk-workflows): the rest of the SDK surface.
-- [Identity: paths and uuids](/docs/concepts/identity): the grammar behind selectors.
-- [Orchestration patterns](/docs/patterns): fan-out, pipelines, and adversarial rounds.
+- [write workflows with the SDK](/docs/guides/sdk-workflows): the rest of the SDK surface.
+- [identity: paths and uuids](/docs/concepts/identity): the grammar behind selectors.
+- [orchestration patterns](/docs/patterns): fan-out, pipelines, and adversarial rounds.

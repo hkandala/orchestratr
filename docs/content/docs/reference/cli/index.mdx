@@ -1,13 +1,13 @@
 ---
 title: CLI reference
-description: "The global contracts every orcr command shares: the noun/verb surface, the --json envelope, confirmation, duration units, target grammar, and the exit-code table."
+description: "the global contracts every orcr command shares: the noun/verb surface, the --json envelope, confirmation, duration units, target grammar, and the exit-code table."
 ---
 
-The orcr CLI has four nouns (`agent`, `loop`, `server`, `api`) plus two standalone verbs (`orcr top` and `orcr scaffold`). Every server-touching verb maps 1:1 to a socket method (see the [socket API reference](/docs/reference/socket-api)); the CLI is one thin client of that protocol.
+the orcr CLI has four nouns (`agent`, `loop`, `server`, `api`) plus two standalone verbs (`orcr top` and `orcr scaffold`). every server-touching verb maps 1:1 to a socket method (see the [socket API reference](/docs/reference/socket-api)); the CLI is one thin client of that protocol.
 
-> These pages mirror `orcr <command> --help`. Parity between the docs, the skill, and live `--help` is enforced by `tests/skill_docs.rs`, so flags here do not drift from the binary.
+> these pages mirror `orcr <command> --help`. parity between the docs, the skill, and live `--help` is enforced by `tests/skill_docs.rs`, so flags here do not drift from the binary.
 
-The per-noun pages cover each verb, flag, and output shape:
+the per-noun pages cover each verb, flag, and output shape:
 
 - [`orcr agent`](/docs/reference/cli/agent): spawn, message, await, read, and stop agents.
 - [`orcr loop`](/docs/reference/cli/loop): durable cron for any command, and its runs.
@@ -16,9 +16,9 @@ The per-noun pages cover each verb, flag, and output shape:
 - [`orcr top`](/docs/reference/cli/top): the live monitoring TUI (the one command with no `--json`).
 - [`orcr scaffold`](/docs/reference/cli/scaffold): set up a TypeScript workflow project locally.
 
-## The `--json` envelope
+## the `--json` envelope
 
-Every command supports `--json` and prints exactly one envelope object on stdout. All logs go to stderr, so the stdout stream is always a single parseable JSON value.
+every command supports `--json` and prints exactly one envelope object on stdout. all logs go to stderr, so the stdout stream is always a single parseable JSON value.
 
 ```json
 { "ok": true, "result": { } }
@@ -28,42 +28,42 @@ Every command supports `--json` and prints exactly one envelope object on stdout
 { "ok": false, "error": { "code": "not_found", "message": "…", "details": { } } }
 ```
 
-The result shapes are part of the API contract and are documented per verb; the full set of methods, params, and results is published by [`orcr api schema`](/docs/reference/cli/api). Verbs with no meaningful payload return `{}` or an obvious echo.
+the result shapes are part of the API contract and are documented per verb; the full set of methods, params, and results is published by [`orcr api schema`](/docs/reference/cli/api). verbs with no meaningful payload return `{}` or an obvious echo.
 
-`orcr top` is the one exception: it is a TUI and has no `--json`. Machine-readable live state comes from [`orcr api snapshot`](/docs/reference/cli/api) or [`orcr agent ls --json`](/docs/reference/cli/agent) instead.
+`orcr top` is the one exception: it is a TUI and has no `--json`. machine-readable live state comes from [`orcr api snapshot`](/docs/reference/cli/api) or [`orcr agent ls --json`](/docs/reference/cli/agent) instead.
 
-## Targets: `<path|uuid>` vs `<pattern|uuid>`
+## targets: `<path|uuid>` vs `<pattern|uuid>`
 
-Wherever a command takes a target:
+wherever a command takes a target:
 
-- `<path|uuid>` means a path (`refactor/file_1`, relative to your scope, leading `/` for absolute) or a uuid / unambiguous uuid prefix. Used by the exact-target verbs (`send`, `logs`, `attach`), which reject wildcards.
-- `<pattern|uuid>` additionally allows `*` and `**` wildcards. Used by the bulk verbs (`wait`, `kill`, `ls`, and `top`'s filter).
+- `<path|uuid>` means a path (`refactor/file_1`, relative to your scope, leading `/` for absolute) or a uuid / unambiguous uuid prefix. used by the exact-target verbs (`send`, `logs`, `attach`), which reject wildcards.
+- `<pattern|uuid>` additionally allows `*` and `**` wildcards. used by the bulk verbs (`wait`, `kill`, `ls`, and `top`'s filter).
 
-`*` matches one whole segment; `**` matches any depth. There are no partial-segment forms. Quote patterns in the shell (`kill "review/**"`) so your shell does not expand them against real files first. The full grammar is in the [path grammar reference](/docs/reference/path-grammar).
+`*` matches one whole segment; `**` matches any depth. there are no partial-segment forms. quote patterns in the shell (`kill "review/**"`) so your shell does not expand them against real files first. the full grammar is in the [path grammar reference](/docs/reference/path-grammar).
 
-## Duration units
+## duration units
 
-Every duration flag carries a unit: `45s`, `20m`, `3h`. A bare number is rejected with `invalid_request`. This applies to `--timeout`, `--once-at` when given as a relative duration, and the duration keys in [config](/docs/reference/configuration).
+every duration flag carries a unit: `45s`, `20m`, `3h`. a bare number is rejected with `invalid_request`. this applies to `--timeout`, `--once-at` when given as a relative duration, and the duration keys in [config](/docs/reference/configuration).
 
-## Confirmation
+## confirmation
 
-Destructive commands (`agent kill`, `loop run stop`, `loop rm --kill-active`) confirm on a TTY: they list their resolved targets and ask before acting.
+destructive commands (`agent kill`, `loop run stop`, `loop rm --kill-active`) confirm on a TTY: they list their resolved targets and ask before acting.
 
 - `-y` / `--yes` skips the prompt.
-- Non-TTY callers and any `--json` call never prompt; they proceed.
+- non-TTY callers and any `--json` call never prompt; they proceed.
 
-Plain `loop rm` (without `--kill-active`) is non-destructive (the definition ends but running runs continue), so it does not prompt.
+plain `loop rm` (without `--kill-active`) is non-destructive (the definition ends but running runs continue), so it does not prompt.
 
-## Wait-timeout vs agent-timeout
+## wait-timeout vs agent-timeout
 
-Two different timeouts produce two different outcomes:
+two different timeouts produce two different outcomes:
 
-- A **wait-style command's own `--timeout`** (`agent wait --timeout`, `loop`-related waits) expiring is still a success. The envelope is `ok:true`, the result is partial (`timed_out:true`), and the process exits `3`. The call succeeded; the targets just had not all settled yet.
-- An **agent's or run's own `--timeout`** expiring is the `timeout` error code. The agent is killed with `exit_reason: timeout`, and a `wait` observing it reports the `timeout` reason token (exit 5).
+- a **wait-style command's own `--timeout`** (`agent wait --timeout`, `loop`-related waits) expiring is still a success. the envelope is `ok:true`, the result is partial (`timed_out:true`), and the process exits `3`. the call succeeded; the targets just had not all settled yet.
+- an **agent's or run's own `--timeout`** expiring is the `timeout` error code. the agent is killed with `exit_reason: timeout`, and a `wait` observing it reports the `timeout` reason token (exit 5).
 
-See [error codes and exit codes](/docs/reference/errors) for the full nuance.
+see [error codes and exit codes](/docs/reference/errors) for the full nuance.
 
-## Exit codes
+## exit codes
 
 | code | meaning |
 | --- | --- |
@@ -76,4 +76,4 @@ See [error codes and exit codes](/docs/reference/errors) for the full nuance.
 | `6` | not found |
 | `7` | state conflict (wrong state for the verb; `force_required` for unmanaged kills) |
 
-The mapping from each error code to its exit code is in the [errors reference](/docs/reference/errors).
+the mapping from each error code to its exit code is in the [errors reference](/docs/reference/errors).

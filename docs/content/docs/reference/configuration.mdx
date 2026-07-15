@@ -1,9 +1,9 @@
 ---
-title: Configuration reference
-description: Every config.json key, its default, and its validation rule, plus precedence, unknown-key handling, and the environment overrides.
+title: configuration reference
+description: every config.json key, its default, and its validation rule, plus precedence, unknown-key handling, and the environment overrides.
 ---
 
-orcr reads `~/.orcr/config.json` (strict JSON, no comments in the real file). Every key is optional; the defaults below apply when a key is absent. Validation happens at server start and on reload.
+orcr reads `~/.orcr/config.json` (strict JSON, no comments in the real file). every key is optional; the defaults below apply when a key is absent. validation happens at server start and on reload.
 
 ```jsonc
 // ~/.orcr/config.json: comments are illustrative; defaults shown
@@ -46,7 +46,7 @@ orcr reads `~/.orcr/config.json` (strict JSON, no comments in the real file). Ev
 | `defaults.model` | `""` | empty means the provider default |
 | `defaults.effort` | `""` | empty means the provider default |
 
-There is no default timeout. An agent never times out unless `--timeout` is passed.
+there is no default timeout. an agent never times out unless `--timeout` is passed.
 
 ## herdr
 
@@ -62,11 +62,11 @@ There is no default timeout. An agent never times out unless `--timeout` is pass
 | `concurrency.max` | `25` | must be at least 1; the global ceiling that protects RAM |
 | `concurrency.<provider>` | (none) | any provider name is a key; caps that provider's concurrent agents; clamped to `max` with a warning if larger |
 
-Promotion from the queue needs a free slot in both the global cap and the per-provider cap. See [queue and concurrency](/docs/concepts/queue-and-concurrency).
+promotion from the queue needs a free slot in both the global cap and the per-provider cap. see [queue and concurrency](/docs/concepts/queue-and-concurrency).
 
 ## timings
 
-Every value is a duration and must carry a unit (`5m`, `30s`) and be positive.
+every value is a duration and must carry a unit (`5m`, `30s`) and be positive.
 
 | key | default | what it controls |
 | --- | --- | --- |
@@ -78,7 +78,7 @@ Every value is a duration and must carry a unit (`5m`, `30s`) and be positive.
 | `timings.loop_tick` | `1s` | the loop scheduler tick cadence |
 | `timings.run_term_grace` | `10s` | the TERM-to-KILL grace for `loop run stop` and per-run timeout |
 
-See [lifecycle and GC](/docs/concepts/lifecycle) for `idle_after`/`kill_after`, and [loops](/docs/concepts/loops) for the run grace.
+see [lifecycle and GC](/docs/concepts/lifecycle) for `idle_after`/`kill_after`, and [loops](/docs/concepts/loops) for the run grace.
 
 ## logs
 
@@ -89,7 +89,7 @@ See [lifecycle and GC](/docs/concepts/lifecycle) for `idle_after`/`kill_after`, 
 
 ## integrations
 
-Per-provider completion tuning. Defaults ship inside each integration; any of the parameters below may be overridden per provider under `integrations.<provider>.*` (values in milliseconds). `integrations` is a known key, validated like the rest, not treated as an unknown-key warning.
+per-provider completion tuning. defaults ship inside each integration; any of the parameters below may be overridden per provider under `integrations.<provider>.*` (values in milliseconds). `integrations` is a known key, validated like the rest, not treated as an unknown-key warning.
 
 | parameter | what it controls |
 | --- | --- |
@@ -99,27 +99,27 @@ Per-provider completion tuning. Defaults ship inside each integration; any of th
 | `transcript_freshness_timeout_ms` | how long to wait for the transcript to advance past the observed completion before reporting `transcript_unavailable` |
 | `shutdown_grace_ms` | the graceful-shutdown grace for `kill` |
 
-See [status and completion](/docs/concepts/status-and-completion) for how these parameters drive verified idle.
+see [status and completion](/docs/concepts/status-and-completion) for how these parameters drive verified idle.
 
-## Validation
+## validation
 
-At server start and on reload:
+at server start and on reload:
 
-- **Unknown keys warn and are ignored**, with the nearest valid name suggested. This keeps config forward- and backward-compatible for early users.
-- **Known keys are validated strictly**: durations require units and must be positive, `concurrency.max` must be at least 1, per-provider caps are clamped to `max` with a warning, and `herdr.session` must be a valid session name.
+- **unknown keys warn and are ignored**, with the nearest valid name suggested. this keeps config forward- and backward-compatible for early users.
+- **known keys are validated strictly**: durations require units and must be positive, `concurrency.max` must be at least 1, per-provider caps are clamped to `max` with a warning, and `herdr.session` must be a valid session name.
 
-An invalid known value surfaces as `environment_error` (`cause: config_invalid`).
+an invalid known value surfaces as `environment_error` (`cause: config_invalid`).
 
-## Precedence
+## precedence
 
-CLI flag over config over built-in default. For example, `-a codex` on the command line overrides `defaults.agent` in config, which overrides the built-in `claude`.
+CLI flag over config over built-in default. for example, `-a codex` on the command line overrides `defaults.agent` in config, which overrides the built-in `claude`.
 
-## Environment overrides
+## environment overrides
 
 | variable | effect |
 | --- | --- |
-| `ORCR_HOME` | relocates `~/.orcr` (store, socket, lock, config, logs, data). Use it for tests and sandboxes; pair it with a distinct `herdr.session`. |
+| `ORCR_HOME` | relocates `~/.orcr` (store, socket, lock, config, logs, data). use it for tests and sandboxes; pair it with a distinct `herdr.session`. |
 | `ORCR_HERDR_BIN` | overrides herdr binary discovery |
 | `ORCR_HERDR_SESSION` | overrides `herdr.session` (empty means fall back to config or default) |
 
-The full environment contract, including the variables injected into agents and loop-run commands, is on the [environment variables reference](/docs/reference/environment).
+the full environment contract, including the variables injected into agents and loop-run commands, is on the [environment variables reference](/docs/reference/environment).

@@ -1,17 +1,17 @@
 ---
-title: Choose providers and models
-description: Route each piece of work to the right provider and model with -a, --model, and --effort.
+title: choose providers and models
+description: route each piece of work to the right provider and model with -a, --model, and --effort.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-orcr runs agents across providers so you can send each piece of work to the tool that does it best. claude and codex ship supported in the first release. This page covers how to pick a provider and model per agent, and a starting routing table.
+orcr runs agents across providers so you can send each piece of work to the tool that does it best. claude and codex ship supported in the first release. this page covers how to pick a provider and model per agent, and a starting routing table.
 
-## The three flags
+## the three flags
 
-- `-a <provider>`: the provider. Optional; when omitted it falls back to `defaults.agent` in config (default `claude`). It also filters `orcr agent ls` and `orcr top`.
-- `--model <m>`: the model within that provider. Empty means the provider default.
-- `--effort <e>`: the reasoning-effort level, mapped per provider. Empty means the provider default.
+- `-a <provider>`: the provider. optional; when omitted it falls back to `defaults.agent` in config (default `claude`). it also filters `orcr agent ls` and `orcr top`.
+- `--model <m>`: the model within that provider. empty means the provider default.
+- `--effort <e>`: the reasoning-effort level, mapped per provider. empty means the provider default.
 
 ```sh
 orcr agent run --name reviewer -a codex -p "…"
@@ -19,21 +19,21 @@ orcr agent run --name fixer -a claude --model opus --effort high -p "…"
 orcr agent ask  --name draft -a claude --model sonnet -p "…"
 ```
 
-In the SDK these are `agent`, `model`, and `effort`:
+in the SDK these are `agent`, `model`, and `effort`:
 
 ```ts
 await orcr.agent.run({ agent: "claude", model: "opus", effort: "high", name: "fixer", prompt: "…" });
 ```
 
-## Precedence
+## precedence
 
-The provider (and any tuning) resolves in this order:
+the provider (and any tuning) resolves in this order:
 
 ```text
 CLI flag  →  config (defaults.agent / defaults.model / defaults.effort)  →  built-in default
 ```
 
-Set the defaults you use most in `~/.orcr/config.json`, and override per agent on the command line:
+set the defaults you use most in `~/.orcr/config.json`, and override per agent on the command line:
 
 ```jsonc
 {
@@ -45,25 +45,25 @@ Set the defaults you use most in `~/.orcr/config.json`, and override per agent o
 }
 ```
 
-There is no default timeout, which is deliberate and separate from provider defaults. See [Configure orchestratr](/docs/guides/configuration).
+there is no default timeout, which is deliberate and separate from provider defaults. see [configure orchestratr](/docs/guides/configuration).
 
-## A routing table to start from
+## a routing table to start from
 
-Match the work to the model, and use a different provider for review than the one that did the work. Edit this for your setup.
+match the work to the model, and use a different provider for review than the one that did the work. edit this for your setup.
 
-| Need | Route to |
+| need | route to |
 | --- | --- |
-| Heavy reasoning, a hard bug | `claude` (opus) or your strongest model |
-| Cheap bulk, fan-out | a fast model (`-a claude --model sonnet`, or similar) |
-| Independent review, verification | a **different provider than the author** |
+| heavy reasoning, a hard bug | `claude` (opus) or your strongest model |
+| cheap bulk, fan-out | a fast model (`-a claude --model sonnet`, or similar) |
+| independent review, verification | a **different provider than the author** |
 
-The "different provider for review" rule shows up throughout the [patterns](/docs/patterns): a codex verifier judging claude's work, or vice versa, so the reviewer is a different model than the author and gives an independent check rather than one model judging its own output.
+the "different provider for review" rule shows up throughout the [patterns](/docs/patterns): a codex verifier judging claude's work, or vice versa, so the reviewer is a different model than the author and gives an independent check rather than one model judging its own output.
 
 `orcr server status` shows which integrations are installed, so you know what you can route to right now.
 
-## Supported providers
+## supported providers
 
-A provider is supported only when both integration layers are present: herdr's integration (so herdr can observe the agent's state and transcript) and orcr's integration (so orcr can drive it). Running with a provider missing either layer fails fast at `agent run` with `integration_missing`, naming the missing layer and the exact fix; nothing is spawned. There are no degraded half-modes. See [Providers and integrations](/docs/concepts/providers).
+a provider is supported only when both integration layers are present: herdr's integration (so herdr can observe the agent's state and transcript) and orcr's integration (so orcr can drive it). running with a provider missing either layer fails fast at `agent run` with `integration_missing`, naming the missing layer and the exact fix; nothing is spawned. there are no degraded half-modes. see [providers and integrations](/docs/concepts/providers).
 
 | provider | orcr integration | herdr integration | supported |
 | --- | --- | --- | --- |
@@ -71,13 +71,13 @@ A provider is supported only when both integration layers are present: herdr's i
 | codex | built-in | `herdr integration install codex` | yes |
 | pi / opencode / … | planned | available in herdr | not yet |
 
-## Why interactive TUIs, not headless API calls
+## why interactive TUIs, not headless API calls
 
-Every agent runs as a real interactive TUI in a herdr pane, which keeps provider routing affordable. Interactive TUI sessions bill against flat subscription plans; headless API-mode invocations bill per token, so running many agents per token costs far more than a flat plan. Running agents as real TUIs also keeps them attachable and steerable, and it is the durable path as providers restrict headless usage. Routing work across providers lets you spend each subscription's quota where that provider is strongest.
+every agent runs as a real interactive TUI in a herdr pane, which keeps provider routing affordable. interactive TUI sessions bill against flat subscription plans; headless API-mode invocations bill per token, so running many agents per token costs far more than a flat plan. running agents as real TUIs also keeps them attachable and steerable, and it is the durable path as providers restrict headless usage. routing work across providers lets you spend each subscription's quota where that provider is strongest.
 
-## Next
+## next
 
-- [Run and manage agents](/docs/guides/run-agents): where these flags go.
-- [Teach any agent to orchestrate (the skill)](/docs/guides/the-skill): the routing table lives there too, for the agent to use.
-- [Configure orchestratr](/docs/guides/configuration): defaults and per-provider caps.
-- [Providers and integrations](/docs/concepts/providers): the two-layer model.
+- [run and manage agents](/docs/guides/run-agents): where these flags go.
+- [teach any agent to orchestrate (the skill)](/docs/guides/the-skill): the routing table lives there too, for the agent to use.
+- [configure orchestratr](/docs/guides/configuration): defaults and per-provider caps.
+- [providers and integrations](/docs/concepts/providers): the two-layer model.

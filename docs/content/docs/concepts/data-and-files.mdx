@@ -1,13 +1,13 @@
 ---
-title: Data and file conventions
-description: The ~/.orcr/data tree that mirrors the path tree, the file convention for getting structured output from an agent, and where workflow code lives.
+title: data and file conventions
+description: the ~/.orcr/data tree that mirrors the path tree, the file convention for getting structured output from an agent, and where workflow code lives.
 ---
 
-Terminal output is for humans. When a step needs a guaranteed-format answer (JSON, a verdict, a file another step will read), use a file. orcr gives every agent and loop a data directory for exactly this, and the conventions below make the handoff reliable.
+terminal output is for humans. when a step needs a guaranteed-format answer (JSON, a verdict, a file another step will read), use a file. orcr gives every agent and loop a data directory for exactly this, and the conventions below make the handoff reliable.
 
-## The data tree mirrors the path tree
+## the data tree mirrors the path tree
 
-Each agent's data folder is its path, segment by segment, with the uuid as the last folder, so reused paths never collide and every generation stays browsable.
+each agent's data folder is its path, segment by segment, with the uuid as the last folder, so reused paths never collide and every generation stays browsable.
 
 ```text
 agent  review/fanout/file_1  → data/review/fanout/file_1/<uuid>/
@@ -22,16 +22,16 @@ agent  nightly/r82c9s/triage → data/nightly/r82c9s/triage/<uuid>/
                                  launch.json · agent-managed files
 ```
 
-`ORCR_AGENT_DATA_DIR` points at the agent's own folder. `ORCR_LOOP_DATA_DIR` points at the **loop's** folder: one scratch space shared across *all* runs, where state that must survive run to run lives. Each run's folder and its agents' folders nest inside it automatically, because data mirrors paths. Directories are created when the agent, loop, or run is created and handed to the context as env (see [agents and lineage](/docs/concepts/agents-and-lineage#the-env-contract)). The SDK exposes the same as `a.dataDir` and the run's `dataDir`.
+`ORCR_AGENT_DATA_DIR` points at the agent's own folder. `ORCR_LOOP_DATA_DIR` points at the **loop's** folder: one scratch space shared across *all* runs, where state that must survive run to run lives. each run's folder and its agents' folders nest inside it automatically, because data mirrors paths. directories are created when the agent, loop, or run is created and handed to the context as env (see [agents and lineage](/docs/concepts/agents-and-lineage#the-env-contract)). the SDK exposes the same as `a.dataDir` and the run's `dataDir`.
 
-Data dirs relocate with `ORCR_HOME`: they resolve to `$ORCR_HOME/data/…`. orcr guarantees existence and uniqueness, nothing else: contents are entirely the caller's.
+data dirs relocate with `ORCR_HOME`: they resolve to `$ORCR_HOME/data/…`. orcr guarantees existence and uniqueness, nothing else: contents are entirely the caller's.
 
-## The file convention
+## the file convention
 
-When a step needs a guaranteed-format answer, the prompt says where to write it, and the caller reads and **validates** the file itself. orcr never infers success from files. Two rules make it reliable:
+when a step needs a guaranteed-format answer, the prompt says where to write it, and the caller reads and **validates** the file itself. orcr never infers success from files. two rules make it reliable:
 
-1. **Absolute paths only**, with one allowed exception: `$ORCR_AGENT_DATA_DIR` and `$ORCR_LOOP_DATA_DIR`. When you use those, the prompt must tell the agent to *expand* the variable ("expand the environment variable `ORCR_AGENT_DATA_DIR` and write to …"), and the caller reads the same path from the handle's `dataDir`.
-2. **A completion sentinel in the prompt** ("…then say DONE"), so the caller knows the write finished.
+1. **absolute paths only**, with one allowed exception: `$ORCR_AGENT_DATA_DIR` and `$ORCR_LOOP_DATA_DIR`. when you use those, the prompt must tell the agent to *expand* the variable ("expand the environment variable `ORCR_AGENT_DATA_DIR` and write to …"), and the caller reads the same path from the handle's `dataDir`.
+2. **a completion sentinel in the prompt** ("…then say DONE"), so the caller knows the write finished.
 
 ```ts
 const r = await orcr.agent.run({
@@ -44,20 +44,20 @@ await orcr.agent.wait("fanout/*");
 const findings = await readFile(`${r.dataDir}/response.md`, "utf8");
 ```
 
-Recommend temp-file-then-rename to the agent when atomicity matters. For the casual cases, `ask()` and `lastResponse()` read the transcript directly and skip the file entirely. See [fan-out and merge](/docs/patterns/fan-out-and-merge) for the full pattern.
+recommend temp-file-then-rename to the agent when atomicity matters. for the casual cases, `ask()` and `lastResponse()` read the transcript directly and skip the file entirely. see [fan-out and merge](/docs/patterns/fan-out-and-merge) for the full pattern.
 
 ## orcr writes no prompt or response files
 
 orcr writes exactly two kinds of file into the data tree, both metadata:
 
-- `<agent data dir>/launch.json`: the full launch payload (provider, resolved argv, prompt, model, effort, cwd, gc, timeout, the effective path and how it was derived, injected env, never your environment). Written before any herdr call; used for audit and recovery, not auto-relaunch.
-- `<loop data dir>/loop.json`: the loop definition payload. And `<run folder>/run.log`: the run command's stdout and stderr as JSONL.
+- `<agent data dir>/launch.json`: the full launch payload (provider, resolved argv, prompt, model, effort, cwd, gc, timeout, the effective path and how it was derived, injected env, never your environment). written before any herdr call; used for audit and recovery, not auto-relaunch.
+- `<loop data dir>/loop.json`: the loop definition payload. and `<run folder>/run.log`: the run command's stdout and stderr as JSONL.
 
-orcr writes **no prompt or response files**. Responses come from the provider's native transcript via `agent logs`; on completion only a transcript locator and cursor are recorded (see [providers and integrations](/docs/concepts/providers#transcript-adapters)). Anything else in a data dir is the agent's own doing, by the file convention above. The known limitation: if a provider rotates or deletes its transcript files, historical `--last-response` fails with `transcript_unavailable` rather than returning a stale copy.
+orcr writes **no prompt or response files**. responses come from the provider's native transcript via `agent logs`; on completion only a transcript locator and cursor are recorded (see [providers and integrations](/docs/concepts/providers#transcript-adapters)). anything else in a data dir is the agent's own doing, by the file convention above. the known limitation: if a provider rotates or deletes its transcript files, historical `--last-response` fails with `transcript_unavailable` rather than returning a stale copy.
 
-## The workflow-project convention
+## the workflow-project convention
 
-Workflow *code* (scaffolded TypeScript projects) is separate from the *data* tree above, which holds runtime state. Code has two homes, split by lifetime:
+workflow *code* (scaffolded TypeScript projects) is separate from the *data* tree above, which holds runtime state. code has two homes, split by lifetime:
 
 ```text
 one-time dynamic workflow → $ORCR_AGENT_DATA_DIR/workflows/     (written for this
@@ -66,11 +66,11 @@ reusable workflow / loop  → ~/.orcr/workflows/<name>/           (the shared li
                             every loop's script lives here)
 ```
 
-A loop is by definition reusable, so its command points at `~/.orcr/workflows/<name>/` while its `data/<loop>/` dir keeps only runtime state. This keeps code and state cleanly split: remove and recreate a loop and its script survives; two loops can share one project; `loop ls --json` always shows the recorded absolute command.
+a loop is by definition reusable, so its command points at `~/.orcr/workflows/<name>/` while its `data/<loop>/` dir keeps only runtime state. this keeps code and state cleanly split: remove and recreate a loop and its script survives; two loops can share one project; `loop ls --json` always shows the recorded absolute command.
 
-One rule keeps the pieces straight: a loop's **cwd stays the workspace** (its creation cwd, which its agents inherit), so a script living here is invoked by absolute path (`<project>/node_modules/.bin/tsx <project>/x.ts`; Node resolves the project's dependencies by walking up from the script file). This is convention: the CLI never enforces where a project lives; the skill teaches it. See [write workflows with the SDK](/docs/guides/sdk-workflows).
+one rule keeps the pieces straight: a loop's **cwd stays the workspace** (its creation cwd, which its agents inherit), so a script living here is invoked by absolute path (`<project>/node_modules/.bin/tsx <project>/x.ts`; Node resolves the project's dependencies by walking up from the script file). this is convention: the CLI never enforces where a project lives; the skill teaches it. see [write workflows with the SDK](/docs/guides/sdk-workflows).
 
-## Two filesystem footnotes
+## two filesystem footnotes
 
-- **The data tree is a convention, never an identity authority.** Rows and uuids are the authority. Nothing derives an agent's identity from a folder's existence.
-- **Data-dir GC must be row-aware.** A run's folder contains its descendants' folders, so any future cleanup must not delete a shared ancestor while a child row still has data below it. Retention and GC for `~/.orcr/data` is future work; today nothing is deleted automatically.
+- **the data tree is a convention, never an identity authority.** rows and uuids are the authority. nothing derives an agent's identity from a folder's existence.
+- **data-dir GC must be row-aware.** a run's folder contains its descendants' folders, so any future cleanup must not delete a shared ancestor while a child row still has data below it. retention and GC for `~/.orcr/data` is future work; today nothing is deleted automatically.
