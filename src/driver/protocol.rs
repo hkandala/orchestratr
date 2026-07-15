@@ -164,6 +164,43 @@ pub struct SessionSnapshot {
     pub focused_workspace_id: Option<String>,
 }
 
+/// Where `pane.read` reads content from (spec §5.6 delivery verification / driver reference).
+/// `Visible` = the current viewport (what a real TUI shows, incl. the input box).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadSource {
+    Visible,
+    Recent,
+    RecentUnwrapped,
+    Detection,
+}
+
+impl ReadSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReadSource::Visible => "visible",
+            ReadSource::Recent => "recent",
+            ReadSource::RecentUnwrapped => "recent_unwrapped",
+            ReadSource::Detection => "detection",
+        }
+    }
+}
+
+/// Result of `pane.read` — the rendered pane content (ANSI stripped). Used to detect TUI
+/// readiness and verify that a delivered prompt actually left the input box (§5.6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaneReadResult {
+    pub pane_id: String,
+    pub workspace_id: String,
+    pub tab_id: String,
+    /// `source`/`format` come back as their enum strings; kept as `String` for leniency.
+    pub source: String,
+    pub format: String,
+    pub text: String,
+    pub revision: u64,
+    pub truncated: bool,
+}
+
 /// Result of `pane.move`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaneMoveResult {

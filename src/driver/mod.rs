@@ -190,6 +190,29 @@ impl HerdrDriver {
         expect_ack(&r)
     }
 
+    /// `pane.read` — read a pane's rendered content (ANSI stripped). Used to detect TUI
+    /// readiness before the first prompt and to verify a prompt actually submitted (§5.6).
+    /// `lines` limits how many trailing lines are returned (`None` = herdr default).
+    pub fn pane_read(
+        &self,
+        pane_id: &str,
+        source: ReadSource,
+        lines: Option<u32>,
+    ) -> Result<PaneReadResult> {
+        let r = self.call(
+            "pane.read",
+            json!({
+                "pane_id": pane_id,
+                "source": source.as_str(),
+                "format": "text",
+                "strip_ansi": true,
+                "lines": lines,
+            }),
+        )?;
+        expect_type(&r, "pane_read")?;
+        from_field(&r, "read")
+    }
+
     /// `pane.move` — move a pane to a destination (park/un-park; across workspaces).
     pub fn pane_move(
         &self,

@@ -53,6 +53,11 @@
       "result_type": "ok"
     },
     {
+      "op": "pane_read",
+      "method": "pane.read",
+      "result_type": "pane_read"
+    },
+    {
       "op": "pane_move",
       "method": "pane.move",
       "result_type": "pane_move"

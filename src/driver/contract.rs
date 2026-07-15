@@ -70,6 +70,11 @@ pub const DRIVER_CONTRACT: &[DriverOp] = &[
         result_type: "ok",
     },
     DriverOp {
+        op: "pane_read",
+        method: "pane.read",
+        result_type: "pane_read",
+    },
+    DriverOp {
         op: "pane_move",
         method: "pane.move",
         result_type: "pane_move",
