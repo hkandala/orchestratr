@@ -2,9 +2,9 @@
 
 Concrete facts about the installed herdr, gathered by probing the live binary and
 socket before implementation began. This is a **head start** for the driver work
-(primarily M0, §11.7) — the M0 implementer MUST still regenerate the conformance
-fixture from the live `herdr api schema --json` and verify every operation against a
-**disposable** session, but these facts are correct as of herdr 0.7.2 and should save
+(primarily M0, §11.7) — the M0 implementer MUST still verify every operation against
+the live `herdr api schema --json` on a **disposable** session, but these facts are
+correct as of herdr 0.7.2 and should save
 a lot of discovery time. Record any discrepancy you find in the relevant milestone
 `notes.md`.
 
