@@ -8,11 +8,15 @@ vocabulary.
 
 ## Install
 
-Grab a prebuilt `orcr` from [GitHub Releases](../../releases) (macOS arm64/x64, Linux x64) —
-each `orcr-<version>-<target>.tar.gz` ships a `.sha256`:
+```sh
+curl -fsSL https://orchestratr.dev/install.sh | sh
+```
+
+Or grab a prebuilt `orcr` from [GitHub Releases](../../releases) — macOS (`macos-arm64`,
+`macos-x64`) and Linux (`linux-x64`); each `orcr-<version>-<platform>.tar.gz` ships a `.sha256`:
 
 ```sh
-tar -xzf orcr-<version>-<target>.tar.gz && mv orcr /usr/local/bin/
+tar -xzf orcr-<version>-<platform>.tar.gz && mv orcr /usr/local/bin/
 ```
 
 Or build from source (Rust ≥ 1.89):
@@ -107,3 +111,16 @@ ORCR_E2E=1 cargo test -- --test-threads=1   # e2e against live herdr + the mock 
 Not yet published to npm (the package name is finalized at release); the SDK installs locally
 via `orcr scaffold` (which pins `@orchestratr/sdk` to the CLI's own version) — set `ORCR_SDK_SPEC`
 to a local `file:`/tarball path for offline installs.
+
+To cut a release, use [`scripts/release.sh`](scripts/release.sh) (`scripts/release.sh minor`);
+see [`RELEASING.md`](RELEASING.md).
+
+## License
+
+orchestratr is **dual-licensed**:
+
+- **Open source** — [GNU AGPL-3.0-or-later](LICENSE).
+- **Commercial** — for organizations that cannot comply with the AGPL; contact
+  `hey@orchestratr.dev`.
+
+See [`LICENSE`](LICENSE) for the full text.
