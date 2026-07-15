@@ -8,15 +8,26 @@ vocabulary.
 
 ## Install
 
-Build the `orcr` binary (Rust ≥ 1.89):
+Grab a prebuilt `orcr` from [GitHub Releases](../../releases) (macOS arm64/x64, Linux x64) —
+each `orcr-<version>-<target>.tar.gz` ships a `.sha256`:
 
 ```sh
+tar -xzf orcr-<version>-<target>.tar.gz && mv orcr /usr/local/bin/
+```
+
+Or build from source (Rust ≥ 1.89):
+
+```sh
+cargo install orchestratr    # installs the `orcr` binary
+# or, from a checkout:
 cargo build --release        # → target/release/orcr
 ```
 
+The SDK is on npm: `npm i @orchestratr/sdk`.
+
 `orcr` needs a running herdr on your PATH with the claude/codex integrations installed
 (`orcr server status` shows what's available). Only `orcr scaffold` and the SDK need Node
-(≥ 20).
+(≥ 20). See [`RELEASING.md`](RELEASING.md) for the release process.
 
 ## Quickstart (CLI)
 
