@@ -1,7 +1,7 @@
 # The data-dir & file conventions
 
 orcr guarantees a unique, existing data directory per agent/loop/run and hands it to the
-context as env (§5.3). Contents are entirely yours — orcr never infers success from files.
+context as env. Contents are entirely yours — orcr never infers success from files.
 
 ## The data tree mirrors the path tree
 
@@ -51,5 +51,5 @@ When a step needs a structured answer, tell the agent **where to write it**, the
 `ask()` / `logs --last-response` cover the casual cases via the native transcript — orcr keeps
 no response copies, it always reads the provider's own file.
 
-Data-dir cleanup is future work (§17); nothing here is an identity authority — rows and uuids
+Data-dir cleanup is future work; nothing here is an identity authority — rows and uuids
 are.

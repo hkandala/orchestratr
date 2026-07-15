@@ -1,4 +1,4 @@
-//! Duration parsing (spec §6: "Durations always carry units — `45s`, `20m`, `3h`").
+//! Duration parsing: durations always carry units — `45s`, `20m`, `3h`.
 //!
 //! A duration is a positive integer followed by a unit suffix. Supported units:
 //! `ms`, `s`, `m`, `h`, `d`. A bare number (no unit) is rejected, and zero/negative

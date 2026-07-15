@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// The herdr socket protocol version orcr is built against and requires as a minimum.
 pub const MIN_HERDR_PROTOCOL: u32 = 16;
 
-/// Raw agent lifecycle state as reported by herdr (spec §5.6 / driver reference). This is
+/// Raw agent lifecycle state as reported by herdr. This is
 /// the only vocabulary herdr emits; orcr normalizes it (see [`normalize_done`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,7 +32,7 @@ impl AgentStatus {
     }
 }
 
-/// Normalize a herdr-reported status for orcr's completion check (spec §5.6): a herdr
+/// Normalize a herdr-reported status for orcr's completion check: a herdr
 /// `done` is treated as `idle` (and only becomes `ended` when pane closure is also
 /// observed, which the caller handles). Everything else passes through unchanged.
 pub fn normalize_done(status: AgentStatus) -> AgentStatus {
@@ -59,7 +59,7 @@ impl AgentSessionRefKind {
     }
 }
 
-/// The transcript pointer herdr reports per pane (spec §5.6).
+/// The transcript pointer herdr reports per pane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSessionInfo {
     pub source: String,
@@ -164,7 +164,7 @@ pub struct SessionSnapshot {
     pub focused_workspace_id: Option<String>,
 }
 
-/// Where `pane.read` reads content from (spec §5.6 delivery verification / driver reference).
+/// Where `pane.read` reads content from (delivery verification).
 /// `Visible` = the current viewport (what a real TUI shows, incl. the input box).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -187,7 +187,7 @@ impl ReadSource {
 }
 
 /// Result of `pane.read` — the rendered pane content (ANSI stripped). Used to detect TUI
-/// readiness and verify that a delivered prompt actually left the input box (§5.6).
+/// readiness and verify that a delivered prompt actually left the input box.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaneReadResult {
     pub pane_id: String,
@@ -236,7 +236,7 @@ pub enum SplitDirection {
     Down,
 }
 
-/// Params for `agent.start` (spec §11.7): herdr creates the tab + pane and the returned
+/// Params for `agent.start`: herdr creates the tab + pane and the returned
 /// ids are authoritative — orcr does not pre-create tabs.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentStartParams {
@@ -255,7 +255,7 @@ pub struct AgentStartParams {
     pub workspace_id: Option<String>,
 }
 
-/// A pane-move destination (tagged union on `type`), spec §11.7 / driver reference.
+/// A pane-move destination (tagged union on `type`).
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PaneMoveDestination {

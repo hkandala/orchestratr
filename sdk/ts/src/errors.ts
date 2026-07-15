@@ -1,10 +1,10 @@
-// Typed errors — one class per §13 error code. Protocol failures become the matching class,
+// Typed errors — one class per error code. Protocol failures become the matching class,
 // carrying `{ code, message, details }`. Force-required is a `StateConflict` whose
-// `details.reason === "force_required"` (spec §8, §13).
+// `details.reason === "force_required"`.
 
 export type ErrorDetails = Record<string, unknown> | null;
 
-/** Base class for every orcr error. `code` is the stable §13 code. */
+/** Base class for every orcr error. `code` is the stable error code. */
 export class OrcrError extends Error {
   readonly code: string;
   readonly details: ErrorDetails;

@@ -1,4 +1,4 @@
-// §9.5 Generate-and-filter — fan the same prompt across providers/models, judge once, keep the
+// Generate-and-filter — fan the same prompt across providers/models, judge once, keep the
 // winner.
 import { orcr } from "@orchestratr/sdk";
 import { PRIMARY, SECONDARY, mockHint, runAsScript } from "./_common.js";

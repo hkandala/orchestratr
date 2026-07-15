@@ -1,4 +1,4 @@
-// §9.7 Loop-until-done + durable handoff — kickoff.ts: work now, then hand off to a loop.
+// Loop-until-done + durable handoff — kickoff.ts: work now, then hand off to a loop.
 // Work a queue interactively; when the remaining work becomes "check back later", hand off to
 // a loop and exit. (Spec-literal version is in skill/references/patterns.md.)
 import { orcr } from "@orchestratr/sdk";
@@ -13,12 +13,12 @@ const BUDGET = Number(process.env.ORCR_RECIPE_BUDGET ?? "1") | 0;
 export async function run(): Promise<void> {
   let done = 0;
   while (queueSize() > 0 && done < BUDGET) {
-    await workOneItem(); // §9.1-style inner loop
+    await workOneItem(); // fix-until-green-style inner loop
     done += 1;
   }
 
   if (queueSize() > 0) {
-    // The loop's script lives in a scaffolded project (§6.6) at the reusable home; the loop
+    // The loop's script lives in a scaffolded project at the reusable home; the loop
     // keeps *this* cwd (the workspace its agents inherit); the script is invoked by absolute
     // path. In the fixture, resume.ts sits next to this file.
     const here = path.dirname(fileURLToPath(import.meta.url));

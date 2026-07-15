@@ -1,4 +1,4 @@
-// Shared helpers for the §9 recipe fixtures. These are the "real stubs" the milestone calls
+// Shared helpers for the recipe fixtures. These are the "real stubs" the milestone calls
 // for — the illustrative helpers from the spec (stillCheap(), queueSize(), git-diff lists)
 // replaced by deterministic implementations so the recipes run end-to-end in CI against the
 // mock provider. The copy-pasteable, provider-literal versions live in
@@ -30,7 +30,7 @@ export function makeBuild(failFor: number): () => { ok: boolean; errors: string 
   };
 }
 
-/** A tiny in-memory work queue (stands in for the durable-handoff queue in §9.7). */
+/** A tiny in-memory work queue (stands in for the durable-handoff queue). */
 export class WorkQueue {
   private items: string[];
   constructor(items: string[]) {

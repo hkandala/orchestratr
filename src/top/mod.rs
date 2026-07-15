@@ -1,4 +1,4 @@
-//! `orcr top` — the live, view-only monitoring TUI (spec §6.3, §7).
+//! `orcr top` — the live, view-only monitoring TUI.
 //!
 //! The pure tree/filter/render logic lives in [`model`] (unit-tested without a PTY); the
 //! interactive terminal app lives in [`app`]. The CLI builds a [`model::TopFilter`] from its

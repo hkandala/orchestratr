@@ -1,4 +1,4 @@
-// §9.7 resume.ts — one increment per loop run (runs with the §5.3 env contract). Works one
+// resume.ts — one increment per loop run (runs with the env contract). Works one
 // item; removes its own loop when the queue is empty.
 import { orcr } from "@orchestratr/sdk";
 import { queueSize, workOneItem } from "./queue.js";

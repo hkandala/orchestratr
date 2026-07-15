@@ -37,8 +37,8 @@
 //!
 //! Per-turn `@`-directives in the prompt: `@turn_ms=` `@tool_gaps=` `@gap_ms=` `@block`
 //! `@say=<word>` (the exact response text) `@write=<relpath>` (also write the response to
-//! `$ORCR_AGENT_DATA_DIR/<relpath>` — the file convention, §8). It writes a claude-format
-//! `transcript.jsonl` into its data dir so `logs`/`ask` resolve (§11.4 `mock` adapter).
+//! `$ORCR_AGENT_DATA_DIR/<relpath>` — the file convention). It writes a claude-format
+//! `transcript.jsonl` into its data dir so `logs`/`ask` resolve (the `mock` adapter).
 //!
 //! The line `/quit` (or EOF) ends the process. Every response ends with the sentinel
 //! `DONE` so file-convention-style callers have a stable marker.
@@ -81,7 +81,7 @@ impl Reporter {
             .unwrap_or_default();
         let agent = std::env::var("ORCR_MOCK_AGENT").unwrap_or_else(|_| "mock".to_string());
         // A non-empty session id by default so herdr reports an `agent_session` pointer
-        // promptly (orcr's spawn pipeline waits for it, §11.1). herdr surfaces this as an
+        // promptly (orcr's spawn pipeline waits for it). herdr surfaces this as an
         // `id`-kind pointer which orcr captures reliably; orcr's `mock`-provider transcript
         // locator then reads the transcript from the agent's data dir (below).
         let session_id = Some(
@@ -138,7 +138,7 @@ impl Reporter {
         }
     }
 
-    /// Append a user prompt + assistant response to the claude-format transcript (§11.4), so a
+    /// Append a user prompt + assistant response to the claude-format transcript, so a
     /// caller's `lastResponse()`/`ask()` reads real text back.
     fn append_transcript(&self, prompt: &str, response: &str) {
         let Some(path) = &self.transcript_path else {
@@ -175,7 +175,7 @@ struct Directives {
     /// `@say=<word>` — the exact response text to emit (single token; default echoes the prompt).
     say: Option<String>,
     /// `@write=<relpath>` — also write the response to `$ORCR_AGENT_DATA_DIR/<relpath>` (the
-    /// file convention, §8), so fan-out/generate recipes can read a guaranteed-format answer.
+    /// file convention), so fan-out/generate recipes can read a guaranteed-format answer.
     write: Option<String>,
 }
 
@@ -258,7 +258,7 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    // Prove the env contract reached the pane (§5.3): dump every ORCR_* var to a file in the
+    // Prove the env contract reached the pane: dump every ORCR_* var to a file in the
     // agent's data dir, so e2e can assert it without needing to read pane env over herdr
     // (which the socket does not expose).
     if let Ok(dir) = std::env::var("ORCR_AGENT_DATA_DIR") {
@@ -328,7 +328,7 @@ fn main() {
 
         // Per-turn directives embedded in the prompt (`@turn_ms=..`, `@tool_gaps=..`,
         // `@gap_ms=..`, `@block`) override the env defaults — this is how e2e drives a
-        // specific turn shape per agent without needing to inject pane env (§5.6 matrix).
+        // specific turn shape per agent without needing to inject pane env.
         let d = Directives::parse(prompt, turn_ms, tool_gaps_env, gap_ms_env, block_env);
 
         // Optionally stay idle for a beat after receiving input, so orcr's submit-confirm loop
@@ -360,7 +360,7 @@ fn main() {
         if late_transcript_ms == 0 {
             reporter.append_transcript(prompt, &response);
         }
-        // The file convention (§8): write the response to a data-dir file on request.
+        // The file convention: write the response to a data-dir file on request.
         if let Some(rel) = &d.write {
             if let Ok(dir) = std::env::var("ORCR_AGENT_DATA_DIR") {
                 if !dir.is_empty() {

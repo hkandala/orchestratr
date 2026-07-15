@@ -1,4 +1,4 @@
-//! The single-instance lock (spec §11.6).
+//! The single-instance lock.
 //!
 //! The server takes an exclusive advisory `flock` on `$ORCR_HOME/orcr.lock` and holds it
 //! for its entire lifetime; it refuses to open the store without it. This is what makes

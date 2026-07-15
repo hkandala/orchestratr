@@ -1,13 +1,13 @@
-//! The interactive `orcr top` TUI (spec §7): a view-only, event-driven dashboard.
+//! The interactive `orcr top` TUI: a view-only, event-driven dashboard.
 //!
-//! Data path (§11.6): `watch.open` yields one consistent snapshot pinned at `snapshot_seq`
+//! Data path: `watch.open` yields one consistent snapshot pinned at `snapshot_seq`
 //! plus the event stream from that sequence. A background reader turns the stream into a
 //! coalesced "dirty" signal; the render loop then re-reads a fresh consistent `api.snapshot`
 //! per frame (event-driven, never a fixed timer poll), so a burst of events collapses into a
 //! single redraw and the tree can neither miss nor double-apply a change. `cursor_expired`,
 //! `server_stopping`, or a dropped connection trigger a reconnect + re-snapshot.
 //!
-//! Interaction is navigation only: `/` filter (the §5.1 pattern grammar), arrows
+//! Interaction is navigation only: `/` filter (the path pattern grammar), arrows
 //! collapse/expand and move the selection, `q` quits.
 
 use super::model::{build_tree, Row, Snapshot, TopFilter, Tree};
@@ -127,7 +127,7 @@ impl App {
                 Ok(Some(frame)) => {
                     // A `server_stopping` (server going away) or `cursor_expired` (our cursor
                     // fell out of the retained window) control frame means we must re-snapshot
-                    // and resubscribe (spec §7, §11.6).
+                    // and resubscribe.
                     let kind = frame
                         .get("event")
                         .and_then(|e| e.get("kind"))
@@ -185,7 +185,7 @@ impl App {
         let mut last_refresh = Instant::now();
         // `dirty` persists across iterations: a coalesced signal that arrives inside a
         // sub-FRAME window (e.g. right after a keypress-driven redraw) is held until the
-        // frame gate opens, so a state change is never dropped (§11.6 "never miss").
+        // frame gate opens, so a state change is never dropped ("never miss").
         let mut dirty = false;
         loop {
             terminal

@@ -106,7 +106,7 @@ orcr api schema [--output <file>] | snapshot
 orcr top [<pattern>] [-a <provider>] [--status <s>] [--managed|--unmanaged] [--loops]
 ```
 
-## Exit codes (§6.1, §13)
+## Exit codes
 
 | code | meaning                                                              |
 | ---- | ------------------------------------------------------------------- |

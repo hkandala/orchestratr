@@ -40,7 +40,7 @@ for await (const e of a.followLogs()) { … }
 await a.lastResponse();                  // → string (throws TranscriptUnavailable)
 await a.kill();
 
-// collections take §5.1 patterns (CLI-identical), relative to the current scope
+// collections take glob patterns (CLI-identical), relative to the current scope
 await orcr.agent.wait("fanout/*", { timeout });
 await orcr.agent.ls({ pattern, agent, status, managed, all });
 await orcr.agent.kill("review/**", { force });   // no interactive confirm in the SDK
@@ -85,7 +85,7 @@ const at = await orcr.agent.prepareAttach("review/worker", { takeover: false });
 
 ## Typed errors
 
-One class per §13 code: `NotFound`, `InvalidRequest`, `StateConflict`, `Blocked`, `Timeout`,
+One class per error code: `NotFound`, `InvalidRequest`, `StateConflict`, `Blocked`, `Timeout`,
 `IntegrationMissing`, `TranscriptUnavailable`, `EnvironmentError`, `ServerError` — each carries
 `{ code, message, details }`. Force-required is a `StateConflict` (`err.forceRequired`).
 

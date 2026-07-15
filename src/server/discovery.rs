@@ -1,4 +1,4 @@
-//! Unmanaged agent discovery (spec §5.7, §11.5): the server polls the user's *other* herdr
+//! Unmanaged agent discovery: the server polls the user's *other* herdr
 //! sessions and tracks the agents it finds there — for supported providers only — as
 //! read-only `unmanaged` rows. orcr never manages, queues, GCs, or (without `--force`) kills
 //! them; it only mirrors herdr's reporting into the store so `ls`/`top`/`wait` see them.
@@ -19,11 +19,11 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-/// How often discovery polls non-owned sessions (spec §5.7 "every few seconds").
+/// How often discovery polls non-owned sessions (every few seconds).
 const DISCOVERY_TICK: Duration = Duration::from_secs(3);
 
 impl Server {
-    /// Start the unmanaged-discovery poller (spec §5.7). `ORCR_DISABLE_DISCOVERY=1` suppresses
+    /// Start the unmanaged-discovery poller. `ORCR_DISABLE_DISCOVERY=1` suppresses
     /// it — used by tests that assert an exact event stream and must not pull in the developer's
     /// real, non-owned herdr sessions.
     pub(super) fn start_unmanaged_discovery(&self) {
@@ -62,7 +62,7 @@ impl Server {
             };
             let driver = match HerdrDriver::connect(sock) {
                 Ok(d) => d,
-                Err(_) => continue, // session unreachable — never free its names (§11.5)
+                Err(_) => continue, // session unreachable — never free its names
             };
             let agents = match driver.agent_list() {
                 Ok(a) => a,
@@ -74,7 +74,7 @@ impl Server {
     }
 
     /// Upsert the supported-provider agents found in one non-owned session, and mark any
-    /// previously-tracked terminal that has vanished as `ended` (spec §5.7).
+    /// previously-tracked terminal that has vanished as `ended`.
     fn reconcile_session(
         &self,
         session: &str,
@@ -87,7 +87,7 @@ impl Server {
                 continue; // no provider → not a supported agent
             };
             if !self.discovery_supported(provider, state) {
-                continue; // unsupported providers are ignored entirely (§5.7)
+                continue; // unsupported providers are ignored entirely
             }
             seen.insert(info.terminal_id.clone());
             let status = normalize_done(info.agent_status).as_str();
@@ -139,7 +139,7 @@ impl Server {
             }
         }
 
-        // Terminals we tracked but no longer see → ended (the pane closed, §5.7). Only runs
+        // Terminals we tracked but no longer see → ended (the pane closed). Only runs
         // on a session we successfully read, so an outage never ends rows.
         let tracked = {
             let store = self.inner.store.lock().unwrap();
@@ -165,7 +165,7 @@ impl Server {
         }
     }
 
-    /// Whether a provider is tracked by discovery (spec §5.7 / §11.4: both integrations
+    /// Whether a provider is tracked by discovery (both integrations
     /// present). The test-only `mock` provider counts as supported when enabled.
     fn discovery_supported(&self, provider: &str, state: &IntegrationState) -> bool {
         if provider == MOCK_PROVIDER && mock_provider_enabled() {
@@ -174,7 +174,7 @@ impl Server {
         state.get(provider).map(|p| p.supported()).unwrap_or(false)
     }
 
-    /// Build the unmanaged path `unmanaged/<session>/<pane>` (spec §5.7), slugifying each
+    /// Build the unmanaged path `unmanaged/<session>/<pane>`, slugifying each
     /// component and appending a deterministic terminal-hash suffix on a slug collision with an
     /// existing active row.
     fn unmanaged_path(&self, session: &str, pane_id: &str, terminal_id: &str) -> String {
@@ -193,7 +193,7 @@ impl Server {
     }
 }
 
-/// Normalize a component to a legal identity segment (`[a-z0-9_]`, ≤ 64 chars, §5.1). Any
+/// Normalize a component to a legal identity segment (`[a-z0-9_]`, ≤ 64 chars). Any
 /// other character (incl. herdr's `:` in pane ids, `-`/`.` in session names) becomes `_`.
 fn slug(s: &str) -> String {
     let mut out: String = s
@@ -214,7 +214,7 @@ fn slug(s: &str) -> String {
     out
 }
 
-/// A short, deterministic hex hash of a terminal id (for slug de-collision, §5.7).
+/// A short, deterministic hex hash of a terminal id (for slug de-collision).
 fn short_hash(s: &str) -> String {
     let mut h = DefaultHasher::new();
     s.hash(&mut h);

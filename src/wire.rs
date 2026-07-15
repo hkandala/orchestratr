@@ -1,4 +1,4 @@
-//! The orcr socket wire protocol (spec §11.6).
+//! The orcr socket wire protocol.
 //!
 //! orcr's server speaks its own newline-delimited JSON protocol over a Unix socket — the
 //! same *shape* as herdr's, but a distinct protocol version. Requests are
@@ -26,7 +26,7 @@ pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
 /// A decoded request envelope. `id` is echoed verbatim into the response so a multiplexed
 /// client can correlate; `params` defaults to `{}` when omitted. Unknown top-level fields
-/// are ignored (additive evolution, §11.6).
+/// are ignored (additive evolution).
 #[derive(Debug, Clone)]
 pub struct Request {
     /// The protocol version the client declares. Absent = 0 (fails negotiation).
@@ -85,7 +85,7 @@ pub fn event_frame(subscription: &str, seq: i64, event: Value) -> Value {
     json!({ "subscription": subscription, "seq": seq, "event": event })
 }
 
-/// The `unsupported_version` error for a rejected handshake (§11.6).
+/// The `unsupported_version` error for a rejected handshake.
 pub fn unsupported_version(declared: u32) -> OrcrError {
     OrcrError::new(
         ErrorCode::EnvironmentError,

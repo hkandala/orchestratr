@@ -1,5 +1,5 @@
-//! The pure, testable core of `orcr top` (spec §7): parse a runtime snapshot into a typed
-//! model, apply the same filters as `agent ls` (§5.1 pattern grammar, no implicit prefixing),
+//! The pure, testable core of `orcr top`: parse a runtime snapshot into a typed
+//! model, apply the same filters as `agent ls` (path pattern grammar, no implicit prefixing),
 //! and build the **path tree** — level-1 segments as top nodes, loops and their active runs
 //! as subtrees, parked agents collapsed into an `Idle` node, unmanaged agents grouped under
 //! their session — with cross-scope lineage shown as a `↖ <parent path>` annotation (never a
@@ -13,10 +13,10 @@ use crate::path::Pattern;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The synthetic top node parked agents collapse into (spec §7).
+/// The synthetic top node parked agents collapse into.
 pub const IDLE_NODE: &str = "idle";
 
-/// One agent as seen in a runtime snapshot (`api.snapshot` / `watch.open`, §11.6).
+/// One agent as seen in a runtime snapshot (`api.snapshot` / `watch.open`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapAgent {
     pub uuid: String,
@@ -36,7 +36,7 @@ pub struct SnapAgent {
     pub parked_at: Option<i64>,
 }
 
-/// One active run of a loop (spec §6.2/§7).
+/// One active run of a loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapRun {
     pub run_id: String,
@@ -47,7 +47,7 @@ pub struct SnapRun {
     pub started_at: Option<i64>,
 }
 
-/// One loop definition (spec §6.2/§7).
+/// One loop definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapLoop {
     pub uuid: String,
@@ -58,7 +58,7 @@ pub struct SnapLoop {
     pub runs: Vec<SnapRun>,
 }
 
-/// A whole runtime snapshot at `seq` (spec §11.6).
+/// A whole runtime snapshot at `seq`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
     pub seq: i64,
@@ -112,7 +112,7 @@ impl SnapAgent {
         }
     }
 
-    /// The moment the current status began — the basis for the age column (spec §7).
+    /// The moment the current status began — the basis for the age column.
     pub fn since_ms(&self) -> i64 {
         match self.status.as_str() {
             "starting" => self.starting_at,
@@ -155,12 +155,12 @@ impl SnapRun {
     }
 }
 
-/// The pre-scoping filter (spec §6.3): the CLI flags and the in-TUI `/` pattern share this.
+/// The pre-scoping filter: the CLI flags and the in-TUI `/` pattern share this.
 /// The predicate over agents is **byte-for-byte the same** as the store's `agent ls` filter
 /// so the tree's agent node set equals the equivalent `ls` query (an acceptance criterion).
 #[derive(Debug, Clone, Default)]
 pub struct TopFilter {
-    /// Compiled, scope-resolved §5.1 pattern (no implicit prefix matching).
+    /// Compiled, scope-resolved path pattern (no implicit prefix matching).
     pub pattern: Option<Pattern>,
     pub provider: Option<String>,
     pub status: Option<String>,
@@ -171,7 +171,7 @@ pub struct TopFilter {
 }
 
 impl TopFilter {
-    /// The `agent ls` predicate (spec §6.1): pattern (anchored §5.1), provider, status, and
+    /// The `agent ls` predicate: pattern (anchored), provider, status, and
     /// managed/unmanaged. `loops_only` is applied separately (it is about placement, not the
     /// per-agent predicate).
     pub fn agent_matches(&self, a: &SnapAgent) -> bool {
@@ -247,7 +247,7 @@ pub struct Tree {
     pub snapshot: Snapshot,
 }
 
-/// Build the path tree from a snapshot under a filter (spec §7).
+/// Build the path tree from a snapshot under a filter.
 pub fn build_tree(snap: &Snapshot, filter: &TopFilter) -> Tree {
     let mut roots: BTreeMap<String, Node> = BTreeMap::new();
 
@@ -348,7 +348,7 @@ fn insert_agent(roots: &mut BTreeMap<String, Node>, ai: usize, a: &SnapAgent) {
 }
 
 /// Annotate a node with `↖ <parent path>` when its parent lives elsewhere in the tree
-/// (a child created at an absolute path outside its parent's scope, spec §7). A parent that
+/// (a child created at an absolute path outside its parent's scope). A parent that
 /// is a proper ancestor needs no annotation — natural placement already shows the edge.
 fn annotate_lineage(node: &mut Node, a: &SnapAgent) {
     if let Some(pp) = &a.parent_path {
@@ -361,7 +361,7 @@ fn annotate_lineage(node: &mut Node, a: &SnapAgent) {
 
 impl Tree {
     /// The set of agent uuids present anywhere in the tree — the "node set" the filter
-    /// acceptance compares against `agent ls` (spec §7 acceptance).
+    /// acceptance compares against `agent ls`.
     pub fn agent_uuids(&self) -> BTreeSet<String> {
         let mut set = BTreeSet::new();
         for n in self.roots.values() {
@@ -431,7 +431,7 @@ impl Tree {
     }
 }
 
-/// A flattened, display-ready row for the TUI (spec §7). `depth` drives indentation;
+/// A flattened, display-ready row for the TUI. `depth` drives indentation;
 /// `has_children`/`collapsed` drive the expand/collapse affordance.
 #[derive(Debug, Clone)]
 pub struct Row {
@@ -445,13 +445,13 @@ pub struct Row {
     pub label: String,
     /// The trailing detail (status · provider·model · blocked · age / loop schedule / run).
     pub detail: String,
-    /// True for blocked agents (the "needs a human" queue floats upward, spec §7).
+    /// True for blocked agents (the "needs a human" queue floats upward).
     pub blocked: bool,
 }
 
 impl Tree {
     /// Flatten the tree into visible rows honoring the `collapsed` set (by node path). Blocked
-    /// agents float above their siblings (spec §7). `now` drives the age column.
+    /// agents float above their siblings. `now` drives the age column.
     pub fn flatten(&self, collapsed: &BTreeSet<String>, now: i64) -> Vec<Row> {
         let mut out = Vec::new();
         for n in ordered_children(self.roots.values().collect(), &self.snapshot) {
@@ -545,7 +545,7 @@ impl Tree {
 }
 
 /// Order siblings for display: blocked agents float to the top, then alphabetical by segment
-/// (spec §7). `structure_lines` stays purely alphabetical (deterministic golden output).
+/// `structure_lines` stays purely alphabetical (deterministic golden output).
 fn ordered_children<'a>(mut nodes: Vec<&'a Node>, snap: &Snapshot) -> Vec<&'a Node> {
     nodes.sort_by(|a, b| {
         let ab = node_is_blocked(a, snap);
@@ -559,7 +559,7 @@ fn node_is_blocked(n: &Node, snap: &Snapshot) -> bool {
     matches!(n.kind, NodeKind::Agent(ai) if snap.agents[ai].status == "blocked")
 }
 
-/// The status glyph (spec §7).
+/// The status glyph.
 pub fn glyph_for_status(status: &str) -> char {
     match status {
         "working" => '●',
@@ -572,7 +572,7 @@ pub fn glyph_for_status(status: &str) -> char {
     }
 }
 
-/// A compact age like `2m14s`, `8m`, `3h`, `4d` (spec §7 row age).
+/// A compact age like `2m14s`, `8m`, `3h`, `4d` for the row age column.
 pub fn format_age(ms: i64) -> String {
     let secs = (ms / 1000).max(0);
     if secs < 60 {
@@ -591,7 +591,7 @@ pub fn format_age(ms: i64) -> String {
     }
 }
 
-/// A local wall-clock `HH:MM` for a UTC-ms instant (loop next-fire / run due, spec §7).
+/// A local wall-clock `HH:MM` for a UTC-ms instant (loop next-fire / run due).
 fn format_clock(ms: i64) -> String {
     use chrono::TimeZone;
     let tz = crate::cron::tz_from_name(&crate::cron::local_tz_name());

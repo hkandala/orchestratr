@@ -1,4 +1,4 @@
-//! The orcr server: the single-writer process behind the socket API (spec §4, §11.6).
+//! The orcr server: the single-writer process behind the socket API.
 //!
 //! Runtime model (decided here in M1; see `m1-server-protocol/notes.md`): a **threaded,
 //! blocking** design, not tokio. rusqlite is synchronous and the store is a single writer,
@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Default bounded replay retention (events kept for subscription replay, §11.6).
+/// Default bounded replay retention (events kept for subscription replay).
 /// Overridable via `ORCR_EVENT_RETENTION` (tests use a small value to force expiry).
 const DEFAULT_EVENT_RETENTION: i64 = 10_000;
 
@@ -76,15 +76,15 @@ struct ServerInner {
     store_path: PathBuf,
     sub_counter: AtomicU64,
     /// Serializes owned-session workspace creation so concurrent spawns under one level-1
-    /// segment never create duplicate workspaces (§11.1).
+    /// segment never create duplicate workspaces.
     spawn_lock: Mutex<()>,
-    /// The latest reconciler drift snapshot for `server status` (spec §11.5).
+    /// The latest reconciler drift snapshot for `server status`.
     drift: Mutex<gc::DriftSnapshot>,
-    /// Cumulative count of moves the reconciler completed or rolled back (spec §11.5).
+    /// Cumulative count of moves the reconciler completed or rolled back.
     repaired: AtomicU64,
     /// Per-agent move mutexes: serialize a GC park/un-park against a concurrent `send`
     /// un-park for the *same* agent so a two-phase move is never pre-empted mid-flight
-    /// (spec §5.4; a park committing `begin_move` must not race a send's recovery/deliver).
+    /// (a park committing `begin_move` must not race a send's recovery/deliver).
     move_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
@@ -141,7 +141,7 @@ pub fn run_foreground(home: &Home, config: Config) -> Result<StartOutcome> {
     }
 
     // Race for the instance lock. The winner is the one true server; a loser waits for the
-    // winner's readiness and reports already_running (idempotent start, §6.4).
+    // winner's readiness and reports already_running (idempotent start).
     let lock = match InstanceLock::try_acquire(home.lock_path())? {
         Some(l) => l,
         None => {
@@ -155,7 +155,7 @@ pub fn run_foreground(home: &Home, config: Config) -> Result<StartOutcome> {
         }
     };
 
-    // We hold the lock: we are the server. Open the store (only under the lock, §11.6).
+    // We hold the lock: we are the server. Open the store (only under the lock).
     let store = Store::open(home.store_path())?;
     let retention = std::env::var("ORCR_EVENT_RETENTION")
         .ok()
@@ -211,8 +211,8 @@ pub fn run_foreground(home: &Home, config: Config) -> Result<StartOutcome> {
     // Install signal handlers so SIGTERM/SIGINT trigger a graceful stop.
     install_signal_handlers(&server);
 
-    // Reconcile the store against herdr reality on start (spec §11.5), then start the queue
-    // engine (promotion + spawn pipelines + stuck-start guard, §5.5/§11.1).
+    // Reconcile the store against herdr reality on start, then start the queue
+    // engine (promotion + spawn pipelines + stuck-start guard).
     server.reconcile_on_start();
     server.recover_loops_on_start();
     server.start_queue_worker();
@@ -323,7 +323,7 @@ impl Server {
             }
         };
 
-        // Version negotiation (§11.6): every request declares the protocol.
+        // Version negotiation: every request declares the protocol.
         if req.protocol != ORCR_PROTOCOL {
             let _ = write_to(
                 writer,
@@ -527,7 +527,7 @@ impl Server {
                 // If our cursor has fallen out of the retained window (extreme churn + a
                 // slow/backed-up client), the next `events_since` would silently start at the
                 // new oldest row, skipping the trimmed range. Signal `cursor_expired` and stop
-                // so the client re-snapshots and resubscribes (spec §11.6) — mirroring the
+                // so the client re-snapshots and resubscribes — mirroring the
                 // subscribe-time check, which only ran once at subscribe.
                 if server.inner.bus.is_expired(next) {
                     let (_, oldest) = server.inner.bus.cursor();
@@ -621,7 +621,7 @@ impl Server {
             .iter()
             .map(|l| {
                 let mut row = loops::loop_row_json(l);
-                // Active runs (running/stopping) become the loop's subtree in `top` (§7).
+                // Active runs (running/stopping) become the loop's subtree in `top`.
                 let runs: Vec<Value> = store
                     .active_runs(&l.uuid)
                     .unwrap_or_default()
@@ -650,7 +650,7 @@ impl Server {
         (seq, snap)
     }
 
-    /// `server.status` (spec §6.4, §13). herdr reachability is probed best-effort: the
+    /// `server.status`. herdr reachability is probed best-effort: the
     /// binary is discovered and, if the owned session is already running, pinged — status
     /// never *starts* a herdr server.
     fn status_result(&self) -> Value {
@@ -674,7 +674,7 @@ impl Server {
             "integrations": integrations,
             "counts": counts,
             // Whether loop firing survives a reboot: true only when `server enable` has
-            // registered a launchd/systemd unit (spec §6.4). The scheduler always runs while
+            // registered a launchd/systemd unit. The scheduler always runs while
             // the server is up; this reflects the durable start-at-login registration.
             "loops_firing": crate::service::is_enabled(&self.inner.home),
             "loops": self.loops_status(),
@@ -733,7 +733,7 @@ impl Server {
         })
     }
 
-    /// Active/paused loops + their next fires for `server status` (spec §6.4, §13).
+    /// Active/paused loops + their next fires for `server status`.
     fn loops_status(&self) -> Value {
         let store = self.inner.store.lock().unwrap();
         let loops = store.list_loops(&[], None, false).unwrap_or_default();
@@ -763,8 +763,8 @@ impl Server {
     }
 }
 
-/// The flat `agent ls` / snapshot row for an agent (spec §6.1, §13). `queue_position` and
-/// `parent_path` are derived (never stored, §12).
+/// The flat `agent ls` / snapshot row for an agent. `queue_position` and
+/// `parent_path` are derived (never stored).
 fn agent_row_json(store: &Store, a: &AgentFull) -> Value {
     let mut row = json!({
         "uuid": a.uuid,
@@ -779,7 +779,7 @@ fn agent_row_json(store: &Store, a: &AgentFull) -> Value {
         "created_at": a.created_at,
         "last_status_change_at": a.last_status_change_at,
     });
-    // Fields the `top` tree needs to place/annotate a row (spec §7): the herdr session for
+    // Fields the `top` tree needs to place/annotate a row: the herdr session for
     // unmanaged grouping, and the clocks that drive the age column per status.
     if let Some(s) = &a.herdr_session {
         row["herdr_session"] = json!(s);
@@ -862,7 +862,7 @@ fn bind_socket(path: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-/// Reject a socket path that is a symlink or owned by another uid (spec §11.6). A missing
+/// Reject a socket path that is a symlink or owned by another uid. A missing
 /// path is fine (we are about to create it). A non-socket file is an error.
 pub fn validate_socket_path(path: &Path) -> Result<()> {
     match std::fs::symlink_metadata(path) {

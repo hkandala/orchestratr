@@ -1,4 +1,4 @@
-// The socket transport (spec §11.6): connect to `$ORCR_HOME/orcr.sock`, negotiate the
+// The socket transport: connect to `$ORCR_HOME/orcr.sock`, negotiate the
 // protocol version, send one-shot requests, open subscription streams, and auto-start the
 // server. Mirrors the Rust `server/client.rs`: one request per connection (a fresh socket
 // per call), newline-delimited JSON frames, `{ok,result|error}` envelopes.

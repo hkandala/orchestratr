@@ -1,4 +1,4 @@
-//! The sqlite store (spec §12): WAL-mode, owned exclusively by the server (single
+//! The sqlite store: WAL-mode, owned exclusively by the server (single
 //! writer). All writes go through `BEGIN IMMEDIATE` transactions.
 //!
 //! M0 ships the full schema and the transaction plumbing, plus a minimal typed agent
@@ -41,7 +41,7 @@ impl Store {
 
     fn init(conn: Connection) -> Result<Store> {
         // WAL for concurrent readers alongside the single writer; enforce FKs off (the
-        // schema uses uuids as soft references, mirroring §12's "sqlite coordinates").
+        // schema uses uuids as soft references ("sqlite coordinates").
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(map_sqlite)?;
         conn.pragma_update(None, "synchronous", "NORMAL")
@@ -56,7 +56,7 @@ impl Store {
     }
 
     /// Stamp the schema version on a fresh store, or refuse to open a store written by a
-    /// different schema version (spec §12/§15).
+    /// different schema version.
     fn stamp_or_check_version(&mut self) -> Result<()> {
         let existing: Option<String> = self
             .conn
@@ -109,7 +109,7 @@ impl Store {
     }
 
     /// Run `f` inside a `BEGIN IMMEDIATE` transaction — commit on `Ok`, roll back on
-    /// `Err`. This is the single-writer write path (spec §12).
+    /// `Err`. This is the single-writer write path.
     pub fn with_immediate_tx<T>(
         &mut self,
         f: impl FnOnce(&rusqlite::Transaction) -> Result<T>,
@@ -123,7 +123,7 @@ impl Store {
         Ok(out)
     }
 
-    /// Enqueue a new managed agent (spec §5.5, §11.1): allocate `queue_seq` and insert the
+    /// Enqueue a new managed agent: allocate `queue_seq` and insert the
     /// full launch payload with status `queued`, all in **one** `BEGIN IMMEDIATE`
     /// transaction so concurrent same-path spawns can never both win. Also appends an
     /// `agent.created` event in the same transaction. Returns the allocated `queue_seq` and
@@ -209,7 +209,7 @@ impl Store {
     }
 
     /// Promote queued agents to `starting` in strict `queue_seq` FIFO order, up to the
-    /// available global and per-provider capacity, in one transaction (spec §5.5). A
+    /// available global and per-provider capacity, in one transaction. A
     /// provider that is at its cap is skipped (its later siblings wait) while agents of
     /// other providers may still promote. Emits `queue.promoted` + `agent.status_changed`
     /// per promotion. Returns the promoted rows and the highest event seq written.
@@ -317,7 +317,7 @@ impl Store {
     }
 
     /// Resolve a bare **path** (no wildcard) to a row: the active agent at that path if any,
-    /// else the most recent ended agent with that path (spec §5.1 "path-first" resolution).
+    /// else the most recent ended agent with that path (path-first resolution).
     pub fn find_by_path(&self, path: &str) -> Result<Option<Resolution>> {
         if let Some(a) = self
             .conn
@@ -346,7 +346,7 @@ impl Store {
         Ok(ended.map(Resolution::LatestEnded))
     }
 
-    /// Resolve a uuid or unambiguous uuid prefix (≥ 8 hex, git-style, spec §5.1).
+    /// Resolve a uuid or unambiguous uuid prefix (≥ 8 hex, git-style).
     pub fn find_by_uuid_or_prefix(&self, s: &str) -> Result<UuidLookup> {
         // Exact match first.
         if let Some(a) = self.agent_full(s)? {
@@ -378,7 +378,7 @@ impl Store {
         }
     }
 
-    /// Record the herdr location of an agent after a spawn step (spec §11.1). Emits
+    /// Record the herdr location of an agent after a spawn step. Emits
     /// `agent.location_changed`. Returns the event seq.
     pub fn record_location(
         &mut self,
@@ -410,7 +410,7 @@ impl Store {
         })
     }
 
-    /// Capture the provider's transcript pointer once herdr reports it (spec §11.1).
+    /// Capture the provider's transcript pointer once herdr reports it.
     pub fn record_agent_session(&mut self, uuid: &str, kind: &str, value: &str) -> Result<()> {
         let (uuid, kind, value) = (uuid.to_string(), kind.to_string(), value.to_string());
         let now = now_millis();
@@ -469,7 +469,7 @@ impl Store {
         })
     }
 
-    /// Status-guarded transition to `ended` (the reap interlock, spec §5.4): only ends the row
+    /// Status-guarded transition to `ended` (the reap interlock): only ends the row
     /// if it is still at `from_status`, so a concurrent un-park (which moves the status away
     /// from `parked`) wins the race. Writes `agent.status_changed` + `agent.ended` in the same
     /// transaction. Returns the event seq if this call ended the row, or `None` if the guard
@@ -514,7 +514,7 @@ impl Store {
         })
     }
 
-    /// Set `cancel_requested` on an agent (the §5.5 interlock, checked between pipeline
+    /// Set `cancel_requested` on an agent (the cancel interlock, checked between pipeline
     /// steps). Returns true if the row existed.
     pub fn request_cancel(&mut self, uuid: &str) -> Result<bool> {
         let uuid = uuid.to_string();
@@ -544,7 +544,7 @@ impl Store {
         Ok(v.unwrap_or(0) != 0)
     }
 
-    // --- Turn completion (spec §5.6, §12) ---
+    // --- Turn completion ---
 
     /// The latest turn row for an agent (highest `input_seq`), or `None` if it has none.
     pub fn latest_turn(&self, uuid: &str) -> Result<Option<TurnRow>> {
@@ -581,7 +581,7 @@ impl Store {
     }
 
     /// Set (or clear) `idle_since` — the start of the current idle streak used by the
-    /// stable-idle completion check (§5.6).
+    /// stable-idle completion check.
     pub fn set_idle_since(&mut self, uuid: &str, at: Option<i64>) -> Result<()> {
         let uuid = uuid.to_string();
         self.with_immediate_tx(|tx| {
@@ -594,7 +594,7 @@ impl Store {
         })
     }
 
-    /// Deliver an input (spec §5.6): bump `input_seq`, open a turn row, and **re-arm** the
+    /// Deliver an input: bump `input_seq`, open a turn row, and **re-arm** the
     /// agent to `working` (clearing `idle_since`/`blocked_kind`) so a `wait` issued after
     /// this input cannot be satisfied by a stale idle. `source` is `orcr` or `external`.
     /// Emits `agent.status_changed`. Returns `Some((input_seq, event_seq))`, or **`None`** if
@@ -643,7 +643,7 @@ impl Store {
     }
 
     /// Settle a **primed, prompt-less** agent from `starting` → `idle` at the end of the spawn
-    /// pipeline (§5.6), stamping the idle clock in the same transaction. Guarded on
+    /// pipeline, stamping the idle clock in the same transaction. Guarded on
     /// `status='starting'` so a concurrent `kill` that already ended the row (ended/lost/canceled)
     /// is not silently revived to `idle`. Returns the `agent.status_changed` event seq, or `None`
     /// if the row was no longer `starting`.
@@ -671,7 +671,7 @@ impl Store {
         })
     }
 
-    /// Open a synthetic **external** turn (spec §5.6): input orcr didn't deliver, observed as
+    /// Open a synthetic **external** turn: input orcr didn't deliver, observed as
     /// a `working` transition with no pending turn. Same effect as [`deliver_input`] with
     /// `source=external`, plus `working_seen_at` set (we saw the working that triggered it).
     /// Returns `None` if the row is already terminal (same guard as [`deliver_input`]).
@@ -691,7 +691,7 @@ impl Store {
         Ok(Some((seq, ev)))
     }
 
-    /// Complete a turn (spec §5.6): mark `completed_at`, flip public status `working → idle`,
+    /// Complete a turn: mark `completed_at`, flip public status `working → idle`,
     /// and emit `agent.turn_completed` + `agent.status_changed`. No-op (returns 0) if the
     /// turn is already completed or the agent is no longer `working`. Returns the event seq.
     pub fn complete_turn(
@@ -724,7 +724,7 @@ impl Store {
             if updated == 0 {
                 // Turn marked complete but the public status is no longer this turn's `working`
                 // (already idle/parked, OR a racing `send` bumped input_seq and opened a newer
-                // turn — §5.6: an old idle can never satisfy a newer send). Record the turn but
+                // turn: an old idle can never satisfy a newer send). Record the turn but
                 // emit no working→idle flip; the completion monitor re-arms the newer turn next
                 // tick.
                 return Ok(0);
@@ -746,7 +746,7 @@ impl Store {
     }
 
     /// Mark a turn completed **without** flipping the public status (used by `gc immediate`,
-    /// which goes `working → ended (completed)` with no transient public `idle`, §11.2). Emits
+    /// which goes `working → ended (completed)` with no transient public `idle`). Emits
     /// `agent.turn_completed`. Returns the event seq (0 if the turn was already completed).
     pub fn complete_turn_row(
         &mut self,
@@ -777,7 +777,7 @@ impl Store {
         })
     }
 
-    /// Mark an agent `blocked` (turn-scoped, §5.6): set the public status + `blocked_kind` on
+    /// Mark an agent `blocked` (turn-scoped): set the public status + `blocked_kind` on
     /// both the agent and its latest turn. Returns the event seq (0 if already blocked).
     pub fn mark_blocked(&mut self, uuid: &str, input_seq: i64, kind: &str) -> Result<i64> {
         let (uuid, kind) = (uuid.to_string(), kind.to_string());
@@ -835,8 +835,8 @@ impl Store {
         })
     }
 
-    /// Record the captured transcript locator/cursor for the final response (spec §11.2,
-    /// §12). No response copy is stored. Emits `agent.response_captured`. Returns event seq.
+    /// Record the captured transcript locator/cursor for the final response. No response
+    /// copy is stored. Emits `agent.response_captured`. Returns event seq.
     pub fn record_capture(&mut self, uuid: &str, locator: &str, cursor: &str) -> Result<i64> {
         let (uuid, locator, cursor) = (uuid.to_string(), locator.to_string(), cursor.to_string());
         self.with_immediate_tx(|tx| {
@@ -873,7 +873,7 @@ impl Store {
         Ok(rows)
     }
 
-    /// All agents matching a listing filter (spec §6.1 `ls`). Ordered by path then
+    /// All agents matching a listing filter (`ls`). Ordered by path then
     /// `created_at`. `include_ended` adds history (`--all`).
     pub fn list_agents(&self, filter: &AgentFilter) -> Result<Vec<AgentFull>> {
         let mut sql = format!("{AGENT_FULL_SELECT} WHERE 1=1");
@@ -893,7 +893,7 @@ impl Store {
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(map_sqlite)?;
         // Provider / status / pattern filters applied in Rust (glob semantics must not be
-        // SQL LIKE — `_` is a legal name char, §5.1).
+        // SQL LIKE — `_` is a legal name char).
         let pattern = match &filter.pattern {
             Some(p) => Some(crate::path::Pattern::compile(p)?),
             None => None,
@@ -919,7 +919,7 @@ impl Store {
     }
 
     /// The queue position (1-based rank by `queue_seq` among `queued` rows) of an agent, or
-    /// `None` if it is not queued (spec §12 "derived, never stored").
+    /// `None` if it is not queued (derived, never stored).
     pub fn queue_position(&self, uuid: &str) -> Result<Option<i64>> {
         self.conn
             .query_row(
@@ -934,7 +934,7 @@ impl Store {
     }
 
     /// Agents stuck in `starting` past `cutoff_ms` with no pane recorded — the stuck-start
-    /// guard's targets (spec §5.5). A pane recorded (`pane_id` set) counts as progress.
+    /// guard's targets. A pane recorded (`pane_id` set) counts as progress.
     pub fn stuck_starting(&self, cutoff_ms: i64) -> Result<Vec<AgentFull>> {
         let mut stmt = self
             .conn
@@ -951,7 +951,7 @@ impl Store {
         Ok(rows)
     }
 
-    /// Conservative restart re-arm (spec §5.6, §5.4): for agents mid-turn (`working`/`blocked`)
+    /// Conservative restart re-arm: for agents mid-turn (`working`/`blocked`)
     /// clear `idle_since` so the stable-idle completion timer re-measures from a **fresh** herdr
     /// transition, never trusting a pre-crash idle streak. For already-`idle` (turn-complete)
     /// agents, **restart the park clock** from now — otherwise a turn-complete agent that
@@ -975,7 +975,7 @@ impl Store {
         })
     }
 
-    /// All active managed agents (for reconciliation on server start, spec §11.5).
+    /// All active managed agents (for reconciliation on server start).
     pub fn active_managed_agents(&self) -> Result<Vec<AgentFull>> {
         let mut stmt = self
             .conn
@@ -991,10 +991,10 @@ impl Store {
         Ok(rows)
     }
 
-    // --- GC: park / reap / timeout (spec §5.4, §11.2) ---
+    // --- GC: park / reap / timeout ---
 
     /// Managed `gc auto` agents that are turn-complete and have been idle since at or before
-    /// `idle_cutoff`, with no move in flight — the park candidates (spec §5.4). The attach-lease
+    /// `idle_cutoff`, with no move in flight — the park candidates. The attach-lease
     /// guard is applied by the caller (leases live in a separate table).
     pub fn park_candidates(&self, idle_cutoff: i64) -> Result<Vec<AgentFull>> {
         let mut stmt = self
@@ -1012,7 +1012,7 @@ impl Store {
         Ok(rows)
     }
 
-    /// Managed agents parked since at or before `kill_cutoff` — the reap candidates (§5.4).
+    /// Managed agents parked since at or before `kill_cutoff` — the reap candidates.
     pub fn reap_candidates(&self, kill_cutoff: i64) -> Result<Vec<AgentFull>> {
         let mut stmt = self
             .conn
@@ -1029,7 +1029,7 @@ impl Store {
         Ok(rows)
     }
 
-    /// Managed agents whose explicit `--timeout` deadline has passed (spec §5.4) — kill with
+    /// Managed agents whose explicit `--timeout` deadline has passed — kill with
     /// `exit_reason: timeout`. Applies in every gc mode (there is no *default* timeout, but an
     /// explicit one is enforced even under `gc never`).
     pub fn timed_out_agents(&self, now: i64) -> Result<Vec<AgentFull>> {
@@ -1048,7 +1048,7 @@ impl Store {
         Ok(rows)
     }
 
-    /// Begin a two-phase pane move (spec §5.4): CAS the exclusive move lease on. Sets
+    /// Begin a two-phase pane move: CAS the exclusive move lease on. Sets
     /// `move_state`/`move_token` only if the row is still at `from_status` with no move in
     /// flight. Returns true if this call won the lease.
     pub fn begin_move(
@@ -1076,7 +1076,7 @@ impl Store {
         })
     }
 
-    /// Complete a park (spec §5.4): only if `move_token` still matches (the move we own). Sets
+    /// Complete a park: only if `move_token` still matches (the move we own). Sets
     /// `status='parked'`, clears the lease, stamps `parked_at`, and records the new location.
     /// Emits `agent.location_changed` + `agent.status_changed`. Returns the event seq (0 if the
     /// token no longer matches — someone else resolved the move).
@@ -1123,7 +1123,7 @@ impl Store {
         })
     }
 
-    /// Complete an un-park (spec §5.4): only if `move_token` matches. Sets `status='idle'`,
+    /// Complete an un-park: only if `move_token` matches. Sets `status='idle'`,
     /// clears the lease + `parked_at`, resets the idle clock, and records the new location.
     /// Emits `agent.location_changed` + `agent.status_changed`. Returns the event seq (0 if the
     /// token no longer matches).
@@ -1171,7 +1171,7 @@ impl Store {
         })
     }
 
-    /// Roll back a half-done move (spec §5.4, §11.5): clear the lease, leaving the public
+    /// Roll back a half-done move: clear the lease, leaving the public
     /// status where it was (idle for a failed park, parked for a failed un-park). Only affects
     /// the row if `move_token` matches. Returns true if a move was rolled back.
     pub fn rollback_move(&mut self, uuid: &str, token: &str) -> Result<bool> {
@@ -1189,7 +1189,7 @@ impl Store {
     }
 
     /// Managed agents with an in-flight move (`move_state != 'none'`) — half-done park/un-park
-    /// moves the reconciler completes or rolls back after a crash (spec §11.5).
+    /// moves the reconciler completes or rolls back after a crash.
     pub fn agents_in_move(&self) -> Result<Vec<AgentFull>> {
         let mut stmt = self
             .conn
@@ -1206,7 +1206,7 @@ impl Store {
         Ok(rows)
     }
 
-    /// All managed agents currently `lost` (spec §11.5): their panes vanished and the path
+    /// All managed agents currently `lost`: their panes vanished and the path
     /// stays reserved until reconciliation confirms the terminal is really gone.
     pub fn lost_agents(&self) -> Result<Vec<AgentFull>> {
         let mut stmt = self
@@ -1223,9 +1223,9 @@ impl Store {
         Ok(rows)
     }
 
-    // --- attach leases (spec §5.4, §6.1, §12) ---
+    // --- attach leases ---
 
-    /// Prepare an attach (spec §6.1, §11.2): in ONE transaction, validate the target is
+    /// Prepare an attach: in ONE transaction, validate the target is
     /// attachable, insert the lease, and read the current location — so GC can never move/reap
     /// between resolution and the lease landing. Returns the location + `attach.started` seq.
     /// Queued/starting/ended/lost targets → `state_conflict`.
@@ -1294,7 +1294,7 @@ impl Store {
         })
     }
 
-    /// Heartbeat an attach lease (spec §5.4): refresh `heartbeat_at`/`expires_at`. Returns
+    /// Heartbeat an attach lease: refresh `heartbeat_at`/`expires_at`. Returns
     /// true if the lease still existed.
     pub fn heartbeat_lease(&mut self, lease_id: &str, ttl_ms: i64) -> Result<bool> {
         let lease_id = lease_id.to_string();
@@ -1310,7 +1310,7 @@ impl Store {
         })
     }
 
-    /// Release an attach lease (spec §5.4): drop it and emit `attach.ended`. Returns the event
+    /// Release an attach lease: drop it and emit `attach.ended`. Returns the event
     /// seq (0 if the lease was already gone).
     pub fn release_lease(&mut self, lease_id: &str) -> Result<i64> {
         let lease_id = lease_id.to_string();
@@ -1338,7 +1338,7 @@ impl Store {
     }
 
     /// Whether the agent has a *fresh* attach lease (not expired) — the GC interlock that
-    /// survives restarts (spec §5.4).
+    /// survives restarts.
     pub fn has_fresh_lease(&self, uuid: &str, now: i64) -> Result<bool> {
         let n: i64 = self
             .conn
@@ -1351,7 +1351,7 @@ impl Store {
         Ok(n > 0)
     }
 
-    /// Delete every attach lease whose heartbeat expired (spec §5.4, cleanup). Emits
+    /// Delete every attach lease whose heartbeat expired (cleanup). Emits
     /// `attach.ended` per lease. Returns the highest event seq written (0 if none).
     pub fn expire_leases(&mut self, now: i64) -> Result<i64> {
         self.with_immediate_tx(|tx| {
@@ -1382,9 +1382,9 @@ impl Store {
         })
     }
 
-    // --- unmanaged discovery (spec §5.7, §11.5) ---
+    // --- unmanaged discovery ---
 
-    /// The active unmanaged row keyed by (herdr session, terminal_id), if any (§5.7).
+    /// The active unmanaged row keyed by (herdr session, terminal_id), if any.
     pub fn find_unmanaged(&self, session: &str, terminal_id: &str) -> Result<Option<AgentFull>> {
         self.conn
             .query_row(
@@ -1399,7 +1399,7 @@ impl Store {
             .map_err(map_sqlite)
     }
 
-    /// All active unmanaged rows in a session (to detect vanished terminals, §5.7).
+    /// All active unmanaged rows in a session (to detect vanished terminals).
     pub fn active_unmanaged(&self, session: &str) -> Result<Vec<AgentFull>> {
         let mut stmt = self
             .conn
@@ -1416,7 +1416,7 @@ impl Store {
     }
 
     /// Whether any *active* agent (managed or unmanaged) already holds `path` — used to make an
-    /// unmanaged path unique with a deterministic suffix (§5.7).
+    /// unmanaged path unique with a deterministic suffix.
     pub fn path_active(&self, path: &str) -> Result<bool> {
         let n: i64 = self
             .conn
@@ -1429,7 +1429,7 @@ impl Store {
         Ok(n > 0)
     }
 
-    /// Insert a discovered unmanaged agent row (spec §5.7). The path must already be made
+    /// Insert a discovered unmanaged agent row. The path must already be made
     /// unique by the caller. Emits `agent.created`. Returns the event seq.
     #[allow(clippy::too_many_arguments)]
     pub fn insert_unmanaged(
@@ -1487,7 +1487,7 @@ impl Store {
         })
     }
 
-    /// Update a discovered unmanaged agent's status/location (spec §5.7). Only emits + flips
+    /// Update a discovered unmanaged agent's status/location. Only emits + flips
     /// when something actually changed. Returns the event seq (0 if unchanged).
     pub fn update_unmanaged(
         &mut self,
@@ -1537,7 +1537,7 @@ impl Store {
         })
     }
 
-    // --- Events (the subscription cursor, §11.6, §12) ---
+    // --- Events (the subscription cursor) ---
 
     /// Append an event row and return its monotonic `seq`. This opens its own
     /// `BEGIN IMMEDIATE` transaction; producers that must write an event in the *same*
@@ -1582,7 +1582,7 @@ impl Store {
 
     /// Read every event whose `ref_uuid` is in `refs`, oldest first. Uses the
     /// `events(ref_uuid, seq)` index instead of a full-table scan — the targeted read `loop
-    /// logs` needs to interleave one loop's + its runs' scheduler lines (spec §6.2). Note:
+    /// logs` needs to interleave one loop's + its runs' scheduler lines. Note:
     /// events aged out by retention trimming are not returned (the retention-driven limit on
     /// old orcr-source lines, documented for `loop logs --source orcr`).
     pub fn events_for_refs(&self, refs: &[&str]) -> Result<Vec<EventRow>> {
@@ -1632,7 +1632,7 @@ impl Store {
     }
 
     /// Trim the events table to at most `keep_last` most-recent rows (bounded replay
-    /// retention, §11.6). Returns the lowest `seq` still retained afterward (0 if empty).
+    /// retention). Returns the lowest `seq` still retained afterward (0 if empty).
     pub fn trim_events(&mut self, keep_last: i64) -> Result<i64> {
         let keep_last = keep_last.max(0);
         self.with_immediate_tx(|tx| {
@@ -1650,7 +1650,7 @@ impl Store {
         })
     }
 
-    /// The fleet status counts surfaced in `server status` (§6.4): managed live/queued/blocked
+    /// The fleet status counts surfaced in `server status`: managed live/queued/blocked
     /// plus active unmanaged. Typed so `server status` doesn't reach past the DAL into raw SQL.
     pub fn status_counts(&self) -> Result<StatusCounts> {
         let count = |sql: &str| -> Result<i64> {
@@ -1672,7 +1672,7 @@ impl Store {
 
     /// Delete an agent row and its turn/attach bookkeeping (test-only, behind the debug
     /// method gate). Simulates the store being reset under a live pane — the
-    /// unknown-marked-pane reconciliation drill (spec §11.5).
+    /// unknown-marked-pane reconciliation drill.
     pub fn debug_delete_agent(&mut self, uuid: &str) -> Result<()> {
         let uuid = uuid.to_string();
         self.with_immediate_tx(|tx| {
@@ -1686,9 +1686,9 @@ impl Store {
         })
     }
 
-    // --- Loops (spec §6.2, §11.3, §12) ---
+    // --- Loops ---
 
-    /// Create a durable loop definition (spec §6.2). The name must be unique among **active
+    /// Create a durable loop definition. The name must be unique among **active
     /// or paused** loops (a removed name is reusable — histories never collide because each
     /// definition has its own uuid). Writes a `loop.created` event in the same txn; returns
     /// the event seq.
@@ -1755,7 +1755,7 @@ impl Store {
     }
 
     /// Resolve a loop by name: the active/paused definition first, else the most recent ended
-    /// one (spec §6.2 name resolution).
+    /// one (name resolution).
     pub fn find_loop_by_name(&self, name: &str) -> Result<Option<LoopRow>> {
         if let Some(l) = self
             .conn
@@ -1797,7 +1797,7 @@ impl Store {
             .map_err(map_sqlite)
     }
 
-    /// List loops (spec §6.2 `loop ls`). `names` filters by name (any status); `status`
+    /// List loops (`loop ls`). `names` filters by name (any status); `status`
     /// filters by status; without `include_ended`, only active/paused are returned.
     pub fn list_loops(
         &self,
@@ -1824,7 +1824,7 @@ impl Store {
             .collect())
     }
 
-    /// The names of loops that are currently active or paused (namespace protection, §5.1).
+    /// The names of loops that are currently active or paused (namespace protection).
     pub fn active_loop_names(&self) -> Result<Vec<String>> {
         let mut stmt = self
             .conn
@@ -1914,14 +1914,14 @@ impl Store {
         Ok(rows)
     }
 
-    /// All loops (any status) — for restart recovery (spec §11.3).
+    /// All loops (any status) — for restart recovery.
     pub fn all_loops(&self) -> Result<Vec<LoopRow>> {
         self.list_loops(&[], None, true)
     }
 
-    // --- Loop runs (spec §6.2, §11.3, §12) ---
+    // --- Loop runs ---
 
-    /// Allocate a run row transactionally (spec §11.3): every run is durable from the moment
+    /// Allocate a run row transactionally: every run is durable from the moment
     /// it is asked for. Scheduled fires at capacity coalesce into at most one pending
     /// scheduled run under `overlap=queue` (or drop under `skip`); manual runs always
     /// allocate. Returns the allocation outcome + the event seq written.
@@ -1941,7 +1941,7 @@ impl Store {
             // Advance the loop's schedule *inside this same txn* as the run allocation, so a
             // crash can't leave a fired occurrence without its schedule advanced — which would
             // make restart recovery log a spurious `missed_while_down` for an occurrence that
-            // actually fired (spec §11.3). Applied on every scheduled-fire outcome (allocated /
+            // actually fired. Applied on every scheduled-fire outcome (allocated /
             // coalesced / skipped), mirroring the pre-atomic advance_schedule call. Returns the
             // highest event seq so far (loop.ended for a `once` end, else the allocation's ev).
             let apply_advance = |tx: &rusqlite::Transaction, base_ev: i64| -> Result<i64> {
@@ -2034,7 +2034,7 @@ impl Store {
             // When a slot is free we reserve it atomically *inside this same txn* by inserting
             // the row already `running` (start_now); at capacity it goes in `pending`. Because
             // `BEGIN IMMEDIATE` serializes writers and `active` counts running/stopping rows,
-            // no concurrent allocation/promotion can hand the same slot out twice (spec §11.3).
+            // no concurrent allocation/promotion can hand the same slot out twice.
             let uuid = uuid::Uuid::now_v7().to_string();
             let mut run_id = new_run_id();
             for _ in 0..8 {
@@ -2064,7 +2064,7 @@ impl Store {
             let run = read_run_row_tx(tx, &uuid)?
                 .ok_or_else(|| OrcrError::server_error("loop", "allocated run vanished"))?;
             // Always `loop.fired` for a fresh allocation (`pending:true` when queued); the true
-            // fold path above is the only place that emits `loop.coalesced` (spec §11.3).
+            // fold path above is the only place that emits `loop.coalesced`.
             let ev = append_event_tx(
                 tx,
                 "loop.fired",
@@ -2080,7 +2080,7 @@ impl Store {
     }
 
     /// Record a started run's process identity (pid/pgid + OS start time — pgid alone is not
-    /// proof of identity, §11.3) and its optional timeout deadline. The slot was already
+    /// proof of identity) and its optional timeout deadline. The slot was already
     /// reserved (`running`) by [`Store::allocate_run`] / [`Store::claim_pending_run`], so this
     /// only fills in the identity; it never re-creates the `running` state and leaves a
     /// concurrently-entered `stopping` barrier intact. Emits `loop_run.started`; returns the
@@ -2121,7 +2121,7 @@ impl Store {
         })
     }
 
-    /// Atomically reserve a free slot for the oldest pending run of a loop (spec §11.3). In one
+    /// Atomically reserve a free slot for the oldest pending run of a loop. In one
     /// `BEGIN IMMEDIATE` transaction: count active (running/stopping) runs and, only if below
     /// `max_concurrency`, transition the oldest pending run pending→running and return it —
     /// returning `None` otherwise. Because `BEGIN IMMEDIATE` serializes writers, two concurrent
@@ -2187,7 +2187,7 @@ impl Store {
         self.with_immediate_tx(|tx| {
             let now = now_millis();
             // Only finalize a run that is still running/stopping — makes concurrent finalizers
-            // (the exit monitor vs the stop/timeout path) idempotent (spec §11.3).
+            // (the exit monitor vs the stop/timeout path) idempotent.
             let n = tx
                 .execute(
                     "UPDATE loop_runs SET status=?2, exit_code=?3, signal=?4, ended_at=?5, \
@@ -2212,7 +2212,7 @@ impl Store {
         })
     }
 
-    /// Move a running run into the `stopping` admission barrier (spec §6.2, §11.3). Emits an
+    /// Move a running run into the `stopping` admission barrier. Emits an
     /// event; returns the seq (0 if the run was not running).
     pub fn set_run_stopping(&mut self, run_uuid: &str) -> Result<i64> {
         let run_uuid = run_uuid.to_string();
@@ -2236,7 +2236,7 @@ impl Store {
         })
     }
 
-    /// Cancel a still-pending run (spec §6.2: `loop run stop` before it starts → `canceled`).
+    /// Cancel a still-pending run (`loop run stop` before it starts → `canceled`).
     /// Emits `loop_run.ended`; returns the seq (0 if the run was not pending).
     pub fn cancel_pending_run(&mut self, run_uuid: &str) -> Result<i64> {
         let run_uuid = run_uuid.to_string();
@@ -2351,7 +2351,7 @@ impl Store {
 }
 
 /// Append an event within an existing transaction and return its `seq`. Producers use this
-/// so the event lands in the **same** transaction as the change it describes (§11.6).
+/// so the event lands in the **same** transaction as the change it describes.
 pub fn append_event_tx(
     tx: &rusqlite::Transaction,
     kind: &str,
@@ -2366,7 +2366,7 @@ pub fn append_event_tx(
     Ok(tx.last_insert_rowid())
 }
 
-/// One row from the `turns` table — the per-input completion bookkeeping (spec §5.6, §12).
+/// One row from the `turns` table — the per-input completion bookkeeping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnRow {
     pub agent_uuid: String,
@@ -2407,7 +2407,7 @@ const LOOP_COLS: &str = "uuid, name, cadence_kind, cadence_value, tz, cwd, max_c
 const RUN_COLS: &str = "uuid, loop_uuid, run_id, kind, due_at, status, pid, pgid, \
      pgid_start_time, exit_code, signal, timeout_at, started_at, ended_at, created_at, updated_at";
 
-/// The columns to insert a new loop definition (spec §12).
+/// The columns to insert a new loop definition.
 #[derive(Debug, Clone)]
 pub struct NewLoop {
     pub uuid: String,
@@ -2423,7 +2423,7 @@ pub struct NewLoop {
     pub created_at: i64,
 }
 
-/// A loop definition row (spec §12).
+/// A loop definition row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoopRow {
     pub uuid: String,
@@ -2443,7 +2443,7 @@ pub struct LoopRow {
     pub updated_at: i64,
 }
 
-/// A loop run row (spec §12).
+/// A loop run row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoopRunRow {
     pub uuid: String,
@@ -2464,7 +2464,7 @@ pub struct LoopRunRow {
     pub updated_at: i64,
 }
 
-/// The outcome of [`Store::allocate_run`] (spec §11.3).
+/// The outcome of [`Store::allocate_run`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunAllocation {
     /// A fresh run row was created; `start_now` = a slot was free (else it sits pending).
@@ -2476,7 +2476,7 @@ pub enum RunAllocation {
 }
 
 /// A scheduled fire's schedule advance, applied **inside** [`Store::allocate_run`]'s transaction
-/// so the run insert (loop.fired) and the schedule advance commit atomically (spec §11.3). A
+/// so the run insert (loop.fired) and the schedule advance commit atomically. A
 /// crash then either leaves nothing done (recovery skips) or leaves both done (recovery sees the
 /// advanced schedule and emits no spurious `missed_while_down`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2487,7 +2487,7 @@ pub enum ScheduleAdvance {
     Next(Option<i64>),
 }
 
-/// A run id: `r` + 5 lowercase alphanumeric chars (spec §5.1). Uniqueness per loop is
+/// A run id: `r` + 5 lowercase alphanumeric chars. Uniqueness per loop is
 /// enforced by the caller's retry loop against the unique index.
 fn new_run_id() -> String {
     format!("r{}", crate::path::random_token())
@@ -2554,7 +2554,7 @@ pub struct EventRow {
     pub payload: serde_json::Value,
 }
 
-/// The managed/unmanaged fleet counts for `server status` (spec §6.4).
+/// The managed/unmanaged fleet counts for `server status`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusCounts {
     pub live: i64,
@@ -2563,7 +2563,7 @@ pub struct StatusCounts {
     pub unmanaged: i64,
 }
 
-/// The live location read under the attach-prepare transaction (spec §6.1). `terminal_id` is
+/// The live location read under the attach-prepare transaction. `terminal_id` is
 /// globally unique and stable across pane moves, so the exec command addresses it directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttachInfo {
@@ -2591,12 +2591,12 @@ pub struct NewAgent {
     pub pane_id: Option<String>,
     pub launch_token: Option<String>,
     pub status: String,
-    /// Kill deadline (`created_at + --timeout`), only when `--timeout` was passed (§5.4).
+    /// Kill deadline (`created_at + --timeout`), only when `--timeout` was passed.
     pub deadline_at: Option<i64>,
     pub created_at: i64,
 }
 
-/// The full agent row (spec §12), the read model for the pipeline, resolution, `ls`, and
+/// The full agent row, the read model for the pipeline, resolution, `ls`, and
 /// `api snapshot`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentFull {
@@ -2617,7 +2617,7 @@ pub struct AgentFull {
     pub agent_session_kind: Option<String>,
     pub agent_session_value: Option<String>,
     pub status: String,
-    /// Exclusive move lease state (`none|parking|unparking`, §5.4).
+    /// Exclusive move lease state (`none|parking|unparking`).
     pub move_state: String,
     pub move_token: Option<String>,
     pub blocked_kind: Option<String>,
@@ -2629,13 +2629,13 @@ pub struct AgentFull {
     pub created_at: i64,
     pub starting_at: Option<i64>,
     pub idle_since: Option<i64>,
-    /// When the agent entered `parked` (basis for the reap clock, §5.4).
+    /// When the agent entered `parked` (basis for the reap clock).
     pub parked_at: Option<i64>,
     pub last_status_change_at: Option<i64>,
     pub ended_at: Option<i64>,
 }
 
-/// The path-resolution outcome (spec §5.1): active agents resolve to `Active`, otherwise
+/// The path-resolution outcome: active agents resolve to `Active`, otherwise
 /// the most recent ended agent with that path resolves to `LatestEnded`.
 #[derive(Debug, Clone)]
 pub enum Resolution {
@@ -2657,7 +2657,7 @@ impl Resolution {
     }
 }
 
-/// The uuid / uuid-prefix lookup outcome (spec §5.1).
+/// The uuid / uuid-prefix lookup outcome.
 #[derive(Debug, Clone)]
 pub enum UuidLookup {
     Found(Box<AgentFull>),
@@ -2666,7 +2666,7 @@ pub enum UuidLookup {
     NotFound,
 }
 
-/// A listing filter for `agent ls` (spec §6.1).
+/// A listing filter for `agent ls`.
 #[derive(Debug, Clone, Default)]
 pub struct AgentFilter {
     pub pattern: Option<String>,
@@ -3104,7 +3104,7 @@ mod tests {
             2
         );
         // A terminal row is never revived: deliver_input refuses (returns None) rather than
-        // flipping ended→working (§5.6 concurrent-kill guard).
+        // flipping ended→working (concurrent-kill guard).
         s.transition_status("u1", "ended", Some("killed")).unwrap();
         assert!(s
             .deliver_input("u1", "orcr", now_millis())

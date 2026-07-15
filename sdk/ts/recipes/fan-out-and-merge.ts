@@ -1,4 +1,4 @@
-// §9.2 Fan-out and merge — review changed files in parallel (one cheap agent each,
+// Fan-out and merge — review changed files in parallel (one cheap agent each,
 // gc: immediate), then a synthesizer merges the findings. (Spec-literal version, driven by
 // `git diff --name-only`, is in skill/references/patterns.md.)
 import { orcr } from "@orchestratr/sdk";

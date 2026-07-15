@@ -1,6 +1,6 @@
-//! Identity paths, scope resolution, and glob patterns (spec §5.1, §5.3).
+//! Identity paths, scope resolution, and glob patterns.
 //!
-//! The single grammar block from §5.1 lives here and nowhere else — CLI validation, the
+//! The single grammar block lives here and nowhere else — CLI validation, the
 //! socket handlers, and the store matcher all derive from it:
 //!
 //! ```text
@@ -17,18 +17,18 @@
 use crate::error::{OrcrError, Result};
 use serde_json::json;
 
-/// Maximum path segments (§5.1).
+/// Maximum path segments.
 pub const MAX_SEGMENTS: usize = 8;
-/// Maximum total path length in chars (§5.1).
+/// Maximum total path length in chars.
 pub const MAX_PATH_LEN: usize = 256;
-/// Maximum length of a single segment (§5.1).
+/// Maximum length of a single segment.
 pub const MAX_SEGMENT_LEN: usize = 64;
 
-/// Level-1 segments owned by orcr that users may never create paths under (§5.1). Active
+/// Level-1 segments owned by orcr that users may never create paths under. Active
 /// loop names are additionally reserved once loops exist (M5).
 pub const RESERVED_LEVEL1: &[&str] = &["idle", "unmanaged"];
 
-/// One of `--name` or `--path` (exactly one; naming is mandatory, §5.1/§6.1).
+/// One of `--name` or `--path` (exactly one; naming is mandatory).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NameOrPath {
     /// `--name <name>` — a single segment landing directly in the caller's scope.
@@ -45,7 +45,7 @@ pub fn valid_segment(s: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
-/// Replace every `{rand}` placeholder with 5 random `[a-z0-9]` chars (creation only, §5.1).
+/// Replace every `{rand}` placeholder with 5 random `[a-z0-9]` chars (creation only).
 pub fn expand_rand(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
@@ -71,7 +71,7 @@ pub fn random_token() -> String {
 
 /// Resolve a creation target (`--name`/`--path`) into an **absolute** effective path,
 /// applying scope resolution and `{rand}` expansion, then validating grammar + depth +
-/// reserved-level-1 (spec §5.1 enforcement order).
+/// reserved-level-1, in that enforcement order.
 ///
 /// `scope` is the caller's scope (absolute, no leading slash) or `None` at a plain shell.
 pub fn resolve_create(scope: Option<&str>, input: &NameOrPath) -> Result<String> {
@@ -108,7 +108,7 @@ fn join_scope(scope: Option<&str>, rel: &str) -> String {
     }
 }
 
-/// Validate an absolute path's grammar, depth, and length (§5.1). A trailing/leading/empty
+/// Validate an absolute path's grammar, depth, and length. A trailing/leading/empty
 /// segment or bad character → `invalid_request`; too many segments → `path_too_deep`.
 pub fn validate_path(path: &str) -> Result<()> {
     if path.is_empty() {
@@ -148,7 +148,7 @@ pub fn validate_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reject creation under a reserved level-1 segment (§5.1). Reserved only at level 1.
+/// Reject creation under a reserved level-1 segment. Reserved only at level 1.
 pub fn check_reserved_level1(path: &str) -> Result<()> {
     let first = path.split('/').next().unwrap_or("");
     if RESERVED_LEVEL1.contains(&first) {
@@ -161,18 +161,18 @@ pub fn check_reserved_level1(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// The agent's name = the last path segment (§5.1).
+/// The agent's name = the last path segment.
 pub fn name_of(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// An agent's scope = its path minus its name (§5.3). `None` for a single-segment path.
+/// An agent's scope = its path minus its name. `None` for a single-segment path.
 pub fn scope_of_agent(path: &str) -> Option<String> {
     path.rfind('/').map(|i| path[..i].to_string())
 }
 
 /// The home workspace = the first segment when the path has ≥ 2 segments, else `default`
-/// (§5.2, "derived, never stored").
+/// (derived, never stored).
 pub fn home_workspace(path: &str) -> String {
     let mut it = path.splitn(2, '/');
     let first = it.next().unwrap_or("");
@@ -184,12 +184,12 @@ pub fn home_workspace(path: &str) -> String {
 
 /// The herdr agent `name` (and pane `label`) for a path. herdr 0.7.2 enforces that an
 /// agent's `name` is **unique across the whole session**, not scoped to its workspace, so the
-/// §5.2 tab label (the path after the first segment) is *not* usable as the herdr name: two
+/// tab label (the path after the first segment) is *not* usable as the herdr name: two
 /// agents in different top-level scopes (e.g. `review_a/fanout/file_0` and
 /// `review_b/fanout/file_0`) would collide with `agent_name_taken`. orcr already guarantees
 /// full paths are unique among active agents, so the **full effective path** is the correct
-/// session-unique herdr name. (See m7-sdk-skill/notes.md — this is why the visible tab shows
-/// the full path rather than the path-after-first-segment that §5.2 sketches.)
+/// session-unique herdr name. (This is why the visible tab shows the full path rather than
+/// the path-after-first-segment.)
 pub fn herdr_name(path: &str) -> String {
     path.to_string()
 }
@@ -199,7 +199,7 @@ pub fn is_pattern(s: &str) -> bool {
     s.split('/').any(|seg| seg == "*" || seg == "**")
 }
 
-/// True if a selector should be resolved as a uuid rather than a path (spec §5.1): a full
+/// True if a selector should be resolved as a uuid rather than a path: a full
 /// uuid (dashes can't be path chars) or a git-style ≥ 8-hex-char prefix. The one place this
 /// path-vs-uuid decision lives — CLI and the socket handlers both derive from it.
 pub fn looks_like_uuid_selector(s: &str) -> bool {
@@ -232,7 +232,7 @@ pub fn resolve_selector(scope: Option<&str>, raw: &str) -> Result<String> {
     Ok(effective)
 }
 
-/// A compiled glob pattern (§5.1): whole-segment `*` (one level) / `**` (any depth ≥ 1),
+/// A compiled glob pattern: whole-segment `*` (one level) / `**` (any depth ≥ 1),
 /// matched **anchored** against a full path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pattern {
@@ -290,7 +290,7 @@ impl Pattern {
         match &self.segments[pi] {
             Seg::DoubleStar => {
                 // `**` consumes one or more segments (never zero — so `a/**` never matches
-                // `a` itself, per §5.1).
+                // `a` itself).
                 let remaining = path.len().saturating_sub(si);
                 (1..=remaining).any(|t| self.match_from(pi + 1, path, si + t))
             }

@@ -1,4 +1,4 @@
-//! Configuration (spec §14): `~/.orcr/config.json`, strict JSON, every key optional
+//! Configuration: `~/.orcr/config.json`, strict JSON, every key optional
 //! with a built-in default.
 //!
 //! Validation happens at load: unknown keys **warn and are ignored** (suggesting the
@@ -21,14 +21,14 @@ pub struct Config {
     pub concurrency: ConcurrencyConfig,
     pub timings: Timings,
     pub logs: LogsConfig,
-    /// Optional per-provider completion-tuning overrides (`integrations.<provider>.*`,
-    /// spec §14 / M3). Defaults ship inside each integration; this lets a user (or tests)
+    /// Optional per-provider completion-tuning overrides (`integrations.<provider>.*`).
+    /// Defaults ship inside each integration; this lets a user (or tests)
     /// override the named ms knobs. Empty = all integration defaults.
     pub integrations: BTreeMap<String, IntegrationTuning>,
 }
 
 /// Per-provider completion-tuning overrides (all optional; `None` = use the integration
-/// default). Values are milliseconds (spec §5.6 named parameters).
+/// default). Values are milliseconds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IntegrationTuning {
     pub fast_turn_grace_ms: Option<u64>,
@@ -80,7 +80,7 @@ pub struct Timings {
     pub gc_tick: Duration,
     pub max_starting: Duration,
     pub attach_lease_ttl: Duration,
-    /// How often the loop scheduler ticks (fire due loops, reap finished runs, §11.3).
+    /// How often the loop scheduler ticks (fire due loops, reap finished runs).
     pub loop_tick: Duration,
     /// Grace between TERM and KILL when stopping/timing out a loop run's process group.
     pub run_term_grace: Duration,

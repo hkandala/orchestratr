@@ -1,4 +1,4 @@
-// §9.6 Tournament — when N is too large for one judge, run pairwise brackets; winners advance.
+// Tournament — when N is too large for one judge, run pairwise brackets; winners advance.
 import { orcr } from "@orchestratr/sdk";
 import { PRIMARY, mockHint, runAsScript } from "./_common.js";
 

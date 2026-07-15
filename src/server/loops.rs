@@ -1,9 +1,9 @@
-//! The loop scheduler (spec §6.2, §11.3): durable cron over any argv command, surviving the
+//! The loop scheduler: durable cron over any argv command, surviving the
 //! caller's shell and machine reboots.
 //!
 //! Runtime model: one tick thread (`timings.loop_tick`) fires due loops, reaps finished runs,
 //! and enforces per-run timeouts. Each started run executes in its **own process group**
-//! (`setsid`) with the §5.3 env contract; pid/pgid **plus the OS process start time** are
+//! (`setsid`) with the loop-run env contract; pid/pgid **plus the OS process start time** are
 //! recorded so a kill or recovery only ever signals a pgid whose start time still matches (pids
 //! get reused). stdout/stderr are captured line-tagged to a rotated JSONL `run.log`. Every
 //! scheduler action is an event row — that's `loop logs --source orcr`. Restart recovery is a
@@ -25,7 +25,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// The persisted loop definition payload (`<loop data dir>/loop.json`, spec §12).
+/// The persisted loop definition payload (`<loop data dir>/loop.json`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopPayload {
     pub version: u32,
@@ -43,7 +43,7 @@ pub struct LoopPayload {
 }
 
 impl Server {
-    /// Start the loop scheduler tick thread (spec §11.3).
+    /// Start the loop scheduler tick thread.
     pub(super) fn start_loop_scheduler(&self) {
         let server = self.clone();
         std::thread::spawn(move || {
@@ -59,7 +59,7 @@ impl Server {
         self.fire_due_loops();
     }
 
-    // --- firing (spec §11.3) ---
+    // --- firing ---
 
     fn fire_due_loops(&self) {
         let now = now_millis();
@@ -80,8 +80,8 @@ impl Server {
     /// the schedule (for scheduled fires), and starts the process if a slot was free. Returns
     /// the allocation for the manual (`loop run start`) caller.
     pub(super) fn fire_loop(&self, l: &LoopRow, due_at: i64, kind: &str) -> Result<RunAllocation> {
-        // For a scheduled fire, advance the schedule *atomically* with the run allocation (spec
-        // §11.3): compute the next occurrence (or the `once`→ended decision) up front and hand it
+        // For a scheduled fire, advance the schedule *atomically* with the run allocation:
+        // compute the next occurrence (or the `once`→ended decision) up front and hand it
         // to allocate_run, so the run insert (loop.fired) and the schedule advance commit in one
         // transaction. A crash then never leaves a fired occurrence looking "missed" on restart.
         let advance = (kind == "scheduled").then(|| {
@@ -122,9 +122,9 @@ impl Server {
         cron.next_after(after, tz).map(|d| d.timestamp_millis())
     }
 
-    // --- run process (spec §6.2, §11.3, §5.3) ---
+    // --- run process ---
 
-    /// Spawn a run's command in its own process group with the §5.3 env contract, capturing
+    /// Spawn a run's command in its own process group with the loop-run env contract, capturing
     /// output to a rotated JSONL `run.log`, and record its process identity. A monitor thread
     /// reaps the process and finalizes the run.
     fn spawn_run(&self, l: &LoopRow, run: &LoopRunRow) {
@@ -163,7 +163,7 @@ impl Server {
         let mut cmd = Command::new(&payload.argv[0]);
         cmd.args(&payload.argv[1..]);
         cmd.current_dir(&l.cwd);
-        // §5.3 env contract for a loop-run command (parentless; not an agent).
+        // Env contract for a loop-run command (parentless; not an agent).
         cmd.env("ORCR_ID", &run.uuid);
         cmd.env("ORCR_PATH", &run_path);
         cmd.env("ORCR_LOOP_DATA_DIR", &loop_data_dir);
@@ -206,7 +206,7 @@ impl Server {
         // The OS start time is the pid-reuse identity guard. If it's unreadable at spawn, store
         // NULL (not a bogus wall-clock value in the wrong unit) so a *later* readable start time
         // can't false-mismatch and mark a live leader dead — `run_leader_alive` then degrades to
-        // best-effort (alive is enough) consistently (spec §11.3).
+        // best-effort (alive is enough) consistently.
         let start_time = os_process_start_time(pid);
         let timeout_at = l.timeout_s.map(|s| now_millis() + s * 1000);
 
@@ -305,7 +305,7 @@ impl Server {
         self.promote_pending(&run.loop_uuid);
     }
 
-    /// Start the oldest pending run of a loop if a slot is now free (spec §11.3). The slot is
+    /// Start the oldest pending run of a loop if a slot is now free. The slot is
     /// **reserved atomically** in one transaction (`claim_pending_run`) before we release the
     /// store lock and spawn, so two concurrent promoters (exit-monitor threads, the resume/stop
     /// paths, recovery) can never claim the same slot and double-spawn a run.
@@ -315,7 +315,7 @@ impl Server {
             let loop_row = store.loop_by_uuid(loop_uuid).ok().flatten();
             let claimed = match &loop_row {
                 // Only an `active` loop promotes queued runs: a `paused` loop holds its queue
-                // (fires + pending runs resume only on `loop resume`, §6.2), and an `ended`
+                // (fires + pending runs resume only on `loop resume`), and an `ended`
                 // loop never starts new runs.
                 Some(l) if l.status == "active" => store
                     .claim_pending_run(loop_uuid, l.max_concurrency)
@@ -330,7 +330,7 @@ impl Server {
         }
     }
 
-    // --- timeout + stop (spec §6.2, §11.3) ---
+    // --- timeout + stop ---
 
     fn enforce_run_timeouts(&self) {
         let due = {
@@ -349,7 +349,7 @@ impl Server {
                 // next tick's `timed_out_runs` no longer selects this run, then dispatch the
                 // blocking TERM→grace→KILL onto its own thread. This keeps the shared scheduler
                 // tick free to fire other loops and enforce other timeouts during the grace
-                // period instead of stalling for `run_term_grace` (spec §11.3).
+                // period instead of stalling for `run_term_grace`.
                 self.enter_stop_barrier(&run);
                 let server = self.clone();
                 std::thread::spawn(move || {
@@ -360,8 +360,8 @@ impl Server {
     }
 
     /// Stop a run's process group: `stopping` barrier → TERM → grace → KILL → glob-kill the
-    /// run's agents until a clean snapshot → finalize with `terminal_status` (spec §6.2,
-    /// §11.3). `terminal_status` is `stopped` (manual/`loop run stop`) or `timeout`. This is
+    /// run's agents until a clean snapshot → finalize with `terminal_status`.
+    /// `terminal_status` is `stopped` (manual/`loop run stop`) or `timeout`. This is
     /// synchronous (it blocks its caller for the grace period); the manual `loop run stop`
     /// handler runs off the scheduler tick, so that is by design. The timeout path instead
     /// enters the barrier then dispatches [`Server::finish_stop`] to a thread.
@@ -382,13 +382,13 @@ impl Server {
 
     /// Finish a stop after the barrier is entered: signal the process group, wait the grace
     /// period, KILL if still alive, glob-kill the run's agents until clean, finalize, and
-    /// promote the next pending run (spec §6.2, §11.3).
+    /// promote the next pending run.
     fn finish_stop(&self, l: &LoopRow, run: &LoopRunRow, terminal_status: &str) {
         // Re-read the run's pid/pgid immediately before signaling: a stop can race the spawn
         // window (allocate_run commits `running` with pgid=NULL, then `record_run_start` fills
         // pid/pgid — even from the `stopping` barrier), so the struct captured by the caller may
         // predate the recorded pgid. Signaling the fresh row (and re-reading again after the
-        // grace sleep) ensures a pgid recorded after the barrier is still TERM/KILLed (§11.3).
+        // grace sleep) ensures a pgid recorded after the barrier is still TERM/KILLed.
         let fresh = self.reread_run(run);
         self.signal_run(&fresh, libc::SIGTERM);
         std::thread::sleep(self.inner.config.timings.run_term_grace);
@@ -415,7 +415,7 @@ impl Server {
         self.promote_pending(&l.uuid);
     }
 
-    /// Glob-kill every active agent under `<loop>/<run_id>/**`, looping until clean (§6.2).
+    /// Glob-kill every active agent under `<loop>/<run_id>/**`, looping until clean.
     pub(super) fn glob_kill_run_agents(&self, run_path: &str) {
         let pattern = format!("{run_path}/**");
         for _ in 0..100 {
@@ -444,7 +444,7 @@ impl Server {
             .unwrap_or_else(|| run.clone())
     }
 
-    /// Signal a run's process group, guarded by the recorded start time (spec §11.3: signal
+    /// Signal a run's process group, guarded by the recorded start time (signal
     /// only a pgid whose leader start time matches — pids get reused).
     fn signal_run(&self, run: &LoopRunRow, sig: libc::c_int) -> bool {
         let (Some(pgid), true) = (run.pgid, self.run_leader_alive(run)) else {
@@ -468,7 +468,7 @@ impl Server {
         }
     }
 
-    // --- restart recovery (spec §11.3) ---
+    // --- restart recovery ---
 
     /// Per-loop restart recovery: verify running pgids (dead → closed out + agents glob-killed),
     /// recompute the active count, honor paused/ended, decide pending fires once, and recompute
@@ -492,7 +492,7 @@ impl Server {
                         // Mid-stop when the server crashed (barrier already `stopping`, but
                         // `finish_stop` was interrupted before `finish_run`). Re-drive the stop
                         // on a thread so the run reaches a terminal state instead of being left
-                        // `stopping` forever (spec §11.3).
+                        // `stopping` forever.
                         let server = self.clone();
                         let l2 = l.clone();
                         let run2 = run.clone();
@@ -512,9 +512,9 @@ impl Server {
                         ));
                     }
                 } else {
-                    // Dead → close out and glob-kill its agents (spec §11.3). A run that was
+                    // Dead → close out and glob-kill its agents. A run that was
                     // mid-stop (`stopping`) when the server crashed is `stopped`, not `failed`
-                    // — mirror `spawn_poll_monitor`'s status mapping (spec §6.2).
+                    // — mirror `spawn_poll_monitor`'s status mapping.
                     let ts = if run.status == "stopping" {
                         "stopped"
                     } else {
@@ -539,7 +539,7 @@ impl Server {
             }
 
             // Recompute the schedule: any fire due while we were down is skipped-and-logged;
-            // never replayed (spec §6.2, §11.3) — for cron AND once loops alike.
+            // never replayed — for cron AND once loops alike.
             if let Some(nf) = l.next_fire_at {
                 if nf <= now {
                     let ev = {
@@ -558,7 +558,7 @@ impl Server {
                     self.publish(ev);
                     if l.cadence_kind == "once" {
                         // A once loop fires exactly once; a missed fire is skipped, so the
-                        // definition ends without ever running (spec §6.2 "fires once then ends").
+                        // definition ends without ever running (fires once then ends).
                         let ev = {
                             let mut store = self.inner.store.lock().unwrap();
                             store
@@ -601,7 +601,7 @@ impl Server {
                     if let Some(cur) = cur {
                         // Finalize whether the orphan was `running` (unknown exit → failed) or
                         // `stopping` (a stop was in flight → stopped) so it can never be left
-                        // un-finalized (spec §11.3).
+                        // un-finalized.
                         let terminal = match cur.status.as_str() {
                             "running" => Some("failed"),
                             "stopping" => Some("stopped"),
@@ -625,7 +625,7 @@ impl Server {
 
     // --- helpers ---
 
-    /// The loop's data dir: `$ORCR_HOME/data/<loop_name>` (shared across runs, §5.3).
+    /// The loop's data dir: `$ORCR_HOME/data/<loop_name>` (shared across runs).
     pub(super) fn loop_data_dir(&self, loop_name: &str) -> PathBuf {
         self.inner.home.data_dir().join(loop_name)
     }
@@ -645,15 +645,15 @@ impl Server {
 }
 
 impl Server {
-    // --- loop verb handlers (spec §6.2) ---
+    // --- loop verb handlers ---
 
-    /// `loop.create` (spec §6.2): validate name/cadence/payload, persist `loop.json`, insert
+    /// `loop.create`: validate name/cadence/payload, persist `loop.json`, insert
     /// the durable definition, and echo the parsed argv + cadence + cancel command.
     pub(super) fn handle_loop_create(&self, params: &Value) -> Result<Value> {
         let name = str_param(params, "name").ok_or_else(|| {
             OrcrError::invalid_request("loop create requires a name", "name_required")
         })?;
-        // A loop name is one segment, root-level, never a reserved level-1 name (§5.1, §6.2).
+        // A loop name is one segment, root-level, never a reserved level-1 name.
         let name = crate::path::expand_rand(&name);
         if !crate::path::valid_segment(&name) {
             return Err(OrcrError::invalid_request(
@@ -681,7 +681,7 @@ impl Server {
                 ))
             }
             (Some(expr), None) => {
-                // Validate the cron up front (units + fields, §6.2).
+                // Validate the cron up front (units + fields).
                 Cron::parse(&expr)?;
                 let next = self.compute_next_fire(&expr, &tz, now);
                 ("cron".to_string(), expr, next)
@@ -744,7 +744,7 @@ impl Server {
 
         let uuid = uuid::Uuid::now_v7().to_string();
 
-        // Persist the loop payload before the durable row (audit/recovery, §12).
+        // Persist the loop payload before the durable row (audit/recovery).
         let data_dir = self.loop_data_dir(&name);
         std::fs::create_dir_all(&data_dir).map_err(|e| {
             OrcrError::server_error("loop_data_dir", format!("cannot create loop data dir: {e}"))
@@ -809,7 +809,7 @@ impl Server {
         }))
     }
 
-    /// `loop.pause` / `loop.resume` (spec §6.2): hold or release fires. On resume, a held
+    /// `loop.pause` / `loop.resume`: hold or release fires. On resume, a held
     /// pending run starts if due; `next_fire_at` is recomputed forward so a fire missed while
     /// paused is not replayed.
     pub(super) fn handle_loop_set_paused(&self, params: &Value, paused: bool) -> Result<Value> {
@@ -849,7 +849,7 @@ impl Server {
         Ok(json!({ "updated": updated, "skipped": skipped }))
     }
 
-    /// `loop.rm` (spec §6.2): end the definition (`removed` / `removed_by_run`). The active run
+    /// `loop.rm`: end the definition (`removed` / `removed_by_run`). The active run
     /// and its agents continue unless `--kill-active`. History stays queryable.
     pub(super) fn handle_loop_rm(&self, params: &Value) -> Result<Value> {
         let names = names_param(params)?;
@@ -857,7 +857,7 @@ impl Server {
             .get("kill_active")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        // Self-removal from inside a run → `removed_by_run` (spec §6.2).
+        // Self-removal from inside a run → `removed_by_run`.
         let caller_path = str_param(params, "caller_path");
         let mut removed = Vec::new();
         let mut skipped = Vec::new();
@@ -878,7 +878,7 @@ impl Server {
 
             // Cancel every still-pending run regardless of --kill-active: once the definition is
             // ended it never becomes `active` again, so `promote_pending` skips it and the run
-            // would sit `pending` forever (spec §6.2: rm → no future fires). --kill-active
+            // would sit `pending` forever (rm → no future fires). --kill-active
             // additionally stops running runs + kills their agents.
             let runs = {
                 let store = self.inner.store.lock().unwrap();
@@ -909,7 +909,7 @@ impl Server {
         Ok(json!({ "removed": removed, "skipped": skipped }))
     }
 
-    /// `loop.ls` (spec §6.2).
+    /// `loop.ls`.
     pub(super) fn handle_loop_ls(&self, params: &Value) -> Result<Value> {
         let names = str_array_param(params, "names");
         let status = str_param(params, "status").filter(|s| !s.is_empty());
@@ -920,7 +920,7 @@ impl Server {
         Ok(json!({ "loops": rows }))
     }
 
-    /// `loop.run.start` (spec §6.2): manual trigger (works on paused loops too). Prints
+    /// `loop.run.start`: manual trigger (works on paused loops too). Prints
     /// `<loop_name>/<run_id> <run_uuid>`; at capacity the run sits pending.
     pub(super) fn handle_loop_run_start(&self, params: &Value) -> Result<Value> {
         let name = str_param(params, "name").ok_or_else(|| {
@@ -953,7 +953,7 @@ impl Server {
         Ok(json!({ "run": run }))
     }
 
-    /// `loop.run.stop` (spec §6.2): stop run(s) without touching the definition. An optional
+    /// `loop.run.stop`: stop run(s) without touching the definition. An optional
     /// `run` targets one run; otherwise all active + pending runs of the loop.
     pub(super) fn handle_loop_run_stop(&self, params: &Value) -> Result<Value> {
         let name = str_param(params, "name").ok_or_else(|| {
@@ -1008,7 +1008,7 @@ impl Server {
         Ok(json!({ "stopped": stopped, "skipped": skipped }))
     }
 
-    /// `loop.run.ls` (spec §6.2).
+    /// `loop.run.ls`.
     pub(super) fn handle_loop_run_ls(&self, params: &Value) -> Result<Value> {
         let name = str_param(params, "name").ok_or_else(|| {
             OrcrError::invalid_request("loop run ls requires a name", "name_required")
@@ -1028,7 +1028,7 @@ impl Server {
         Ok(json!({ "runs": rows }))
     }
 
-    /// `loop.logs` (spec §6.2): interleave the runs' captured command output (`run.log`) with
+    /// `loop.logs`: interleave the runs' captured command output (`run.log`) with
     /// orcr's own scheduler actions (the event log), each line tagged with its run.
     pub(super) fn handle_loop_logs(&self, params: &Value) -> Result<Value> {
         let name = str_param(params, "name").ok_or_else(|| {
@@ -1092,7 +1092,7 @@ impl Server {
                 .collect();
             // Fetch only this loop's + its runs' events (indexed by ref_uuid) rather than
             // scanning the whole events table (all loop.* events ref the loop uuid; loop_run.*
-            // ref the run uuid — spec §11.6). Retention-trimmed old events are not returned.
+            // ref the run uuid). Retention-trimmed old events are not returned.
             let events = {
                 let mut refs: Vec<&str> = vec![l.uuid.as_str()];
                 refs.extend(runs.iter().map(|r| r.uuid.as_str()));
@@ -1141,7 +1141,7 @@ impl Server {
         Ok(json!({ "lines": lines }))
     }
 
-    /// A `loop_runs` JSON row (spec §13). `agents` is derived: active agents under
+    /// A `loop_runs` JSON row. `agents` is derived: active agents under
     /// `<loop>/<run_id>/**`.
     fn run_row_json(&self, l: &LoopRow, r: &LoopRunRow) -> Value {
         let run_path = format!("{}/{}", l.name, r.run_id);
@@ -1165,7 +1165,7 @@ impl Server {
         })
     }
 
-    /// Count active agents under a run's subtree (`<loop>/<run_id>/**`, spec §12 derived).
+    /// Count active agents under a run's subtree (`<loop>/<run_id>/**`).
     fn run_agent_count(&self, run_path: &str) -> usize {
         let filter = crate::store::AgentFilter {
             pattern: Some(format!("{run_path}/**")),
@@ -1182,7 +1182,7 @@ impl Server {
     /// **re-read under the lock** first: a `pending` run captured in the caller's snapshot may
     /// have been promoted to `running` by a concurrent exit-monitor (`promote_pending`) between
     /// capture and dispatch, so branching on the stale status would no-op `cancel_pending_run`
-    /// and let the now-running run escape the stop (spec §11.3).
+    /// and let the now-running run escape the stop.
     fn stop_or_cancel_run(&self, l: &LoopRow, run: &LoopRunRow, terminal_status: &str) -> String {
         let run = self.reread_run(run);
         match run.status.as_str() {
@@ -1226,7 +1226,7 @@ fn names_param(params: &Value) -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// A `loops` JSON row (spec §13).
+/// A `loops` JSON row.
 pub(super) fn loop_row_json(l: &LoopRow) -> Value {
     json!({
         "uuid": l.uuid,
@@ -1245,7 +1245,7 @@ pub(super) fn loop_row_json(l: &LoopRow) -> Value {
 }
 
 /// Parse `--once-at <time>`: a relative duration (`30s`, `5m` → now + dur) or an absolute
-/// RFC3339 / `YYYY-MM-DDTHH:MM(:SS)` timestamp. Returns the UTC-ms fire time (spec §6.2).
+/// RFC3339 / `YYYY-MM-DDTHH:MM(:SS)` timestamp. Returns the UTC-ms fire time.
 fn parse_once_at(when: &str, now: i64) -> Result<i64> {
     // Relative duration first (the common scripting form, e.g. `--once-at 30s`).
     if let Ok(d) = crate::duration::parse_duration(when) {
@@ -1294,7 +1294,7 @@ fn spawn_capture<R: std::io::Read + Send + 'static>(
     });
 }
 
-/// A run's captured-output log: JSONL `{ts, stream, text}`, size-capped + rotated (spec §12).
+/// A run's captured-output log: JSONL `{ts, stream, text}`, size-capped + rotated.
 pub(super) struct RunLog {
     path: PathBuf,
     max_bytes: u64,
@@ -1338,7 +1338,7 @@ impl RunLog {
 }
 
 /// The OS process start time for `pid`, comparable across the lifetime of one boot. Used to
-/// guard signals against pid reuse (spec §11.3). `None` if it cannot be read.
+/// guard signals against pid reuse. `None` if it cannot be read.
 fn os_process_start_time(pid: i64) -> Option<i64> {
     #[cfg(target_os = "linux")]
     {

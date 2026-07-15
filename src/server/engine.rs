@@ -1,5 +1,5 @@
 //! The agent engine: the queue worker, the spawn pipeline, the `agent.*` socket handlers,
-//! and start-up reconciliation (spec §5.5, §11.1, §11.5).
+//! and start-up reconciliation.
 //!
 //! Runtime model: a single **queue worker** thread ticks every [`QUEUE_TICK`], running the
 //! stuck-start guard and promoting queued agents (global + per-provider caps, FIFO). Each
@@ -25,17 +25,17 @@ use std::time::Duration;
 
 /// How often the queue worker ticks (promotion + stuck-start guard).
 const QUEUE_TICK: Duration = Duration::from_millis(200);
-/// Delay between `send_text` and the submitting `Enter` (the two-call rule, §5.6).
+/// Delay between `send_text` and the submitting `Enter` (the two-call rule).
 const ENTER_DELAY: Duration = Duration::from_millis(1000);
-/// Interval between submit-confirmation polls / Enter re-sends (§5.6, known-issues #2).
+/// Interval between submit-confirmation polls / Enter re-sends (known-issues #2).
 const SUBMIT_POLL: Duration = Duration::from_millis(400);
 /// Delay between a *re-sent* `send_text` and its `Enter` (shorter than the first delivery's
 /// [`ENTER_DELAY`] so the adaptive re-send loop can make several attempts within the budget).
 const RESEND_ENTER_DELAY: Duration = Duration::from_millis(300);
-/// How long to poll for herdr to report the `agent_session` transcript pointer (§11.1).
+/// How long to poll for herdr to report the `agent_session` transcript pointer.
 const SESSION_POLL: Duration = Duration::from_millis(3000);
 
-/// The `launch.json` audit/recovery payload written to the agent's data dir (spec §12).
+/// The `launch.json` audit/recovery payload written to the agent's data dir.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaunchPayload {
     pub version: u32,
@@ -53,7 +53,7 @@ pub struct LaunchPayload {
     /// How the effective path was derived (scope + input), for audit.
     pub effective_path: String,
     pub scope: Option<String>,
-    /// The exact env injected into the pane (§5.3) — never the caller's whole environment.
+    /// The exact env injected into the pane — never the caller's whole environment.
     pub env: BTreeMap<String, String>,
     pub created_at: i64,
 }
@@ -62,7 +62,7 @@ impl Server {
     // --- owned-session driver ---
 
     /// Connect to (and cache) the owned herdr session's driver, bootstrapping the session's
-    /// headless server if needed (spec §5.2). Reconnects if the cached driver went stale.
+    /// headless server if needed. Reconnects if the cached driver went stale.
     pub(super) fn owned_driver(&self) -> Result<HerdrDriver> {
         {
             let guard = self.inner.driver.lock().unwrap();
@@ -79,7 +79,7 @@ impl Server {
         Ok(driver)
     }
 
-    /// Connect a driver to the herdr session an agent's pane actually lives in (spec §5.7).
+    /// Connect a driver to the herdr session an agent's pane actually lives in.
     /// Managed agents live in the owned session (cached driver); an **unmanaged** agent lives
     /// in a *foreign* session (per-socket, per m0 notes) whose socket we discover here — its
     /// `pane_id` is workspace-scoped and only meaningful on that session's socket, so routing
@@ -103,7 +103,7 @@ impl Server {
     /// The agent's current pane id **on `driver`'s session**. `terminal_id` is globally unique
     /// and stable across pane moves, so we resolve the live pane by it (a stale `pane_id` from a
     /// prior discovery tick or a pane move would otherwise mis-address); falls back to the
-    /// recorded `pane_id` when the terminal can't be located (spec §5.7, §11.5).
+    /// recorded `pane_id` when the terminal can't be located.
     pub(super) fn live_pane_id(&self, driver: &HerdrDriver, a: &AgentFull) -> Option<String> {
         if let Some(term) = a.terminal_id.as_deref() {
             if let Ok(panes) = driver.pane_list(None) {
@@ -125,7 +125,7 @@ impl Server {
     }
 
     /// The per-agent move mutex (created on first use). Held across a two-phase park/un-park so
-    /// a GC park and a `send` un-park for the same agent can never interleave (spec §5.4).
+    /// a GC park and a `send` un-park for the same agent can never interleave.
     pub(super) fn lock_move(&self, uuid: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
         let mut map = self.inner.move_locks.lock().unwrap();
         map.entry(uuid.to_string())
@@ -147,7 +147,7 @@ impl Server {
         });
     }
 
-    /// Fail any agent stuck in `starting` past `max_starting` with no pane recorded (§5.5),
+    /// Fail any agent stuck in `starting` past `max_starting` with no pane recorded,
     /// releasing its slot.
     fn stuck_start_sweep(&self) {
         let cutoff = now_millis() - self.inner.config.timings.max_starting.as_millis() as i64;
@@ -190,7 +190,7 @@ impl Server {
         }
     }
 
-    // --- spawn pipeline (§11.1) ---
+    // --- spawn pipeline ---
 
     /// Drive one promoted agent through the herdr spawn pipeline. Any error fails the row
     /// (releasing its slot); a `cancel_requested` at any step ends it `canceled`.
@@ -206,7 +206,7 @@ impl Server {
             // If agent.start already created the pane and a *later* step failed (deliver / send /
             // settle), close it before failing the row: an `ended(failed)` row is never revisited
             // by reconciliation, so a live (paid) provider process would otherwise leak — only
-            // surfacing later as an unknown_marked_pane in drift, cleaned by hand (§11.1, §11.5).
+            // surfacing later as an unknown_marked_pane in drift, cleaned by hand.
             // Best-effort; no-op when the failure preceded agent.start (nothing was created).
             self.close_pipeline_pane(&uuid);
             self.end_agent(&uuid, "failed");
@@ -240,14 +240,14 @@ impl Server {
         self.bail_if_cancelled(uuid, None)?;
         let driver = self.owned_driver()?;
 
-        // Ensure the level-1 workspace (label = home workspace, §5.2). A freshly created
+        // Ensure the level-1 workspace (label = home workspace). A freshly created
         // workspace carries a root shell pane we close once the agent pane exists, so the
         // workspace auto-removes when the last agent leaves.
         self.bail_if_cancelled(uuid, None)?;
         let (workspace_id, root_pane) =
             self.ensure_workspace(&driver, &path::home_workspace(&agent.path))?;
 
-        // agent.start — herdr creates the tab + pane; returned ids are authoritative (§11.7).
+        // agent.start — herdr creates the tab + pane; returned ids are authoritative.
         self.bail_if_cancelled(uuid, None)?;
         let params = AgentStartParams {
             name: path::herdr_name(&agent.path),
@@ -295,15 +295,15 @@ impl Server {
         };
         self.publish(ev);
 
-        // Capture the transcript pointer if herdr reports it (best-effort, §11.1).
+        // Capture the transcript pointer if herdr reports it (best-effort).
         self.capture_agent_session(&driver, uuid, &info.pane_id);
 
         // Deliver the first prompt (two-call rule) if one was given, opening turn 1; else
-        // settle the primed agent to `idle`. The completion monitor takes over from here (§5.6).
+        // settle the primed agent to `idle`. The completion monitor takes over from here.
         self.bail_if_cancelled(uuid, Some((&driver, &info.pane_id)))?;
         let phase = if let Some(prompt) = payload.prompt.as_deref().filter(|p| !p.is_empty()) {
             // Open turn 1 / bump input_seq / re-arm to `working` BEFORE the herdr send, so the
-            // agent's public status leads delivery (§5.6: input_seq increments before delivery;
+            // agent's public status leads delivery (input_seq increments before delivery;
             // a stale idle can never satisfy the new turn, and no synthetic external turn can be
             // opened in the send gap). A herdr send failure here propagates to run_pipeline, which
             // closes the pane and ends the row `failed` (no leaked provider process).
@@ -312,7 +312,7 @@ impl Server {
                 store.deliver_input(uuid, "orcr", now_millis())?
             };
             // A `None` here means a concurrent kill already ended the row in the gap after the
-            // last cancel check (§5.5): don't revive it or send to its (closing) pane — surface
+            // last cancel check: don't revive it or send to its (closing) pane — surface
             // the cancel and let the kill path finish the teardown.
             let Some((_, ev)) = ev else {
                 return self.bail_if_cancelled(uuid, Some((&driver, &info.pane_id)));
@@ -320,13 +320,13 @@ impl Server {
             self.publish(ev);
             // Deliver the first prompt with readiness + submission verification: the real-provider
             // boot race can drop the first `send_text`/`Enter`, leaving the prompt unsubmitted so
-            // the turn never starts (§5.6, known-issues #2 / E02).
+            // the turn never starts (known-issues #2 / E02).
             self.deliver_prompt(&driver, &info.pane_id, prompt, &payload.provider, true)?;
             "working"
         } else {
             // No prompt: the agent is primed and waiting for input, not processing. Settle it to
             // `idle` (with an idle clock) so `wait` completes as turn_complete, gc-auto can park
-            // it, and a later `send` re-arms it normally (§5.6). Guarded on `starting` so a
+            // it, and a later `send` re-arms it normally. Guarded on `starting` so a
             // concurrent kill that already ended the row isn't revived to `idle`.
             let ev = {
                 let mut store = self.inner.store.lock().unwrap();
@@ -389,7 +389,7 @@ impl Server {
         }
     }
 
-    /// Deliver a prompt via the two-call rule (§5.6) and, for a managed real-provider agent,
+    /// Deliver a prompt via the two-call rule and, for a managed real-provider agent,
     /// robustly verify it actually submitted — re-driving the delivery if the provider TUI
     /// dropped it on a slow boot (known-issues #2 / E02).
     ///
@@ -456,7 +456,7 @@ impl Server {
     }
 
     /// Verify a just-delivered prompt actually submitted, re-driving the delivery until a turn is
-    /// underway or `submit_confirm_ms` elapses (spec §5.6, known-issues #2 / E02).
+    /// underway or `submit_confirm_ms` elapses (known-issues #2 / E02).
     ///
     /// Two distinct real-provider failure modes, distinguished by READING the pane:
     /// - **Dropped `Enter`** (observed with claude on a slow boot): the `send_text` lands so the
@@ -562,7 +562,7 @@ impl Server {
     }
 
     /// Bail out of the pipeline if cancellation was requested; close the pane first when one
-    /// exists, then end the row `canceled` (§5.5).
+    /// exists, then end the row `canceled`.
     fn bail_if_cancelled(&self, uuid: &str, pane: Option<(&HerdrDriver, &str)>) -> Result<()> {
         if self.cancelled(uuid) {
             if let Some((driver, pane_id)) = pane {
@@ -592,16 +592,16 @@ impl Server {
         }
     }
 
-    // --- reconciliation on start (§11.5) ---
+    // --- reconciliation on start ---
 
-    /// Repair the store against herdr reality on start (spec §11.1 crash recovery, §11.5):
+    /// Repair the store against herdr reality on start (crash recovery):
     /// managed agents left `starting`/`working` are matched to live panes; unmatched panes
     /// that belong to an in-flight spawn (by tab label in the home workspace) are closed so
     /// no duplicate survives; rows whose pane vanished are failed/lost.
     pub(super) fn reconcile_on_start(&self) {
         // Conservative re-arm: forget any pre-crash idle streak for mid-turn agents so
         // completion re-measures from a fresh transition, and restart the park clock for
-        // already-idle agents so GC still parks them after a restart (§5.6, §5.4).
+        // already-idle agents so GC still parks them after a restart.
         {
             let mut store = self.inner.store.lock().unwrap();
             let _ = store.rearm_idle_clocks_on_restart();
@@ -616,7 +616,7 @@ impl Server {
         let driver = match self.owned_driver() {
             Ok(d) => d,
             Err(e) => {
-                // herdr unreachable: never free names on an outage alone (§11.5). Leave rows.
+                // herdr unreachable: never free names on an outage alone. Leave rows.
                 self.log()
                     .warn(format!("reconcile: herdr unreachable, leaving rows: {e}"));
                 return;
@@ -625,13 +625,13 @@ impl Server {
         let panes = driver.pane_list(None).unwrap_or_default();
         for a in agents {
             // Agents with a move in flight are settled by terminal_id in move recovery below —
-            // the pane-id confirm pass would wrongly see a just-moved pane as vanished (§11.5).
+            // the pane-id confirm pass would wrongly see a just-moved pane as vanished.
             if a.move_state != "none" {
                 continue;
             }
             self.reconcile_agent(&driver, &panes, &a);
         }
-        // Recover any half-done park/un-park moves + refresh drift (spec §11.5). Lost
+        // Recover any half-done park/un-park moves + refresh drift. Lost
         // *resolution* is deferred to a following periodic poll.
         self.reconcile_moves_on_start();
     }
@@ -668,7 +668,7 @@ impl Server {
                 } else if a.status == "starting" {
                     self.end_agent(&a.uuid, "failed");
                 } else {
-                    // A running agent's pane vanished outside orcr's control → lost (§5.6).
+                    // A running agent's pane vanished outside orcr's control → lost.
                     let ev = {
                         let mut s = self.inner.store.lock().unwrap();
                         s.transition_status(&a.uuid, "lost", None)
@@ -682,7 +682,7 @@ impl Server {
             }
             // No pane recorded: an in-flight spawn crashed before recording it. Match any
             // orphan pane by its herdr name/label (the full path — session-unique) and close
-            // it, then fail the row — no duplicate pane survives (§11.1).
+            // it, then fail the row — no duplicate pane survives.
             None => {
                 let label = path::herdr_name(&a.path);
                 for p in panes.iter().filter(|p| p.label.as_deref() == Some(&label)) {
@@ -699,7 +699,7 @@ impl Server {
 
     // --- handlers ---
 
-    /// `agent.run` (spec §6.1, §11.1): validate + resolve identity, write the launch payload,
+    /// `agent.run`: validate + resolve identity, write the launch payload,
     /// enqueue the durable row, and return `{agent, permissions}`.
     pub(super) fn handle_agent_run(&self, params: &Value) -> Result<Value> {
         let name = str_param(params, "name");
@@ -725,7 +725,7 @@ impl Server {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| self.inner.config.defaults.agent.clone());
 
-        // Both-layers-required (§11.4): fail fast before any resolution/side effect.
+        // Both-layers-required: fail fast before any resolution/side effect.
         ensure_supported(&self.integration_state_typed(), &provider)?;
 
         let gc = str_param(params, "gc").unwrap_or_else(|| "auto".to_string());
@@ -738,7 +738,7 @@ impl Server {
         let model = str_param(params, "model").filter(|s| !s.is_empty());
         let effort = str_param(params, "effort").filter(|s| !s.is_empty());
         let timeout = str_param(params, "timeout").filter(|s| !s.is_empty());
-        // Validate --timeout up front (units required, §6); persist the deadline durably.
+        // Validate --timeout up front (units required); persist the deadline durably.
         let timeout_ms = match &timeout {
             Some(t) => Some(crate::duration::parse_duration(t)?.as_millis() as i64),
             None => None,
@@ -746,9 +746,9 @@ impl Server {
         let cwd = str_param(params, "cwd").filter(|s| !s.is_empty());
         let prompt = str_param(params, "prompt");
 
-        // Caller identity → scope + lineage (§5.3). An agent's scope is its path minus its
+        // Caller identity → scope + lineage. An agent's scope is its path minus its
         // name; a **loop run** is a directory, so its scope is its whole run path; a plain
-        // shell has none (§5.3).
+        // shell has none.
         let caller_id = str_param(params, "caller_id").filter(|s| !s.is_empty());
         let caller_path = str_param(params, "caller_path").filter(|s| !s.is_empty());
         let ctx = self.caller_context(caller_id.as_deref(), caller_path.as_deref());
@@ -759,12 +759,12 @@ impl Server {
         // Build the launch plan (argv + model/effort mapping).
         let plan = launch_plan(&provider, model.as_deref(), effort.as_deref())?;
 
-        // Allocate identity + the launch token (unique per attempt, §11.1).
+        // Allocate identity + the launch token (unique per attempt).
         let uuid = uuid::Uuid::now_v7().to_string();
         let launch_token = uuid::Uuid::new_v4().to_string();
         let data_dir = self.agent_data_dir(&effective, &uuid);
 
-        // Env contract (§5.3). All values absolute.
+        // Env contract. All values absolute.
         let mut env: BTreeMap<String, String> = BTreeMap::new();
         env.insert("ORCR_ID".into(), uuid.clone());
         env.insert("ORCR_PATH".into(), effective.clone());
@@ -773,7 +773,7 @@ impl Server {
             env.insert("ORCR_PARENT_PATH".into(), ppath.clone());
         }
         env.insert("ORCR_AGENT_DATA_DIR".into(), data_dir.display().to_string());
-        // ORCR_LOOP_DATA_DIR is set for every agent descended from a loop run (§5.3): the
+        // ORCR_LOOP_DATA_DIR is set for every agent descended from a loop run: the
         // loop's shared scratch dir, derived from the effective path's level-1 loop name.
         if let Some(dir) = self.loop_data_dir_for(&effective) {
             env.insert("ORCR_LOOP_DATA_DIR".into(), dir);
@@ -847,7 +847,7 @@ impl Server {
             deadline_at: timeout_ms.map(|ms| now_millis() + ms),
             created_at: now_millis(),
         };
-        // Active-loop namespace protection + run admission barrier (§5.1, §6.2, §11.3) and the
+        // Active-loop namespace protection + run admission barrier and the
         // path-reserving insert run under **one** store-lock hold, so loop-namespace ownership
         // is enforced atomically with path reservation (no TOCTOU — the single writer means a
         // `loop.create` cannot interleave between the check and the insert).
@@ -892,7 +892,7 @@ impl Server {
         Ok(json!({ "agent": agent_obj, "permissions": "bypass" }))
     }
 
-    /// `agent.send` (spec §6.1): exact target; deliver the prompt (two-call) and report
+    /// `agent.send`: exact target; deliver the prompt (two-call) and report
     /// `delivered_while` + `input_seq`. Wildcards are rejected; ended targets → `not_found`.
     pub(super) fn handle_agent_send(&self, params: &Value) -> Result<Value> {
         let target = str_param(params, "target").ok_or_else(|| {
@@ -909,14 +909,14 @@ impl Server {
         }
 
         // Route to the herdr session the pane actually lives in: an unmanaged agent's pane is
-        // in a *foreign* session, and its `pane_id` is only meaningful on that session's socket
-        // (§5.7). Managed agents use the owned session's cached driver.
+        // in a *foreign* session, and its `pane_id` is only meaningful on that session's socket.
+        // Managed agents use the owned session's cached driver.
         let driver = self.driver_for_agent(&row)?;
 
         // Managed agents can be parked/moved by GC concurrently. Hold the per-agent move lock
         // across un-park + delivery so a park can't relocate the pane mid-send, and re-read the
         // row under the lock so a park that committed just before we acquired it is observed
-        // (avoids a send racing a live two-phase move, §5.4).
+        // (avoids a send racing a live two-phase move).
         let move_lock = if row.managed {
             Some(self.lock_move(&row.uuid))
         } else {
@@ -943,7 +943,7 @@ impl Server {
 
         let delivered_while = row.status.clone();
         // Sending to a parked (or mid-move) agent un-parks it first — atomically, before
-        // delivery — and delivery then addresses the confirmed post-move location (§5.4). The
+        // delivery — and delivery then addresses the confirmed post-move location. The
         // per-agent move lock is already held, so this never pre-empts a live GC park.
         if row.status == "parked" || row.move_state != "none" {
             row = self.unpark_for_send(&driver, &row)?;
@@ -955,12 +955,12 @@ impl Server {
             ))
             .with_details(json!({ "current_status": row.status }))
         })?;
-        // Open a new turn / bump input_seq / re-arm to `working` BEFORE the herdr send (§5.6:
+        // Open a new turn / bump input_seq / re-arm to `working` BEFORE the herdr send (
         // input_seq increments before delivery, so a `wait` issued after this send can never be
         // satisfied by a stale idle and no synthetic external turn is opened in the send gap). A
         // herdr send failure then leaves the turn open (agent shows `working`, never completes →
         // visible in `top`) rather than dropping the input silently. An unmanaged agent's turn is
-        // tracked as `external` (§5.7): orcr doesn't own its input epochs.
+        // tracked as `external`: orcr doesn't own its input epochs.
         let delivered = {
             let mut store = self.inner.store.lock().unwrap();
             if row.managed {
@@ -970,7 +970,7 @@ impl Server {
             }
         };
         // `None` = the row ended concurrently (kill/reconcile/discovery) between the active-check
-        // above and delivery: refuse to revive it (§5.6) — report it as gone rather than sending.
+        // above and delivery: refuse to revive it — report it as gone rather than sending.
         let Some((input_seq, ev)) = delivered else {
             return Err(OrcrError::not_found_target(
                 format!("agent `{target}` is not active (ended concurrently)"),
@@ -979,7 +979,7 @@ impl Server {
         };
         self.publish(ev);
         // Deliver with readiness + submission verification for a managed real-provider agent
-        // (§5.6, known-issues #2 / E02). Unmanaged agents live in a foreign session and orcr
+        // (known-issues #2 / E02). Unmanaged agents live in a foreign session and orcr
         // doesn't drive their input epochs, so it uses the plain two-call delivery for them.
         self.deliver_prompt(
             &driver,
@@ -996,7 +996,7 @@ impl Server {
         }))
     }
 
-    /// `agent.kill` (spec §6.1): patterns + uuids. With `preview`, returns the matched set
+    /// `agent.kill`: patterns + uuids. With `preview`, returns the matched set
     /// (for the CLI's TTY confirmation) without side effects. Otherwise kills each matched
     /// active agent and returns `{killed, skipped, all_killed}`.
     pub(super) fn handle_agent_kill(&self, params: &Value) -> Result<Value> {
@@ -1019,7 +1019,7 @@ impl Server {
 
         let matched = self.resolve_targets(&scope, &targets)?;
         if matched.is_empty() {
-            // §6.1/§13: an exact (path/uuid) target that resolves only to an already-ended
+            // An exact (path/uuid) target that resolves only to an already-ended
             // agent is a "matched but skipped" case (reason: ended) → exit 7, not a no-match
             // (exit 6). Globs range over active agents only, so this is exact targets alone.
             let ended = self.resolve_ended_targets(&scope, &targets)?;
@@ -1082,13 +1082,13 @@ impl Server {
                 }
             };
             // Route to the session the pane lives in: an unmanaged agent's pane is in a foreign
-            // herdr session (§5.7), so closing it via the owned driver would miss it (or close a
+            // herdr session, so closing it via the owned driver would miss it (or close a
             // colliding owned pane). Managed agents resolve to the owned session's driver.
             let driver = self.driver_for_agent(&a).ok();
             if a.status == "queued" {
                 // Dequeue atomically, but ONLY while still queued. Promotion moves queued →
                 // starting under the store lock *before* it ever spawns a pane, so a successful
-                // guarded end proves no pane exists (§5.5) — the pane-less cancel is safe. If it
+                // guarded end proves no pane exists — the pane-less cancel is safe. If it
                 // lost the race to promotion, fall through to `kill_live_agent` so the freshly
                 // spawned pane is closed rather than leaked (E07).
                 let canceled = {
@@ -1133,7 +1133,7 @@ impl Server {
             // Set the cancel interlock BEFORE closing, so the spawn pipeline closes any pane it
             // created but has not yet recorded (the pane-created-but-unrecorded sub-window, its
             // post-`agent.start` re-check and `bail_if_cancelled` both close on a set cancel /
-            // ended row, §5.5/§11.1); close the pane here too if one is already recorded.
+            // ended row); close the pane here too if one is already recorded.
             {
                 let mut store = self.inner.store.lock().unwrap();
                 let _ = store.request_cancel(&a.uuid);
@@ -1157,13 +1157,13 @@ impl Server {
             self.graceful_shutdown(d, a, &pane);
         }
         // An explicit kill resolving a `lost` agent ends it as `lost`, not `killed`
-        // (§5.6: reconciliation OR explicit kill → ended (exit_reason: lost)).
+        // (reconciliation OR explicit kill → ended (exit_reason: lost)).
         let reason = if a.status == "lost" { "lost" } else { "killed" };
         self.end_agent(&a.uuid, reason);
         killed.push(json!({ "uuid": a.uuid, "path": a.path }));
     }
 
-    /// The per-integration graceful shutdown recipe → pane close (§6.1). Best-effort: the
+    /// The per-integration graceful shutdown recipe → pane close. Best-effort: the
     /// pane close is the hard guarantee (herdr then clears empty tabs/workspaces).
     pub(super) fn graceful_shutdown(&self, driver: &HerdrDriver, a: &AgentFull, pane_id: &str) {
         if let Some(provider) = &a.agent {
@@ -1178,12 +1178,12 @@ impl Server {
         let _ = driver.pane_close(pane_id);
     }
 
-    /// `agent.ls` (spec §6.1): active (and, with `all`, ended) agents as flat rows.
+    /// `agent.ls`: active (and, with `all`, ended) agents as flat rows.
     pub(super) fn handle_agent_ls(&self, params: &Value) -> Result<Value> {
         let scope = self.caller_scope_full(params);
         let raw = str_param(params, "pattern").filter(|s| !s.is_empty());
 
-        // §6.1 accepts `<pattern|uuid>`: a full uuid (dashes can't be path chars) or a ≥8-hex
+        // Accepts `<pattern|uuid>`: a full uuid (dashes can't be path chars) or a ≥8-hex
         // prefix that names no path resolves to that single agent (git-style), mirroring
         // wait/kill — not a literal path glob.
         if let Some(r) = &raw {
@@ -1230,7 +1230,7 @@ impl Server {
         Ok(json!({ "agents": agents }))
     }
 
-    /// `agent.wait` (spec §6.1): block until **every** snapshotted target settles, then
+    /// `agent.wait`: block until **every** snapshotted target settles, then
     /// return one `{uuid,path,status,ok,reason,exit_reason?,next}` row per target plus
     /// `all_ok`/`timed_out`/`decision_seq`. Membership is the set of **active** agents
     /// matching the targets at invocation (snapshot-then-subscribe on the event bus, so no
@@ -1295,7 +1295,7 @@ impl Server {
         }
     }
 
-    /// `agent.ask` (spec §6.1): documented sugar — `run --gc immediate` → settle `wait` →
+    /// `agent.ask`: documented sugar — `run --gc immediate` → settle `wait` →
     /// `logs --last-response`. Naming rules are identical to `run`. Blocks through the queue
     /// and the first completion, then returns `{uuid, path, response}`.
     pub(super) fn handle_agent_ask(&self, params: &Value) -> Result<Value> {
@@ -1319,7 +1319,7 @@ impl Server {
         let waited = self.handle_agent_wait(&wait_params)?;
         let target = &waited["targets"][0];
         let reason = target["reason"].as_str().unwrap_or("");
-        // Blocked → exit 4 (§6.1).
+        // Blocked → exit 4.
         if reason.starts_with("blocked") {
             let kind = reason.strip_prefix("blocked:").unwrap_or("unknown");
             return Err(
@@ -1327,7 +1327,7 @@ impl Server {
                     .with_details(json!({ "blocked_kind": kind, "uuid": uuid, "path": path })),
             );
         }
-        // The agent's OWN `--timeout` expiring (ended with exit_reason=timeout) → exit 3 (§6/§13:
+        // The agent's OWN `--timeout` expiring (ended with exit_reason=timeout) → exit 3 (
         // the `timeout` code is reserved for an agent's/run's own deadline). This can win the race
         // against the wait's own timer when the agent's deadline kills it first — settle_of then
         // reports reason "timeout" with timed_out=false, so we must map it here explicitly.
@@ -1345,7 +1345,7 @@ impl Server {
             .with_details(json!({ "uuid": uuid, "path": path })));
         }
 
-        // Read the last response from the native transcript (fails loudly, §6.1).
+        // Read the last response from the native transcript (fails loudly).
         let text = {
             let store = self.inner.store.lock().unwrap();
             let a = store.agent_full(&uuid)?.ok_or_else(|| {
@@ -1362,7 +1362,7 @@ impl Server {
         }))
     }
 
-    /// `agent.logs` (spec §6.1): read the provider's native transcript. `last_response` returns
+    /// `agent.logs`: read the provider's native transcript. `last_response` returns
     /// only the final assistant message (fails loudly); otherwise structured entries
     /// (optionally the last `tail`). History is addressed by uuid; a path resolves active-first.
     pub(super) fn handle_agent_logs(&self, params: &Value) -> Result<Value> {
@@ -1378,7 +1378,7 @@ impl Server {
 
         let (row, resolved) = self.resolve_singleton_tagged(&scope, &target)?;
 
-        // Both-layers-required for logs (§6.1): an unsupported provider → integration_missing.
+        // Both-layers-required for logs: an unsupported provider → integration_missing.
         if let Some(provider) = &row.agent {
             ensure_supported(&self.integration_state_typed(), provider)?;
         }
@@ -1406,7 +1406,7 @@ impl Server {
         }))
     }
 
-    /// `agent.attach.prepare` (spec §6.1, §11.2): the one terminal-mediated verb. Validates the
+    /// `agent.attach.prepare`: the one terminal-mediated verb. Validates the
     /// target, **inserts the attach lease first** and reads the live location under the same
     /// transaction (so GC can never move/reap between resolution and lease), and returns the
     /// `herdr agent attach` exec command. Queued/starting/ended/lost → `state_conflict`.
@@ -1435,7 +1435,7 @@ impl Server {
         self.publish(ev);
 
         // Build the exec command. `terminal_id` is globally unique and stable across pane
-        // moves, so it addresses the target even after a park/un-park (§6.1).
+        // moves, so it addresses the target even after a park/un-park.
         let bin = HerdrBinary::discover(Some(self.inner.config.herdr.bin.as_str()))?;
         let session = info
             .herdr_session
@@ -1462,7 +1462,7 @@ impl Server {
         }))
     }
 
-    /// `agent.attach.heartbeat` (spec §5.4): keep the lease fresh while the CLI is attached.
+    /// `agent.attach.heartbeat`: keep the lease fresh while the CLI is attached.
     pub(super) fn handle_agent_attach_heartbeat(&self, params: &Value) -> Result<Value> {
         let lease_id = str_param(params, "lease_id").ok_or_else(|| {
             OrcrError::invalid_request("heartbeat requires lease_id", "lease_required")
@@ -1475,7 +1475,7 @@ impl Server {
         Ok(json!({ "ok": ok }))
     }
 
-    /// `agent.attach.release` (spec §5.4): drop the lease on detach; GC resumes.
+    /// `agent.attach.release`: drop the lease on detach; GC resumes.
     pub(super) fn handle_agent_attach_release(&self, params: &Value) -> Result<Value> {
         let lease_id = str_param(params, "lease_id").ok_or_else(|| {
             OrcrError::invalid_request("release requires lease_id", "lease_required")
@@ -1490,13 +1490,13 @@ impl Server {
 
     // --- resolution helpers ---
 
-    /// Resolve an exact singleton target (§5.1): wildcards rejected; path-first then uuid.
+    /// Resolve an exact singleton target: wildcards rejected; path-first then uuid.
     fn resolve_singleton(&self, scope: &Option<String>, raw: &str) -> Result<AgentFull> {
         Ok(self.resolve_singleton_tagged(scope, raw)?.0)
     }
 
-    /// Like [`resolve_singleton`] but also reports how it resolved (`active` | `latest_ended`,
-    /// spec §5.1) — used by `logs`.
+    /// Like [`resolve_singleton`] but also reports how it resolved (`active` | `latest_ended`)
+    /// — used by `logs`.
     fn resolve_singleton_tagged(
         &self,
         scope: &Option<String>,
@@ -1537,7 +1537,7 @@ impl Server {
         ))
     }
 
-    /// Resolve bulk kill targets (§5.1): each target may be a pattern, a path, or a uuid.
+    /// Resolve bulk kill targets: each target may be a pattern, a path, or a uuid.
     /// Returns the deduplicated set of matched **active** agents.
     fn resolve_targets(
         &self,
@@ -1547,7 +1547,7 @@ impl Server {
         self.resolve_targets_where(scope, targets, true, |a| a.status != "ended")
     }
 
-    /// Exact (path/uuid) targets that resolve only to an **ended** agent (§6.1/§13). Kill uses
+    /// Exact (path/uuid) targets that resolve only to an **ended** agent. Kill uses
     /// this when no active agent matched, to emit `skipped:[{reason:"ended"}]` (exit 7) instead
     /// of a no-match (exit 6). Patterns are excluded — a glob ranges over active agents only.
     fn resolve_ended_targets(
@@ -1558,7 +1558,7 @@ impl Server {
         self.resolve_targets_where(scope, targets, false, |a| a.status == "ended")
     }
 
-    /// Shared resolver behind [`resolve_targets`]/[`resolve_ended_targets`] (§5.1): walk each
+    /// Shared resolver behind [`resolve_targets`]/[`resolve_ended_targets`]: walk each
     /// target (pattern / uuid-with-dash / path-or-uuid-prefix), keep every matched row for which
     /// `keep` holds, deduplicated by uuid. `allow_patterns=false` skips glob targets entirely (a
     /// glob ranges over active agents only), so the ended-target path never lists the fleet.
@@ -1613,7 +1613,7 @@ impl Server {
         Ok(out)
     }
 
-    /// The typed integration state (both-layers picture, §11.4).
+    /// The typed integration state (both-layers picture).
     pub(super) fn integration_state_typed(&self) -> crate::driver::IntegrationState {
         let raw = HerdrBinary::discover(Some(self.inner.config.herdr.bin.as_str()))
             .and_then(|b| b.integration_status_raw())
@@ -1621,7 +1621,7 @@ impl Server {
         crate::driver::IntegrationState::from_herdr_status(&raw)
     }
 
-    /// Resolve the caller's scope + lineage (spec §5.3). A **loop run** caller is a directory:
+    /// Resolve the caller's scope + lineage. A **loop run** caller is a directory:
     /// its scope is its whole run path and it parents children *inside* it. An **agent** caller
     /// is a file: its scope is its path minus its name, and children land beside it. A plain
     /// shell has no scope.
@@ -1654,7 +1654,7 @@ impl Server {
     }
 
     /// The caller scope for target-resolution verbs (send/kill/ls/wait/logs): full run path for
-    /// a loop-run caller, else the agent's directory (spec §5.3).
+    /// a loop-run caller, else the agent's directory.
     pub(super) fn caller_scope_full(&self, params: &Value) -> Option<String> {
         self.caller_context(
             str_param(params, "caller_id").as_deref(),
@@ -1663,8 +1663,8 @@ impl Server {
         .scope
     }
 
-    /// Enforce active-loop namespace protection + the run admission barrier on a creation path
-    /// (spec §5.1, §6.2, §11.3). A root/unrelated context may not create anything under an
+    /// Enforce active-loop namespace protection + the run admission barrier on a creation path.
+    /// A root/unrelated context may not create anything under an
     /// active loop's name; only a context *inside* one of that loop's runs may, and only while
     /// that run is still accepting work (`running`).
     ///
@@ -1672,7 +1672,7 @@ impl Server {
     /// can run this check and the agent insert under one contiguous store-lock hold. Because
     /// the store is the single writer (everything, incl. `loop.create`, goes through the same
     /// `Mutex<Store>`), holding the lock across check+insert makes the namespace/ownership
-    /// enforcement atomic with path reservation, as §5.1 requires (no TOCTOU).
+    /// enforcement atomic with path reservation (no TOCTOU).
     fn check_loop_namespace(
         &self,
         store: &Store,
@@ -1699,7 +1699,7 @@ impl Server {
         // still `running` (not stopping/ended). This also blocks a within-loop caller from
         // escaping into a phantom run subtree or the loop root itself via an absolute `--path`
         // (e.g. `/nightly/x` or `/nightly/r99999/x`): agents land under an active loop only as
-        // descendants of one of its runs (§5.1, §11.3).
+        // descendants of one of its runs.
         let run_id = effective.split('/').nth(1).unwrap_or("");
         let run = store
             .find_loop_by_name(level1)
@@ -1725,7 +1725,7 @@ impl Server {
     }
 
     /// The loop data dir for an agent's effective path, if it descends from an active loop run
-    /// (`<loop>/<run_id>/…`), else `None` (spec §5.3 `ORCR_LOOP_DATA_DIR`).
+    /// (`<loop>/<run_id>/…`), else `None` (`ORCR_LOOP_DATA_DIR`).
     fn loop_data_dir_for(&self, effective: &str) -> Option<String> {
         let level1 = effective.split('/').next().unwrap_or("");
         // Must be an agent nested under a loop run (≥ 2 segments), not a bare top-level agent.
@@ -1750,7 +1750,7 @@ impl Server {
         }
     }
 
-    /// The agent's data dir, mirroring its path (§8): `<home>/data/<segs>/<uuid>`.
+    /// The agent's data dir, mirroring its path: `<home>/data/<segs>/<uuid>`.
     pub(super) fn agent_data_dir(&self, path: &str, uuid: &str) -> PathBuf {
         let mut dir = self.inner.home.data_dir();
         for seg in path.split('/') {
@@ -1789,14 +1789,14 @@ fn kill_iter_delay_hook() {
     }
 }
 
-/// A settled wait target (spec §6.1). `None` from [`settle_of`] = not yet settled.
+/// A settled wait target. `None` from [`settle_of`] = not yet settled.
 struct Settled {
     ok: bool,
     reason: String,
     next_kind: &'static str,
 }
 
-/// Map an agent's `status × exit_reason` to its wait settle outcome (spec §6.1 table).
+/// Map an agent's `status × exit_reason` to its wait settle outcome.
 /// Returns `None` for queued/starting/working — the caller keeps waiting.
 fn settle_of(a: &AgentFull) -> Option<Settled> {
     let s = match a.status.as_str() {
@@ -1838,7 +1838,7 @@ fn settle_of(a: &AgentFull) -> Option<Settled> {
     Some(s)
 }
 
-/// The structured `next` hint (spec §6.1): a stable enum kind + a rendered command string.
+/// The structured `next` hint: a stable enum kind + a rendered command string.
 fn next_hint(kind: &str, path: &str, uuid: &str) -> Value {
     let command = match kind {
         "logs_last_response" => format!("orcr agent logs {path} --last-response"),
@@ -1849,7 +1849,7 @@ fn next_hint(kind: &str, path: &str, uuid: &str) -> Value {
     json!({ "kind": kind, "command": command })
 }
 
-/// Build the `agent.wait` result envelope from the snapshot of target rows (spec §6.1).
+/// Build the `agent.wait` result envelope from the snapshot of target rows.
 /// Unsettled targets (only possible on a timed-out wait) report `wait_timeout`.
 fn wait_result(rows: &[AgentFull], decision_seq: i64, timed_out: bool) -> Value {
     let mut rows: Vec<&AgentFull> = rows.iter().collect();
@@ -1885,14 +1885,14 @@ fn wait_result(rows: &[AgentFull], decision_seq: i64, timed_out: bool) -> Value 
     })
 }
 
-/// The caller's resolved scope + lineage (spec §5.3).
+/// The caller's resolved scope + lineage.
 pub(super) struct CallerContext {
     pub scope: Option<String>,
     pub parent_id: Option<String>,
     pub parent_path: Option<String>,
 }
 
-/// The shortest git-style prefix (≥ 8 chars) of `u` that no *other* candidate shares (§5.1).
+/// The shortest git-style prefix (≥ 8 chars) of `u` that no *other* candidate shares.
 /// UUIDv7 values created in the same millisecond share their first ~12 characters, so a fixed
 /// slice would report identical, non-disambiguating prefixes; this grows the prefix until it is
 /// unique (falling back to the full uuid if two are somehow indistinguishable).
@@ -1913,7 +1913,7 @@ fn uuid_lookup(lookup: UuidLookup, raw: &str) -> Result<AgentFull> {
     match lookup {
         UuidLookup::Found(a) => Ok(*a),
         UuidLookup::Ambiguous(cands) => {
-            // Report actually-disambiguating prefixes, not a fixed slice (§5.1).
+            // Report actually-disambiguating prefixes, not a fixed slice.
             let prefixes: Vec<String> = cands
                 .iter()
                 .map(|u| shortest_distinct_prefix(u, &cands))

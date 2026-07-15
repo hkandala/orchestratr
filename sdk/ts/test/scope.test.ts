@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { currentScope, runScope } from "../src/scope.js";
 import { resolveCreate, scopeOfAgent } from "../src/path.js";
 
-// Property test (spec §8 acceptance): `orcr.scope` nesting composes the same effective paths
+// Property test: `orcr.scope` nesting composes the same effective paths
 // as the CLI/server would. The oracle below replicates the server's scope semantics exactly
 // (agent caller → scope = path minus name; loop-run caller → scope = full path; nested scopes
 // stack prefixes; leading `/` resets to absolute), and we assert the SDK's runScope + currentScope

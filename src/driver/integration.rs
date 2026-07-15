@@ -1,4 +1,4 @@
-//! Per-provider integration state (spec §11.4). A provider is *supported* only when both
+//! Per-provider integration state. A provider is *supported* only when both
 //! layers are present: orcr's built-in integration **and** herdr's integration.
 //!
 //! herdr's integration state is read by parsing `herdr integration status` (no dedicated
@@ -11,20 +11,20 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeMap;
 
-/// Per-provider completion tuning (spec §5.6). Defaults ship inside the integration; a
-/// user/test may override any knob via `integrations.<provider>.*` in config (§14). Values
+/// Per-provider completion tuning. Defaults ship inside the integration; a
+/// user/test may override any knob via `integrations.<provider>.*` in config. Values
 /// are milliseconds. See [`tuning_for`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TuningParams {
     /// Fast-turn grace: delivery-then-idle within this window counts as a completed turn even
-    /// if `working` was never observed (§15).
+    /// if `working` was never observed.
     pub fast_turn_grace_ms: u64,
-    /// A turn's idle must be continuously held at least this long before completing (§5.6).
+    /// A turn's idle must be continuously held at least this long before completing.
     pub idle_stable_ms: u64,
     /// The provider transcript must show no new writes for this long before a turn settles.
     pub transcript_settle_ms: u64,
     /// A final response is reported only once the transcript advances past the observed
-    /// completion within this bound, else `transcript_unavailable` (§11.4).
+    /// completion within this bound, else `transcript_unavailable`.
     pub transcript_freshness_timeout_ms: u64,
     /// Grace after the graceful-shutdown recipe before the pane is force-closed.
     pub shutdown_grace_ms: u64,
@@ -71,7 +71,7 @@ impl TuningParams {
                 shutdown_grace_ms: 5000,
                 // Adaptive submit-confirm: wait for readiness, then verify + re-deliver across a
                 // long window with several full re-sends, for slow (enterprise) provider boots
-                // (§5.6, known-issues #2 / E02).
+                // (known-issues #2 / E02).
                 submit_ready_ms: 8000,
                 submit_confirm_ms: 20000,
                 submit_attempts: 6,
@@ -108,7 +108,7 @@ impl TuningParams {
 }
 
 /// Resolve the completion tuning for a provider: built-in defaults merged with any
-/// `integrations.<provider>.*` config overrides (spec §5.6, §14).
+/// `integrations.<provider>.*` config overrides.
 pub fn tuning_for(provider: &str, overrides: &BTreeMap<String, IntegrationTuning>) -> TuningParams {
     let mut t = TuningParams::defaults_for(provider);
     if let Some(o) = overrides.get(provider) {
@@ -117,7 +117,7 @@ pub fn tuning_for(provider: &str, overrides: &BTreeMap<String, IntegrationTuning
     t
 }
 
-/// Providers with an orcr built-in integration (spec §11.4: claude + codex ship first).
+/// Providers with an orcr built-in integration (claude + codex ship first).
 pub const ORCR_BUILTIN_PROVIDERS: &[&str] = &["claude", "codex"];
 
 /// A test-only provider name (`mock`) enabled when `ORCR_ALLOW_MOCK_PROVIDER=1`, backed by
@@ -131,7 +131,7 @@ pub fn mock_provider_enabled() -> bool {
     std::env::var("ORCR_ALLOW_MOCK_PROVIDER").as_deref() == Ok("1")
 }
 
-/// The orcr-side integration for a provider (spec §11.4): how orcr *drives* it — launch
+/// The orcr-side integration for a provider: how orcr *drives* it — launch
 /// argv (bypass-permissions flags + model/effort), a startup recipe for known modals, and a
 /// graceful-shutdown recipe. The transcript adapter + `blocked_kind` classification land in
 /// M3.
@@ -140,11 +140,11 @@ pub struct LaunchPlan {
     /// The full argv (provider binary + flags) handed to herdr `agent.start`.
     pub argv: Vec<String>,
     /// A best-effort text line to send before closing the pane on graceful shutdown
-    /// (`None` = just close the pane). The pane close is the hard guarantee (§5.2).
+    /// (`None` = just close the pane). The pane close is the hard guarantee.
     pub shutdown_line: Option<String>,
 }
 
-/// Build the launch plan for a provider, mapping `model`/`effort` per its CLI (spec §11.4).
+/// Build the launch plan for a provider, mapping `model`/`effort` per its CLI.
 /// Empty `model`/`effort` mean "provider default". Unknown providers → `integration_missing`.
 pub fn launch_plan(
     provider: &str,
@@ -155,8 +155,8 @@ pub fn launch_plan(
     let effort = effort.filter(|s| !s.is_empty());
     match provider {
         "claude" => {
-            // Bypass permissions so the agent runs unattended (spec §11.4; everything runs
-            // bypass-permissions in this release, §17).
+            // Bypass permissions so the agent runs unattended (everything runs
+            // bypass-permissions in this release).
             let mut argv = vec![
                 "claude".to_string(),
                 "--dangerously-skip-permissions".to_string(),
@@ -206,7 +206,7 @@ pub fn launch_plan(
     }
 }
 
-/// Enforce the both-layers-required rule (spec §11.4): a provider is supported only when
+/// Enforce the both-layers-required rule: a provider is supported only when
 /// orcr's built-in integration **and** herdr's integration are both present. Fails fast with
 /// `integration_missing` naming the missing layer(s) and the exact install command; nothing
 /// is spawned. The mock provider (test flag) bypasses this check.
@@ -229,7 +229,7 @@ pub fn ensure_supported(state: &IntegrationState, provider: &str) -> Result<()> 
     Err(integration_missing(provider, &missing))
 }
 
-/// The `integration_missing` error (spec §11.4, §13): names the missing layer(s) and the
+/// The `integration_missing` error: names the missing layer(s) and the
 /// exact fix (exit 2).
 fn integration_missing(provider: &str, missing: &[&str]) -> OrcrError {
     let install = if missing.contains(&"herdr") && missing.contains(&"orcr") {

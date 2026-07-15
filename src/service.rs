@@ -1,15 +1,15 @@
-//! `server enable` / `server disable` (spec §6.4): start-at-login registration so loops fire
+//! `server enable` / `server disable`: start-at-login registration so loops fire
 //! after a reboot before any orcr command runs. macOS uses a launchd agent; Linux a systemd
 //! user unit; anything else → `unsupported_platform`. Units use the **absolute binary path** and
 //! explicitly propagate `ORCR_HOME` / `ORCR_HERDR_BIN` + log paths (no PATH assumptions under
-//! launchd/systemd). Windows lands with general Windows support (§17).
+//! launchd/systemd). Windows lands with general Windows support.
 
 use crate::error::{OrcrError, Result};
 use crate::home::Home;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-/// The launchd label / systemd unit base name (spec §6.4).
+/// The launchd label / systemd unit base name.
 pub const LABEL: &str = "dev.orchestratr.orcr";
 
 /// The rendered unit + where it lives, so `enable` can echo them and tests can assert content.
@@ -19,7 +19,7 @@ pub struct Unit {
     pub verify_command: String,
 }
 
-/// The absolute path to the running `orcr` binary (spec §6.4: units use the absolute path).
+/// The absolute path to the running `orcr` binary (units use the absolute path).
 fn binary_path() -> Result<PathBuf> {
     std::env::current_exe().map_err(|e| {
         OrcrError::environment(
@@ -47,7 +47,7 @@ fn herdr_bin_value(home: &Home) -> String {
         .unwrap_or_else(|_| "herdr".to_string())
 }
 
-/// Render the macOS launchd plist (spec §6.4): `RunAtLoad`, `KeepAlive` on crash, absolute argv,
+/// Render the macOS launchd plist: `RunAtLoad`, `KeepAlive` on crash, absolute argv,
 /// propagated `ORCR_HOME` / `ORCR_HERDR_BIN`, redirected logs.
 pub fn launchd_plist(bin: &str, home: &Home, herdr_bin: &str) -> String {
     let out = home.logs_dir().join("service.out.log");
@@ -96,7 +96,7 @@ pub fn launchd_plist(bin: &str, home: &Home, herdr_bin: &str) -> String {
     )
 }
 
-/// Render the Linux systemd user unit (spec §6.4): `Restart=on-failure`, absolute `ExecStart`,
+/// Render the Linux systemd user unit: `Restart=on-failure`, absolute `ExecStart`,
 /// propagated environment, wanted by `default.target`.
 pub fn systemd_unit(bin: &str, home: &Home, herdr_bin: &str) -> String {
     format!(
@@ -121,8 +121,8 @@ WantedBy=default.target
     )
 }
 
-/// Whether start-at-login is registered, i.e. the platform service unit file exists (spec
-/// §6.4). Backs `server.status`'s `loops_firing`: loops only survive a reboot before any
+/// Whether start-at-login is registered, i.e. the platform service unit file exists.
+/// Backs `server.status`'s `loops_firing`: loops only survive a reboot before any
 /// `orcr` command runs when the server is `enable`d. Path-only (no binary/herdr discovery),
 /// so it is cheap and never fails; an unsupported platform is never enabled.
 pub fn is_enabled(_home: &Home) -> bool {
@@ -181,7 +181,7 @@ pub fn build_unit(home: &Home) -> Result<Unit> {
     }
 }
 
-/// `server enable` (spec §6.4): write the unit, then register + start it. Returns the created
+/// `server enable`: write the unit, then register + start it. Returns the created
 /// unit path + the verify command; the loader step is best-effort (a headless CI session may
 /// lack a launchd/systemd bus — the unit file is the durable registration).
 pub fn enable(home: &Home) -> Result<Value> {
@@ -210,7 +210,7 @@ pub fn enable(home: &Home) -> Result<Value> {
     }))
 }
 
-/// `server disable` (spec §6.4): unregister and remove the unit file. The running server + store
+/// `server disable`: unregister and remove the unit file. The running server + store
 /// are untouched.
 pub fn disable(home: &Home) -> Result<Value> {
     let unit = build_unit(home)?;

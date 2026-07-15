@@ -1,4 +1,4 @@
-// §9.4 Adversarial verification — a worker produces; N verifiers with different lenses try to
+// Adversarial verification — a worker produces; N verifiers with different lenses try to
 // reject; objections loop back until a majority passes.
 import { orcr } from "@orchestratr/sdk";
 import { PRIMARY, SECONDARY, mockHint, runAsScript } from "./_common.js";

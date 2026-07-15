@@ -1,4 +1,4 @@
-//! The herdr socket driver (spec §4, §11.7): orcr speaks herdr's own JSON socket
+//! The herdr socket driver: orcr speaks herdr's own JSON socket
 //! protocol directly. Every operation is pinned to a named herdr method with fixed
 //! request/result shapes (see [`contract`]).
 //!
@@ -165,14 +165,14 @@ impl HerdrDriver {
     }
 
     /// `agent.start` — herdr creates the tab + pane and runs the provider argv; the
-    /// returned ids are authoritative (spec §11.1, §11.7).
+    /// returned ids are authoritative.
     pub fn agent_start(&self, params: &AgentStartParams) -> Result<AgentInfo> {
         let r = self.call("agent.start", serde_json::to_value(params).unwrap())?;
         expect_type(&r, "agent_started")?;
         from_field(&r, "agent")
     }
 
-    /// `pane.send_text` — type text into a pane (first half of the two-call rule, §5.6).
+    /// `pane.send_text` — type text into a pane (first half of the two-call rule).
     pub fn pane_send_text(&self, pane_id: &str, text: &str) -> Result<()> {
         let r = self.call(
             "pane.send_text",
@@ -191,7 +191,7 @@ impl HerdrDriver {
     }
 
     /// `pane.read` — read a pane's rendered content (ANSI stripped). Used to detect TUI
-    /// readiness before the first prompt and to verify a prompt actually submitted (§5.6).
+    /// readiness before the first prompt and to verify a prompt actually submitted.
     /// `lines` limits how many trailing lines are returned (`None` = herdr default).
     pub fn pane_read(
         &self,
@@ -238,7 +238,7 @@ impl HerdrDriver {
     }
 
     /// `notification.show` — surface a notification (blocked alerts). Intentionally not yet
-    /// called by orcr logic: the blocked-alert feature is future work (§2/§11.7), but this
+    /// called by orcr logic: the blocked-alert feature is future work, but this
     /// wrapper is kept so the driver covers the complete pinned herdr-method contract
     /// (`driver/contract.rs` pins `notification.show`), not as an accidental orphan.
     pub fn notification_show(&self, title: &str, body: Option<&str>) -> Result<()> {
@@ -248,7 +248,7 @@ impl HerdrDriver {
     }
 
     /// `pane.report_agent` — report an agent state + transcript pointer for a pane. Used
-    /// by the mock provider to report state through herdr's integration mechanism (§5.6).
+    /// by the mock provider to report state through herdr's integration mechanism.
     pub fn pane_report_agent(
         &self,
         pane_id: &str,

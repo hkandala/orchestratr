@@ -12,7 +12,7 @@ import {
 import { InvalidRequest } from "../src/errors.js";
 
 // These mirror the Rust `src/path.rs` unit tests 1:1 — the grammar must match byte-for-byte
-// so SDK-resolved paths equal what the server would resolve (spec §8 property).
+// so SDK-resolved paths equal what the server would resolve.
 
 test("segment grammar", () => {
   assert.ok(validSegment("file_1"));

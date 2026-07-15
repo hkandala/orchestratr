@@ -1,4 +1,4 @@
-// `orcr.context.fromEnv()` — the canonical env-derivation helper (spec §8, §5.3). Never
+// `orcr.context.fromEnv()` — the canonical env-derivation helper. Never
 // hand-parse ORCR_PATH; use this. Distinguishes an agent (ORCR_AGENT_DATA_DIR set) from a
 // loop-run command (ORCR_AGENT_DATA_DIR unset but ORCR_LOOP_DATA_DIR set) from a plain shell.
 
@@ -26,7 +26,7 @@ function nonEmpty(v: string | undefined): string | undefined {
   return v && v.length > 0 ? v : undefined;
 }
 
-/** Derive the current orcr context from the process environment (spec §5.3 env contract). */
+/** Derive the current orcr context from the process environment (env contract). */
 export function fromEnv(env: NodeJS.ProcessEnv = process.env): OrcrContext {
   const id = nonEmpty(env.ORCR_ID);
   const path = nonEmpty(env.ORCR_PATH);

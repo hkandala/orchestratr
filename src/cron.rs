@@ -1,5 +1,5 @@
 //! Cadence: five-field cron, evaluated in the creating timezone (DST-correct), with each
-//! occurrence persisted as a UTC `next_fire_at` (spec §6.2, §11.3).
+//! occurrence persisted as a UTC `next_fire_at`.
 //!
 //! We deliberately implement our own minute-stepping evaluator rather than pull a cron crate:
 //! the spec's contract is precise (five fields, DST-correct evaluation in a named tz), and
@@ -201,7 +201,7 @@ pub fn tz_from_name(name: &str) -> Tz {
 }
 
 /// Human-readable cadence: the cron in local words plus its UTC-offset context. Best-effort
-/// prose used only for the `loop create` echo (spec §6.2).
+/// prose used only for the `loop create` echo.
 pub fn describe(cadence_kind: &str, cadence_value: &str, tz: &str) -> String {
     match cadence_kind {
         "once" => format!("once at {cadence_value} ({tz})"),
@@ -210,7 +210,7 @@ pub fn describe(cadence_kind: &str, cadence_value: &str, tz: &str) -> String {
 }
 
 /// Render a UTC-ms fire time as a human local+UTC timestamp for the `loop create` echo
-/// (spec §6.2: cadence in words, local + UTC). Falls back to a bare UTC render if the tz or
+/// (cadence in words, local + UTC). Falls back to a bare UTC render if the tz or
 /// timestamp cannot be resolved.
 pub fn describe_next_fire(next_fire_at: i64, tz: &str) -> String {
     let Some(utc) = Utc.timestamp_millis_opt(next_fire_at).single() else {

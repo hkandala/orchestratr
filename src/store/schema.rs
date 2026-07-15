@@ -1,8 +1,8 @@
-//! The sqlite schema (spec §12), verbatim. Nothing derivable is stored; payloads live
+//! The sqlite schema, verbatim. Nothing derivable is stored; payloads live
 //! as files in the data dirs — sqlite coordinates, files carry content.
 
 /// The current store schema version. Two orcr versions sharing one store must agree on
-/// this; a mismatch is refused with a message (spec §12, §15 "version skew").
+/// this; a mismatch is refused with a message on version skew.
 pub const SCHEMA_VERSION: i64 = 1;
 
 /// Full DDL. Every statement is idempotent (`IF NOT EXISTS`) so init is safe to re-run.
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS agents (
     launch_token          TEXT,                      -- crash-recovery idempotency marker
     agent_session_kind    TEXT,                      -- id|path (transcript identity gate)
     agent_session_value   TEXT,
-    status                TEXT NOT NULL,             -- see §5.6 vocabularies
+    status                TEXT NOT NULL,             -- lifecycle status vocabulary
     move_state            TEXT NOT NULL DEFAULT 'none', -- none|parking|unparking
     move_token            TEXT,
     blocked_kind          TEXT,                      -- question|limit|login|unknown
@@ -66,7 +66,7 @@ CREATE INDEX IF NOT EXISTS agents_session_term    ON agents(herdr_session, termi
 CREATE INDEX IF NOT EXISTS agents_agent_session
     ON agents(agent_session_kind, agent_session_value);
 
--- turns: one row per delivered input; the completion bookkeeping (§5.6).
+-- turns: one row per delivered input; the completion bookkeeping.
 CREATE TABLE IF NOT EXISTS turns (
     agent_uuid        TEXT NOT NULL,
     input_seq         INTEGER NOT NULL,
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS turns (
     PRIMARY KEY (agent_uuid, input_seq)
 );
 
--- attaches: attach leases; the GC interlock that survives restarts (§5.4).
+-- attaches: attach leases; the GC interlock that survives restarts.
 CREATE TABLE IF NOT EXISTS attaches (
     agent_uuid   TEXT NOT NULL,
     lease_id     TEXT PRIMARY KEY,

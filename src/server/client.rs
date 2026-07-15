@@ -1,11 +1,11 @@
-//! The socket client (spec §4, §11.6): the thin layer every CLI verb and the SDK sit on.
+//! The socket client: the thin layer every CLI verb and the SDK sit on.
 //!
 //! Responsibilities: connect to `$ORCR_HOME/orcr.sock` and perform the version handshake;
 //! send one-shot requests and decode the `{ok,result|error}` envelope back into a
 //! [`Result`]; open subscription streams; and **auto-start** the server (spawn a detached
 //! `orcr server start --foreground` and wait for readiness) for any verb that needs it.
 //! The start race is resolved by the server's instance lock, so many clients racing to
-//! auto-start still yield exactly one server (§11.6).
+//! auto-start still yield exactly one server.
 
 use crate::config::Config;
 use crate::error::{ErrorCode, OrcrError, Result};
@@ -52,7 +52,7 @@ impl Client {
         &self.socket_path
     }
 
-    /// Connect to the socket, rejecting a symlinked path (§11.6). Absence / refusal →
+    /// Connect to the socket, rejecting a symlinked path. Absence / refusal →
     /// `server_unreachable`.
     fn connect(&self) -> Result<UnixStream> {
         // lstat-validate: never follow a symlink at the socket path.
@@ -118,7 +118,7 @@ impl Client {
         decode_response(&resp)
     }
 
-    /// The readiness handshake (§11.6): returns `{pid, protocol, store, ready}`. Rejects a
+    /// The readiness handshake: returns `{pid, protocol, store, ready}`. Rejects a
     /// server that speaks a different protocol.
     pub fn handshake(&self) -> Result<Value> {
         let r = self.request("server.handshake", json!({}))?;
@@ -166,7 +166,7 @@ impl Client {
 
     // --- typed convenience helpers (SDK groundwork, M3) — thin wrappers over `request` ---
 
-    /// `agent.wait` on one or more targets. Returns the raw wait result document (§6.1).
+    /// `agent.wait` on one or more targets. Returns the raw wait result document.
     pub fn wait(&self, targets: &[&str], timeout: Option<&str>) -> Result<Value> {
         let mut params = json!({ "targets": targets });
         if let Some(t) = timeout {

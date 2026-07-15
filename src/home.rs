@@ -1,4 +1,4 @@
-//! The orcr home directory layout and its safety checks (spec §11.6, §14).
+//! The orcr home directory layout and its safety checks.
 //!
 //! Everything orcr owns lives under a single home directory — default `~/.orcr`,
 //! relocatable via `ORCR_HOME` (which relocates the store, socket, lock, config, logs,

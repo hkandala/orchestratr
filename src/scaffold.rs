@@ -1,4 +1,4 @@
-//! `orcr scaffold` (spec §6.6): generate a ready-to-run TypeScript workflow project.
+//! `orcr scaffold`: generate a ready-to-run TypeScript workflow project.
 //!
 //! This is the one orcr feature that needs Node — and the only CLI verb that never talks to
 //! the server (no store row, no auto-start). It writes exactly three files into `<dir>`
@@ -10,7 +10,7 @@
 //! workflow.ts     ~15-line runnable example + one skill-reference comment
 //! ```
 //!
-//! Rules (§6.6): requires Node ≥ 20 + npm (missing → `environment_error`, nothing created);
+//! Rules: requires Node ≥ 20 + npm (missing → `environment_error`, nothing created);
 //! never overwrites an existing one of the three files (→ `state_conflict`, nothing touched);
 //! purely local.
 
@@ -18,10 +18,10 @@ use crate::error::{ErrorCode, OrcrError, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-/// The three files scaffold generates (never more, never fewer — §6.6).
+/// The three files scaffold generates (never more, never fewer).
 pub const GENERATED_FILES: &[&str] = &["package.json", "tsconfig.json", "workflow.ts"];
 
-/// Minimum Node major version the generated project (and `npx tsx`) requires (§6.6).
+/// Minimum Node major version the generated project (and `npx tsx`) requires.
 pub const MIN_NODE_MAJOR: u64 = 20;
 
 /// Outcome of a successful scaffold, for the `--json` envelope and human output.
@@ -46,9 +46,8 @@ impl ScaffoldOutcome {
     }
 }
 
-/// The SDK version this CLI pins scaffolds to — always the CLI's own version (§6.6:
-/// "pinned to this CLI's version"). The acceptance check "pinned SDK version equals the CLI
-/// version" reads this.
+/// The SDK version this CLI pins scaffolds to — always the CLI's own version. The acceptance
+/// check "pinned SDK version equals the CLI version" reads this.
 pub fn sdk_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
@@ -109,7 +108,7 @@ fn tsconfig_json() -> String {
 
 fn workflow_ts() -> String {
     // ~15-line runnable example: scope → run --name → wait → last-response, plus one comment
-    // pointing at the skill reference for the full SDK surface (§6.6).
+    // pointing at the skill reference for the full SDK surface.
     r#"import { orcr } from "@orchestratr/sdk";
 
 // A minimal, runnable orchestration. For the full SDK surface (collections, scopes,
@@ -128,13 +127,13 @@ await orcr.scope("scaffold_demo", async () => {
     .to_string()
 }
 
-/// Run the scaffold (spec §6.6). `dir` defaults to `.`; `run_install` controls the trailing
+/// Run the scaffold. `dir` defaults to `.`; `run_install` controls the trailing
 /// `npm install` (tests skip it for speed). Preflight and overwrite checks happen *before*
 /// anything is created.
 pub fn scaffold(dir: Option<&str>, run_install: bool) -> Result<ScaffoldOutcome> {
     let dir = PathBuf::from(dir.unwrap_or("."));
 
-    // Preflight: Node ≥ 20 + npm present. On failure, nothing is created (§6.6).
+    // Preflight: Node ≥ 20 + npm present. On failure, nothing is created.
     preflight_node()?;
     preflight_npm()?;
 
@@ -197,7 +196,7 @@ fn write_file(dir: &Path, name: &str, contents: &str) -> Result<()> {
     })
 }
 
-/// Preflight Node ≥ 20 (§6.6). Missing/old → `environment_error` with an install pointer.
+/// Preflight Node ≥ 20. Missing/old → `environment_error` with an install pointer.
 fn preflight_node() -> Result<()> {
     let out = std::process::Command::new("node")
         .arg("--version")

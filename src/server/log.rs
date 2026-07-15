@@ -1,4 +1,4 @@
-//! The server's own structured log (`$ORCR_HOME/logs/server.log`), spec §6.4.
+//! The server's own structured log (`$ORCR_HOME/logs/server.log`).
 //!
 //! One JSON object per line (`{ts, level, msg}`) — startup, herdr connection events,
 //! shutdown, errors. Size-capped with simple numbered rotation

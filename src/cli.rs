@@ -1,6 +1,6 @@
-//! The `orcr` CLI (spec §6): a thin client of the socket API. Every server-touching verb
+//! The `orcr` CLI: a thin client of the socket API. Every server-touching verb
 //! maps 1:1 to a socket method; the CLI's job is arg parsing, the `--json` envelope, the
-//! §13 error→exit-code mapping, TTY detection, and human-readable rendering.
+//! error→exit-code mapping, TTY detection, and human-readable rendering.
 //!
 //! M1 wires the `server` and `api` nouns plus all shared plumbing; agent/loop nouns land
 //! in later milestones (their methods are already registered in [`crate::api`]).
@@ -30,34 +30,34 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Spawn, message, and manage agents (§6.1).
+    /// Spawn, message, and manage agents.
     Agent {
         #[command(subcommand)]
         cmd: AgentCmd,
     },
-    /// Durable cron over any command: loops and their runs (§6.2).
+    /// Durable cron over any command: loops and their runs.
     Loop {
         #[command(subcommand)]
         cmd: LoopCmd,
     },
-    /// The orcr server: single writer, socket API (§6.4).
+    /// The orcr server: single writer, socket API.
     Server {
         #[command(subcommand)]
         cmd: ServerCmd,
     },
-    /// The self-describing socket API (§6.5).
+    /// The self-describing socket API.
     Api {
         #[command(subcommand)]
         cmd: ApiCmd,
     },
-    /// Generate a ready-to-run TypeScript workflow project (§6.6). Purely local.
+    /// Generate a ready-to-run TypeScript workflow project. Purely local.
     Scaffold {
         /// Target directory (default: the current directory; created if missing).
         dir: Option<String>,
     },
-    /// The live, view-only monitoring TUI (§6.3, §7).
+    /// The live, view-only monitoring TUI.
     Top {
-        /// Optional path pattern (or uuid) to pre-scope the tree (§5.1 grammar).
+        /// Optional path pattern (or uuid) to pre-scope the tree.
         pattern: Option<String>,
         /// Only show agents of this provider.
         #[arg(short = 'a', long = "agent")]
@@ -349,8 +349,8 @@ pub fn run() -> i32 {
                 let _ = e.print();
                 return 0;
             }
-            // A bad flag / name / missing arg is an `invalid_request` (exit 1) per §6/§13 —
-            // not clap's default exit 2 (which §13 reserves for environment errors). The parse
+            // A bad flag / name / missing arg is an `invalid_request` (exit 1) —
+            // not clap's default exit 2 (which is reserved for environment errors). The parse
             // failed, so detect `--json` by scanning argv.
             let json = std::env::args().any(|a| a == "--json");
             let err = OrcrError::invalid_request(e.to_string().trim_end().to_string(), "cli_parse");
@@ -401,7 +401,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
     }
 }
 
-/// `orcr scaffold` (spec §6.6): generate a TypeScript workflow project + `npm install`.
+/// `orcr scaffold`: generate a TypeScript workflow project + `npm install`.
 /// Purely local — no server, no store row.
 fn cmd_scaffold(json: bool, dir: Option<&str>) -> Result<()> {
     let outcome = crate::scaffold::scaffold(dir, true)?;
@@ -417,8 +417,8 @@ fn cmd_scaffold(json: bool, dir: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// `orcr top` (spec §6.3): build the pre-scoping filter from the flags (resolving any pattern
-/// against the caller's `ORCR_PATH` scope, §5.1) and launch the view-only TUI. Live-only by
+/// `orcr top`: build the pre-scoping filter from the flags (resolving any pattern
+/// against the caller's `ORCR_PATH` scope) and launch the view-only TUI. Live-only by
 /// design — there is no `--all` (that is `ls --all`).
 fn cmd_top(
     pattern: &Option<String>,
@@ -434,7 +434,7 @@ fn cmd_top(
 
     let compiled = match pattern.as_deref().filter(|s| !s.is_empty()) {
         Some(p) => {
-            // §6.3 accepts `<pattern|uuid>`: a uuid/≥8-hex-prefix resolves (via the uuid-aware
+            // `top` accepts `<pattern|uuid>`: a uuid/≥8-hex-prefix resolves (via the uuid-aware
             // `agent.ls`) to that one agent's path, mirroring wait/kill; otherwise it is a glob.
             // If the ls resolves to exactly one agent we scope top to that agent's path; a
             // multi-match (a hex string that is really a path glob) falls back to glob compile.
@@ -552,7 +552,7 @@ fn dispatch_agent(json: bool, cmd: &AgentCmd) -> Result<()> {
 }
 
 /// The caller identity (`ORCR_ID`/`ORCR_PATH`) from the CLI's own env — how lineage + scope
-/// assemble for nested agents (§5.3). Absent at a plain shell.
+/// assemble for nested agents. Absent at a plain shell.
 fn caller_identity() -> (Option<String>, Option<String>) {
     let id = std::env::var("ORCR_ID").ok().filter(|s| !s.is_empty());
     let path = std::env::var("ORCR_PATH").ok().filter(|s| !s.is_empty());
@@ -577,7 +577,7 @@ fn resolve_prompt(p: Option<&str>) -> Result<Option<String>> {
     }
 }
 
-/// Naming is mandatory for `agent run`/`ask`: exactly one of `--name` or `--path` (§6.1).
+/// Naming is mandatory for `agent run`/`ask`: exactly one of `--name` or `--path`.
 fn require_name_xor_path(name: &Option<String>, path: &Option<String>) -> Result<()> {
     if name.is_some() == path.is_some() {
         return Err(OrcrError::invalid_request(
@@ -588,7 +588,7 @@ fn require_name_xor_path(name: &Option<String>, path: &Option<String>) -> Result
     Ok(())
 }
 
-/// The spawn options shared by `agent run` and `agent ask` (§6.1), borrowed straight from the
+/// The spawn options shared by `agent run` and `agent ask`, borrowed straight from the
 /// parsed clap args so the handlers don't thread eight `&Option<String>` params by hand.
 struct SpawnOpts<'a> {
     name: &'a Option<String>,
@@ -610,10 +610,10 @@ fn cmd_agent_run(json: bool, o: &SpawnOpts, gc: &Option<String>) -> Result<()> {
     let agent_path = a["path"].as_str().unwrap_or_default().to_string();
     let uuid = a["uuid"].as_str().unwrap_or_default().to_string();
     emit_success(json, &result, || {
-        // `<path> <uuid>` on one stdout line (cut-friendly, §5.1).
+        // `<path> <uuid>` on one stdout line (cut-friendly).
         println!("{agent_path} {uuid}");
         if stdout_is_tty() {
-            // Hints use the FULL path (§6.1) so copy-pasted commands resolve correctly
+            // Hints use the FULL path so copy-pasted commands resolve correctly
             // regardless of the current caller scope.
             eprintln!(
                 "wait: orcr agent wait {agent_path} · response: orcr agent logs {agent_path} \
@@ -656,7 +656,7 @@ fn cmd_agent_ask(json: bool, o: &SpawnOpts) -> Result<()> {
     let params = build_spawn_params(o)?;
     let result = connect_and_request("agent.ask", params)?;
     emit_success(json, &result, || {
-        // The final response on stdout (§6.1).
+        // The final response on stdout.
         println!(
             "{}",
             result["response"]["text"].as_str().unwrap_or_default()
@@ -680,7 +680,7 @@ fn cmd_agent_wait(json: bool, targets: &[String], timeout: Option<&str>) -> Resu
             );
         }
     });
-    // Exit code from the settle outcome (spec §6.1): the outcomes rank
+    // Exit code from the settle outcome: the outcomes rank
     // `4 any target blocked · 5 any target dead · 3 --timeout expired`, so a settled
     // blocked/dead target wins over the wait's own timeout when a mixed wait both times
     // out (a target still working) and has an already-settled blocked/dead target.
@@ -747,10 +747,10 @@ fn cmd_agent_logs(
     note_if_ended(json, &result);
     let seen = print_entries(json, &result, 0);
     if follow {
-        // Follow is a poll under the hood (§6.1): re-read the transcript and print new entries.
+        // Follow is a poll under the hood: re-read the transcript and print new entries.
         // In `--json` mode each poll batch is emitted as its own NDJSON `{ok:true,result:{…}}`
         // envelope (rather than switching to human text), so a machine client sees only valid
-        // envelopes — one per line — for the whole stream (§6; only `orcr top` is exempt).
+        // envelopes — one per line — for the whole stream (only `orcr top` is exempt).
         let build = || {
             let mut p = json!({ "target": target, "last_response": false });
             add_caller(&mut p, &caller_id, &caller_path);
@@ -770,7 +770,7 @@ fn cmd_agent_logs(
     Ok(())
 }
 
-/// The shared `--follow` poll loop (§6.1): every 500ms re-request `method` with freshly-built
+/// The shared `--follow` poll loop: every 500ms re-request `method` with freshly-built
 /// params and print entries beyond `seen`; transient errors are skipped. Diverges (only
 /// interrupted by the operator).
 fn follow_poll(
@@ -787,8 +787,8 @@ fn follow_poll(
     }
 }
 
-/// §5.1 disambiguation: a TTY `agent logs` that resolves path-first to an ended agent (the verb
-/// is active-else-most-recent-ended, §6.1) prints a stderr note so the operator knows they hit
+/// Disambiguation: a TTY `agent logs` that resolves path-first to an ended agent (the verb
+/// is active-else-most-recent-ended) prints a stderr note so the operator knows they hit
 /// history rather than a live agent, and how to pin the exact one.
 fn note_if_ended(json: bool, result: &Value) {
     if json || !stdout_is_tty() {
@@ -811,7 +811,7 @@ fn note_if_ended(json: bool, result: &Value) {
 /// Follow-mode `--json` batch printer: emit the entries beyond `skip` as one NDJSON
 /// `{ok:true,result:{entries:[…]}}` envelope line (nothing when there are no new entries),
 /// returning the new total. Keeps the whole `logs --json --follow` stream a sequence of valid
-/// envelopes rather than mixing one envelope with plain-text lines (§6).
+/// envelopes rather than mixing one envelope with plain-text lines.
 fn print_entries_ndjson(result: &Value, skip: usize) -> usize {
     let entries = result["entries"].as_array().cloned().unwrap_or_default();
     let total = entries.len();
@@ -842,7 +842,7 @@ fn print_entries(json: bool, result: &Value, skip: usize) -> usize {
     entries.len()
 }
 
-/// `agent attach` (spec §6.1): the one terminal-mediated verb. The CLI calls
+/// `agent attach`: the one terminal-mediated verb. The CLI calls
 /// `agent.attach.prepare` (which inserts the lease first, so GC defers), execs `herdr agent
 /// attach` locally while heart-beating the lease, and releases it on exit. Abrupt CLI death →
 /// the lease expires by heartbeat.
@@ -870,7 +870,7 @@ fn cmd_agent_attach(json: bool, target: &str, takeover: bool) -> Result<()> {
     }
 
     // Heartbeat the lease in the background (every ~ttl/2) until the attach session ends, so GC
-    // keeps deferring park/reap while attached (§5.4).
+    // keeps deferring park/reap while attached.
     let stop = Arc::new(AtomicBool::new(false));
     let hb_lease = lease_id.clone();
     let hb_stop = stop.clone();
@@ -916,7 +916,7 @@ fn cmd_agent_attach(json: bool, target: &str, takeover: bool) -> Result<()> {
 fn cmd_agent_kill(json: bool, targets: &[String], force: bool, yes: bool) -> Result<()> {
     let (caller_id, caller_path) = caller_identity();
 
-    // TTY confirmation by default (spec §6): preview the matched set, then ask. Non-TTY and
+    // TTY confirmation by default: preview the matched set, then ask. Non-TTY and
     // --json callers proceed without prompting.
     if !yes && !json && stdout_is_tty() {
         let mut preview = json!({ "targets": targets, "force": force, "preview": true });
@@ -957,7 +957,7 @@ fn cmd_agent_kill(json: bool, targets: &[String], force: bool, yes: bool) -> Res
             println!("no agents killed");
         }
     });
-    // §6.1 kill result classification: matched but every target skipped (already ended /
+    // kill result classification: matched but every target skipped (already ended /
     // needs --force) → exit 7; any kills performed → exit 0. (A no-match already surfaces as
     // not_found → exit 6 from the server before we get here.)
     if killed == 0 && skipped > 0 {
@@ -976,7 +976,7 @@ fn cmd_agent_ls(
     unmanaged: bool,
     all: bool,
 ) -> Result<()> {
-    // §6.1 renders `[--managed|--unmanaged]` as mutually exclusive (as `top` enforces).
+    // `[--managed|--unmanaged]` is mutually exclusive (as `top` enforces).
     if managed && unmanaged {
         return Err(OrcrError::invalid_request(
             "pass at most one of --managed / --unmanaged",
@@ -994,7 +994,7 @@ fn cmd_agent_ls(
     Ok(())
 }
 
-/// The effective `--cwd`: the explicit value, else the caller's current directory (§6.1).
+/// The effective `--cwd`: the explicit value, else the caller's current directory.
 fn default_cwd(cwd: &Option<String>) -> Option<String> {
     match cwd {
         Some(c) => Some(c.clone()),
@@ -1004,7 +1004,7 @@ fn default_cwd(cwd: &Option<String>) -> Option<String> {
     }
 }
 
-/// Assemble the params shared by `agent run` and `agent ask` (§6.1): enforce naming, resolve
+/// Assemble the params shared by `agent run` and `agent ask`: enforce naming, resolve
 /// the prompt (`-p -` from stdin) and the effective cwd, then set naming, provider, model/
 /// effort, cwd, timeout, and the caller identity. Verb-specific fields (e.g. `gc`) are added on
 /// top by the caller.
@@ -1049,7 +1049,7 @@ fn connect_and_request(method: &str, params: Value) -> Result<Value> {
     client.request(method, params)
 }
 
-/// Render `agent ls` as a path tree (spec §6.1): `PATH UUID STATUS AGENT AGE`.
+/// Render `agent ls` as a path tree: `PATH UUID STATUS AGENT AGE`.
 fn print_ls_human(result: &Value) {
     let mut agents = result["agents"].as_array().cloned().unwrap_or_default();
     if agents.is_empty() {
@@ -1057,8 +1057,8 @@ fn print_ls_human(result: &Value) {
         return;
     }
     // Sort by path so the flat table reads in path-tree order — ancestors before descendants,
-    // grouped by level-1 segment (the indented tree view itself is `orcr top`, §7). The JSON
-    // envelope keeps store order; only the TTY rendering is path-sorted (§6.1).
+    // grouped by level-1 segment (the indented tree view itself is `orcr top`). The JSON
+    // envelope keeps store order; only the TTY rendering is path-sorted.
     agents.sort_by(|a, b| {
         a["path"]
             .as_str()
@@ -1073,7 +1073,7 @@ fn print_ls_human(result: &Value) {
     for a in &agents {
         let uuid = a["uuid"].as_str().unwrap_or_default();
         let short = uuid.get(..8).unwrap_or(uuid);
-        // §12 derived age: basis = created_at for queued/starting, else last_status_change_at.
+        // Derived age: basis = created_at for queued/starting, else last_status_change_at.
         let status = a["status"].as_str().unwrap_or_default();
         let basis = match status {
             "queued" | "starting" => a["created_at"].as_i64(),
@@ -1167,7 +1167,7 @@ fn cmd_loop_create(
             "cadence_required",
         ));
     }
-    // The loop's creation cwd is the workspace its agents inherit (§6.2): the caller's cwd.
+    // The loop's creation cwd is the workspace its agents inherit: the caller's cwd.
     let cwd = std::env::current_dir()
         .ok()
         .map(|p| p.display().to_string());
@@ -1223,12 +1223,12 @@ fn cmd_loop_set(json: bool, method: &str, names: &[String]) -> Result<()> {
 }
 
 fn cmd_loop_rm(json: bool, names: &[String], kill_active: bool, yes: bool) -> Result<()> {
-    // §6 scopes the destructive confirmation to `loop rm --kill-active` (which stops active
+    // The destructive confirmation is scoped to `loop rm --kill-active` (which stops active
     // runs + kills their agents). A plain `loop rm` only ends the definition (history stays,
     // runs keep going), so it is non-destructive and needs no prompt.
     if kill_active && !yes && !json && stdout_is_tty() {
         // Enumerate the resolved loops and each one's active runs so the operator confirms
-        // against the real target set (spec §6).
+        // against the real target set.
         for name in names {
             let listed = connect_and_request("loop.run.ls", json!({ "name": name }))?;
             let runs: Vec<&Value> = listed["runs"]
@@ -1365,7 +1365,7 @@ fn cmd_loop_run_start(json: bool, name: &str) -> Result<()> {
 fn cmd_loop_run_stop(json: bool, name: &str, run: Option<&str>, yes: bool) -> Result<()> {
     if !yes && !json && stdout_is_tty() {
         // Enumerate the resolved targets (the loop's active/pending runs, or the one named
-        // run) so the operator confirms against the real set, not just argv (spec §6).
+        // run) so the operator confirms against the real set, not just argv.
         let mut lsp = json!({ "name": name });
         set_opt(&mut lsp, "run", run);
         let listed = connect_and_request("loop.run.ls", lsp)?;
@@ -1493,7 +1493,7 @@ fn cmd_server_logs(json: bool, tail: Option<usize>, follow: bool) -> Result<()> 
     if follow {
         // Stream: print the tail, then keep printing new lines. In `--json` mode each line is
         // wrapped in its own `{ok:true,result:{line:…}}` envelope so the whole follow stream is a
-        // sequence of valid envelopes (§6), one per line.
+        // sequence of valid envelopes, one per line.
         stream_follow(&path, tail, json)?;
         return Ok(());
     }
@@ -1644,7 +1644,7 @@ fn print_status_human(s: &Value) {
             d.get("repaired").unwrap_or(&Value::Null),
         );
     }
-    // Per-provider integrations, so the install gap is visible without --json (§6.4, §11.4).
+    // Per-provider integrations, so the install gap is visible without --json.
     if let Some(m) = s.get("integrations").and_then(|v| v.as_object()) {
         if m.is_empty() {
             println!("  integrations (none)");
@@ -1666,7 +1666,7 @@ fn print_status_human(s: &Value) {
             }
         }
     }
-    // Whether loop firing survives a reboot (durable enable) + the loop schedule (§6.4).
+    // Whether loop firing survives a reboot (durable enable) + the loop schedule.
     println!("  loops     firing_durable={}", g("loops_firing"));
     if let Some(loops) = s.get("loops").and_then(|v| v.as_array()) {
         for l in loops {
@@ -1683,13 +1683,13 @@ fn print_status_human(s: &Value) {
     }
 }
 
-/// Whether stdout is a TTY (spec §6: TTY vs non-TTY behavior — hints, confirmations).
+/// Whether stdout is a TTY (drives TTY vs non-TTY behavior — hints, confirmations).
 pub fn stdout_is_tty() -> bool {
     // SAFETY: isatty on a valid fd is always safe.
     unsafe { libc::isatty(libc::STDOUT_FILENO) == 1 }
 }
 
-/// TTY [y/N] confirmation (spec §6): print `question` to stderr, read one line from stdin,
+/// TTY [y/N] confirmation: print `question` to stderr, read one line from stdin,
 /// and return whether it was an affirmative (`y`/`Y`/`yes`). Callers gate this behind
 /// `!yes && !json && stdout_is_tty()` and print "aborted" on a `false`.
 fn confirm(question: &str) -> bool {
@@ -1724,7 +1724,7 @@ fn stream_follow(path: &std::path::Path, tail: Option<usize>, json: bool) -> Res
     use std::io::{Seek, SeekFrom};
 
     // Each server-log line is already a JSON object; in `--json` mode wrap it in an envelope so
-    // the whole follow stream is valid `{ok:true,result:{line:…}}` NDJSON (§6), else print raw.
+    // the whole follow stream is valid `{ok:true,result:{line:…}}` NDJSON, else print raw.
     let emit = |line: &str, handle: &mut dyn Write| {
         if json {
             let parsed =

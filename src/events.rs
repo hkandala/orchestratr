@@ -1,4 +1,4 @@
-//! The in-memory event bus (spec §11.6).
+//! The in-memory event bus.
 //!
 //! The durable source of truth for events is the `events` table (the cursor); this bus
 //! adds two things a table alone can't give cheaply: **wakeups** (so a subscriber thread

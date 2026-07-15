@@ -1,7 +1,7 @@
-//! Transcript adapters for the built-in providers (spec §11.4): locate and parse a
+//! Transcript adapters for the built-in providers: locate and parse a
 //! provider's **native** session files into a common shape (ordered messages, roles, tool
 //! calls, token counts where available). orcr keeps **no** response copies — `logs` always
-//! reads these native files; completion records only a locator/cursor (§12).
+//! reads these native files; completion records only a locator/cursor.
 //!
 //! Two gates protect against silent wrong reads:
 //! - **Identity** — a transcript is selected by the pane's `agent_session` id (and the
@@ -21,7 +21,7 @@ use crate::error::{ErrorCode, OrcrError, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-/// One parsed transcript message in the common shape (spec §11.4).
+/// One parsed transcript message in the common shape.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct TranscriptEntry {
     /// `user` | `assistant` | `system` | `tool`.
@@ -49,7 +49,7 @@ pub struct TranscriptLocator {
 }
 
 impl TranscriptLocator {
-    /// The stable locator string recorded in the store (`transcript_locator`, §12).
+    /// The stable locator string recorded in the store (`transcript_locator`).
     pub fn as_string(&self) -> String {
         self.path.display().to_string()
     }
@@ -88,8 +88,8 @@ impl TranscriptLocator {
     }
 }
 
-/// Locate a provider's native transcript for an agent, applying the identity gate (spec
-/// §11.4). `session_kind`/`session_value` come from the pane's `agent_session`; `cwd` and
+/// Locate a provider's native transcript for an agent, applying the identity gate.
+/// `session_kind`/`session_value` come from the pane's `agent_session`; `cwd` and
 /// `created_at_ms` narrow/disambiguate candidates.
 #[allow(clippy::too_many_arguments)]
 pub fn locate_transcript(
@@ -486,7 +486,7 @@ fn file_mtime_ms(path: &Path) -> Option<i64> {
     Some(dur.as_millis() as i64)
 }
 
-/// Freshness gate (spec §11.4): a final response is reported only once the transcript file
+/// Freshness gate: a final response is reported only once the transcript file
 /// has advanced **past** the observed completion. `true` = fresh (safe to read the final
 /// response); `false` = the file has not advanced yet → `transcript_unavailable (stale)`.
 pub fn transcript_fresh(mtime_ms: Option<i64>, completed_at_ms: i64) -> bool {
@@ -496,7 +496,7 @@ pub fn transcript_fresh(mtime_ms: Option<i64>, completed_at_ms: i64) -> bool {
     }
 }
 
-/// The `transcript_unavailable` error (spec §13) with a `cause` in details.
+/// The `transcript_unavailable` error with a `cause` in details.
 pub fn transcript_unavailable(
     uuid: &str,
     status: &str,

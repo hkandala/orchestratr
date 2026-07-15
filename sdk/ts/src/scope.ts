@@ -1,7 +1,7 @@
-// `orcr.scope()` — async-context path scoping (spec §8). Backed by AsyncLocalStorage, NOT a
+// `orcr.scope()` — async-context path scoping. Backed by AsyncLocalStorage, NOT a
 // process-global, so concurrent scopes (e.g. two fan-outs) never leak into each other. Scopes
 // nest: prefixes stack; a leading `/` resets to absolute. The base scope comes from the env
-// context (§5.3) so an SDK running inside an agent/loop-run composes on top of its own path.
+// context so an SDK running inside an agent/loop-run composes on top of its own path.
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fromEnv } from "./context.js";
@@ -33,7 +33,7 @@ export function resolveScopePath(current: string | undefined, fragment: string):
 }
 
 export interface ScopeOptions {
-  /** On throw, barrier-kill of `<scope>/**` before re-throwing (spec §8). */
+  /** On throw, barrier-kill of `<scope>/**` before re-throwing. */
   killOnThrow?: boolean;
 }
 

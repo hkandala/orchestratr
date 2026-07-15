@@ -1,4 +1,4 @@
-// @orchestratr/sdk — a typed client of the orcr socket API (spec §8).
+// @orchestratr/sdk — a typed client of the orcr socket API.
 //
 //   import { orcr } from "@orchestratr/sdk";
 //   const a = await orcr.agent.run({ agent: "codex", name: "worker", prompt: "…" });

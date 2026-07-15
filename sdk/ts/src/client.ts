@@ -1,6 +1,6 @@
-// The convenience layer (spec §8): `orcr.*` — a curated surface on top of the generated
+// The convenience layer: `orcr.*` — a curated surface on top of the generated
 // protocol client. Every helper documents the protocol calls it makes; anything here a shell
-// script could do with `orcr … --json`. Paths are resolved client-side (§5.1 grammar) so the
+// script could do with `orcr … --json`. Paths are resolved client-side (path grammar) so the
 // composed effective paths match the CLI exactly, then sent as absolute selectors.
 
 import path from "node:path";
@@ -19,7 +19,7 @@ import {
 } from "./path.js";
 import { InvalidRequest, TranscriptUnavailable } from "./errors.js";
 
-/** A `name` XOR `path`, plus provider/model knobs shared by run + ask (§8). */
+/** A `name` XOR `path`, plus provider/model knobs shared by run + ask. */
 export interface SpawnOptions {
   agent?: string;
   prompt: string;
@@ -127,7 +127,7 @@ function resolvePatternAbs(pattern: string | undefined): string {
   return `/${resolveSelector(currentScope(), pattern)}`;
 }
 
-/** A live agent handle (spec §8) — the return of `orcr.agent.run()`. */
+/** A live agent handle — the return of `orcr.agent.run()`. */
 export class AgentHandle {
   readonly uuid: string;
   readonly path: string;
@@ -286,7 +286,7 @@ class AgentApi {
   }
 }
 
-/** An attach lease + exec command (spec §8). The caller execs `command`; heartbeat/release manage the lease. */
+/** An attach lease + exec command. The caller execs `command`; heartbeat/release manage the lease. */
 export class AttachHandle {
   readonly command: string[];
   readonly leaseId: string;
@@ -314,8 +314,8 @@ export class AttachHandle {
 
   /**
    * Spawn the interactive attach `command` as a child (inheriting stdio), heartbeat the lease on
-   * an interval while it lives, and release on exit — the full lifecycle the spec promises
-   * (§8: "the SDK heartbeats the lease while the child process lives, releases on exit"), so GC
+   * an interval while it lives, and release on exit — the SDK heartbeats the lease while the
+   * child process lives and releases on exit, so GC
    * won't park/reap the agent mid-attach. Resolves with the child's exit code. Use the manual
    * `command` + `heartbeat`/`release` primitives instead when driving the child yourself.
    */
@@ -451,7 +451,7 @@ class ApiApi {
   }
 }
 
-/** A snapshot-then-subscribe stream (spec §8) — what `orcr top` renders. */
+/** A snapshot-then-subscribe stream — what `orcr top` renders. */
 export class Watch implements AsyncIterable<Record<string, unknown>> {
   constructor(private readonly sub: Subscription) {}
   /** The pinned initial snapshot document. */
@@ -510,7 +510,7 @@ export class OrcrClient {
     const r = (await this.req("agent.ask", params)) as Record<string, unknown>;
     const resp = r.response as Record<string, unknown> | undefined;
     // Share the transcript-unavailable contract with AgentHandle.lastResponse():
-    // a response carrying no text is a typed error, never a silent "" (spec §8).
+    // a response carrying no text is a typed error, never a silent "".
     if (!resp || typeof resp.text !== "string") {
       throw new TranscriptUnavailable("no response text available", {
         path: params.path as string,
@@ -528,7 +528,7 @@ export class OrcrClient {
     return runScope(scopePath, fn, opts, (pattern) => this.agent.kill(pattern, { force: true }));
   }
 
-  /** Snapshot-then-subscribe live events (spec §8). */
+  /** Snapshot-then-subscribe live events. */
   async watch(opts: WatchOptions = {}): Promise<Watch> {
     await this.ensure();
     const params: Record<string, unknown> = {};

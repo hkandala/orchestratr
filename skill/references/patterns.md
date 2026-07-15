@@ -1,4 +1,4 @@
-# Workflow patterns (the §9 recipes)
+# Workflow patterns
 
 Copy-pasteable shapes for the common orchestration patterns. Runnable, CI-tested versions live
 in `sdk/ts/recipes/`. Conventions: paths are **descriptive** (no timestamp suffixes — a path

@@ -1,4 +1,4 @@
-// §9.3 Classify-and-act — one cheap classification routes each item to a per-class handler.
+// Classify-and-act — one cheap classification routes each item to a per-class handler.
 import { orcr } from "@orchestratr/sdk";
 import { PRIMARY, SECONDARY, mockHint, runAsScript } from "./_common.js";
 

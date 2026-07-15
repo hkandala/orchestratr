@@ -1,14 +1,14 @@
-//! The orcr error model (spec §13).
+//! The orcr error model.
 //!
 //! A deliberately small, stable enum of nine error codes; everything finer lives in
-//! `details`. Every code maps to a fixed process exit code (spec §6) and serializes to
+//! `details`. Every code maps to a fixed process exit code and serializes to
 //! the JSON error envelope `{"ok":false,"error":{code,message,details}}`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fmt;
 
-/// The nine stable error codes (spec §13). `details.cause` / `details.reason` carry the
+/// The nine stable error codes. `details.cause` / `details.reason` carry the
 /// finer classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -25,7 +25,7 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    /// Every code, in the stable §13 order — the single source for the schema's error table.
+    /// Every code, in stable order — the single source for the schema's error table.
     pub const ALL: &'static [ErrorCode] = &[
         ErrorCode::NotFound,
         ErrorCode::InvalidRequest,
@@ -53,7 +53,7 @@ impl ErrorCode {
         }
     }
 
-    /// The process exit code for this error (spec §6):
+    /// The process exit code for this error:
     /// `2` environment · `3` timeout · `4` blocked · `5` killed/ended · `6` not found ·
     /// `7` state conflict · `1` other.
     pub fn exit_code(self) -> i32 {
@@ -123,7 +123,7 @@ impl OrcrError {
         OrcrError::new(ErrorCode::NotFound, message)
     }
 
-    /// A `not_found` carrying the §13 `details.target` (the selector that failed to resolve) so
+    /// A `not_found` carrying `details.target` (the selector that failed to resolve) so
     /// machine clients can read `error.details.target` on the common path/uuid-not-found cases.
     pub fn not_found_target(message: impl Into<String>, target: impl Into<Value>) -> Self {
         OrcrError::not_found(message).with_details(json!({ "target": target.into() }))
@@ -138,7 +138,7 @@ impl OrcrError {
     }
 
     /// An environment problem (server/store/herdr/home/platform/version).
-    /// `cause` is one of the documented values (spec §13):
+    /// `cause` is one of the documented values:
     /// `herdr_unreachable`, `server_start_failed`, `store_locked`, `config_invalid`,
     /// `unsafe_home`, `unsupported_platform`, `unsupported_version`, ...
     pub fn environment(cause: &str, message: impl Into<String>) -> Self {

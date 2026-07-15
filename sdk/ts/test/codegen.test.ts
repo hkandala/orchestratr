@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { GeneratedClient, PROTOCOL_METHODS } from "../src/generated.js";
 
-// The generated-client CI check (spec §8 acceptance): the SDK covers 100% of schema methods,
+// The generated-client CI check: the SDK covers 100% of schema methods,
 // and drift fails the build. We compare the committed generated client against the live
 // `orcr api schema` — both the method-name set AND a callable method per protocol method.
 

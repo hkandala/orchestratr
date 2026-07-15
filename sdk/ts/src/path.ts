@@ -1,7 +1,7 @@
-// The §5.1 identity-path grammar, ported 1:1 from the Rust `src/path.rs`. The SDK resolves
+// The identity-path grammar, ported 1:1 from the Rust `src/path.rs`. The SDK resolves
 // scopes and patterns client-side (into absolute paths) and sends the absolute result to the
-// server, so the composed effective paths match what the CLI would produce (spec §8:
-// "orcr.scope nesting composes the same effective paths as the CLI path" — property-tested).
+// server, so the composed effective paths match what the CLI would produce — `orcr.scope`
+// nesting composes the same effective paths as the CLI path (property-tested).
 
 import { InvalidRequest } from "./errors.js";
 
@@ -26,7 +26,7 @@ function randomToken(): string {
   return out;
 }
 
-/** Replace every `{rand}` placeholder with 5 random `[a-z0-9]` chars (creation only, §5.1). */
+/** Replace every `{rand}` placeholder with 5 random `[a-z0-9]` chars (creation only). */
 export function expandRand(input: string): string {
   return input.replace(/\{rand\}/g, () => randomToken());
 }
@@ -35,25 +35,25 @@ function joinScope(scope: string | undefined, rel: string): string {
   return scope && scope.length > 0 ? `${scope}/${rel}` : rel;
 }
 
-/** The agent's name = the last path segment (§5.1). */
+/** The agent's name = the last path segment. */
 export function nameOf(path: string): string {
   const i = path.lastIndexOf("/");
   return i < 0 ? path : path.slice(i + 1);
 }
 
-/** An agent's scope = its path minus its name (§5.3); undefined for a single-segment path. */
+/** An agent's scope = its path minus its name; undefined for a single-segment path. */
 export function scopeOfAgent(path: string): string | undefined {
   const i = path.lastIndexOf("/");
   return i < 0 ? undefined : path.slice(0, i);
 }
 
-/** A loop's name is the first segment of a run path (`loopNameFrom`, §5.3). */
+/** A loop's name is the first segment of a run path. */
 export function loopNameFrom(path: string): string {
   const i = path.indexOf("/");
   return i < 0 ? path : path.slice(0, i);
 }
 
-/** Validate an absolute path's grammar, depth, and length (§5.1). */
+/** Validate an absolute path's grammar, depth, and length. */
 export function validatePath(path: string): void {
   if (path.length === 0) throw new InvalidRequest("path is empty", { reason: "empty_path" });
   if (path.length > MAX_PATH_LEN) {
@@ -144,7 +144,7 @@ export function resolveSelector(scope: string | undefined, raw: string): string 
 
 type Seg = { kind: "lit"; value: string } | { kind: "star" } | { kind: "dstar" };
 
-/** A compiled glob pattern (§5.1): whole-segment `*`/`**`, matched anchored — mirrors Rust. */
+/** A compiled glob pattern: whole-segment `*`/`**`, matched anchored — mirrors Rust. */
 export class Pattern {
   private constructor(private readonly segs: Seg[]) {}
 

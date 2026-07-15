@@ -1,4 +1,4 @@
-//! The socket method registry and the self-describing schema (spec §6.5, §11.6).
+//! The socket method registry and the self-describing schema.
 //!
 //! **The socket API is the API.** The full method namespace is registered here in M1 with
 //! typed param/result schemas; later milestones replace the `unimplemented` stub handlers
@@ -28,7 +28,7 @@ pub struct MethodDef {
     pub streaming: bool,
 }
 
-/// The event kinds a subscriber may receive (spec §11.6). Names are stable; the payload
+/// The event kinds a subscriber may receive. Names are stable; the payload
 /// schemas grow as producers land in later milestones.
 pub const EVENT_KINDS: &[&str] = &[
     "agent.created",
@@ -53,11 +53,11 @@ pub const EVENT_KINDS: &[&str] = &[
     "loop_run.started",
     "loop_run.ended",
     "loop_run.stopping",
-    // Control frame emitted to every open subscription on graceful shutdown (§6.4).
+    // Control frame emitted to every open subscription on graceful shutdown.
     "server_stopping",
 ];
 
-/// The stable error codes (spec §13) with their process exit codes, for the schema. Derived
+/// The stable error codes with their process exit codes, for the schema. Derived
 /// from [`ErrorCode`] so the wire strings and exit codes have a single source of truth.
 pub fn error_codes() -> Vec<(&'static str, i32)> {
     ErrorCode::ALL
@@ -73,7 +73,7 @@ fn any_object() -> Value {
 }
 
 /// An object schema with the given properties; `additionalProperties` stays open for
-/// additive evolution (§11.6).
+/// additive evolution.
 fn object(props: Value) -> Value {
     json!({ "type": "object", "properties": props, "additionalProperties": true })
 }
@@ -326,7 +326,7 @@ pub fn methods() -> Vec<MethodDef> {
         false,
     );
 
-    // --- loop namespace (spec §6.2) ---
+    // --- loop namespace ---
     add(
         "loop.create",
         "Create a durable cron loop over an argv command.",
@@ -420,7 +420,7 @@ pub fn find_method(name: &str) -> Option<MethodDef> {
     methods().into_iter().find(|m| m.name == name)
 }
 
-/// Generate the versioned JSON Schema document of the whole socket protocol (spec §6.5).
+/// Generate the versioned JSON Schema document of the whole socket protocol.
 /// The top-level object is itself a valid JSON Schema; `methods`/`events`/`errorCodes` are
 /// descriptive extensions. Every registered method appears under `methods`.
 pub fn schema_document() -> Value {

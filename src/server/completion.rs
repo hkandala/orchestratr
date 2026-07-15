@@ -1,4 +1,4 @@
-//! The completion monitor (spec §5.6, §11.2): the background loop that turns herdr's raw
+//! The completion monitor: the background loop that turns herdr's raw
 //! per-pane `agent_status` into orcr's verified turn completion, external-turn detection,
 //! blocked tracking, and `gc immediate` teardown.
 //!
@@ -22,7 +22,7 @@ use std::time::Duration;
 const MONITOR_TICK: Duration = Duration::from_millis(200);
 
 impl Server {
-    /// Start the background completion monitor thread (spec §5.6/§11.2).
+    /// Start the background completion monitor thread.
     pub(super) fn start_completion_monitor(&self) {
         let server = self.clone();
         std::thread::spawn(move || {
@@ -61,7 +61,7 @@ impl Server {
         }
     }
 
-    /// Advance one agent's turn state machine from the herdr-reported status (§5.6).
+    /// Advance one agent's turn state machine from the herdr-reported status.
     fn drive_completion(&self, driver: &HerdrDriver, a: &AgentFull, info: &AgentInfo) {
         // Capture a late-arriving transcript pointer (the gate for `logs`).
         if a.agent_session_value.is_none() {
@@ -83,7 +83,7 @@ impl Server {
 
         match status {
             AgentStatus::Working => {
-                // §5.4 background-subagent caveat: a parked agent herdr reports `working`
+                // Background-subagent caveat: a parked agent herdr reports `working`
                 // again must be un-parked back to its home workspace so status and pane
                 // location agree (work is not lost). Move it home before marking working,
                 // under the per-agent move lock; the branches below then flip it to working.
@@ -104,7 +104,7 @@ impl Server {
                     }
                 } else {
                     // herdr reports `working` with no open turn — input orcr didn't deliver
-                    // (typed via attach/herdr UI). Record a synthetic external turn (§5.6).
+                    // (typed via attach/herdr UI). Record a synthetic external turn.
                     // Fires once: the turn it opens is then the open turn on later ticks. It
                     // never fires for a no-prompt agent at startup (the mock reports `idle`
                     // there, so this branch isn't entered).
@@ -126,7 +126,7 @@ impl Server {
                 // `working` — and whose fast-turn grace window hasn't elapsed since delivery —
                 // is a stale report from the *previous* turn (the provider hasn't read the new
                 // input yet). Suppress it until the turn is genuinely active, so `send`
-                // reliably clears a prior block (§5.6). This mirrors the idle branch's guard
+                // reliably clears a prior block. This mirrors the idle branch's guard
                 // against a stale idle satisfying a newer send.
                 if let Some(t) = open_turn {
                     let armed = t.working_seen_at.is_some()
@@ -163,7 +163,7 @@ impl Server {
                     // `working` transition. We may only conclude this once the **full** grace
                     // window has elapsed since delivery with continuous idle — otherwise a turn
                     // whose provider simply hasn't started working yet (still-stale idle from a
-                    // prior turn) is falsely completed before `working` is ever seen (§5.6: an
+                    // prior turn) is falsely completed before `working` is ever seen (an
                     // old idle can never satisfy a newer send). Requiring `now - delivered >=
                     // grace` guarantees any provider that starts working within the grace window
                     // sets `working_seen_at` first, so the fast path never applies to it.
@@ -188,14 +188,14 @@ impl Server {
         }
     }
 
-    /// Complete an open turn, then run `gc immediate` teardown if applicable (§11.2).
+    /// Complete an open turn, then run `gc immediate` teardown if applicable.
     fn complete(&self, driver: &HerdrDriver, a: &AgentFull, input_seq: i64) {
         // Capture the transcript locator/cursor *before* any teardown so a waiting `ask`
-        // (and post-kill `logs`) can read the response from the native file (§11.2).
+        // (and post-kill `logs`) can read the response from the native file.
         let (locator, cursor) = self.capture(a);
         let immediate = a.gc_mode.as_deref() == Some("immediate");
 
-        // §11.2: a `gc immediate` agent is only torn down once its final response is **verified
+        // A `gc immediate` agent is only torn down once its final response is **verified
         // readable** from the native transcript (the locator/cursor recorded below is exactly
         // what a waiting `ask`/post-kill `logs` reads after the pane dies). If the response is
         // not readable yet — the provider reported idle before flushing its transcript, or the
@@ -214,7 +214,7 @@ impl Server {
 
         let cursor_str = cursor.as_deref();
         // gc immediate goes `working → ended (completed)` with **no** transient public `idle`
-        // (so a waiting `ask`/`wait` settles on `completed`, not `turn_complete`, §11.2). Other
+        // (so a waiting `ask`/`wait` settles on `completed`, not `turn_complete`). Other
         // modes flip `working → idle`.
         let ev = {
             let mut store = self.inner.store.lock().unwrap();
@@ -259,7 +259,7 @@ impl Server {
     /// path complete (and, under `gc immediate`, tear down) the agent in ~2.5s — before claude
     /// ever captured a session (`no_session`) or flushed its transcript (`not_found`). Requiring
     /// the transcript to be located AND quiet for `transcript_settle_ms` gates completion on the
-    /// provider having genuinely done work and stopped producing output (spec §5.6, §11.2).
+    /// provider having genuinely done work and stopped producing output.
     fn transcript_settled(&self, a: &AgentFull, tuning: &TuningParams) -> bool {
         if tuning.transcript_settle_ms == 0 {
             return true;
@@ -288,7 +288,7 @@ impl Server {
         }
     }
 
-    /// Read an agent's final response through the **freshness gate** (spec §11.4): a final
+    /// Read an agent's final response through the **freshness gate**: a final
     /// response is only reported once the located transcript has advanced past the cursor
     /// recorded at the observed completion. The recorded cursor is the file mtime captured
     /// when the turn completed (`turns.transcript_cursor`); the current file must be at least
@@ -333,11 +333,11 @@ impl Server {
         loc.last_response(&a.uuid, &a.status)
     }
 
-    /// Locate an agent's native transcript via the provider adapter (spec §11.4). Applies the
+    /// Locate an agent's native transcript via the provider adapter. Applies the
     /// identity gate; returns `transcript_unavailable` when it can't be resolved.
     pub(super) fn agent_transcript(&self, a: &AgentFull) -> Result<TranscriptLocator> {
         let provider = a.agent.as_deref().unwrap_or_default();
-        // The agent's data dir mirrors its path (§8) — used by the `mock` transcript adapter.
+        // The agent's data dir mirrors its path — used by the `mock` transcript adapter.
         let data_dir = self.agent_data_dir(&a.path, &a.uuid);
         locate_transcript(
             provider,
@@ -352,9 +352,9 @@ impl Server {
     }
 }
 
-/// Best-effort blocked-kind classification (spec §5.6: question|limit|login|unknown). herdr
+/// Best-effort blocked-kind classification (question|limit|login|unknown). herdr
 /// exposes no structured reason, so this is a coarse guess from any custom/title text;
-/// detailed per-provider parsing is future work (§17).
+/// detailed per-provider parsing is future work.
 fn classify_blocked(info: &AgentInfo) -> &'static str {
     let hay = format!(
         "{} {}",

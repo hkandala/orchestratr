@@ -1,4 +1,4 @@
-// e2e driver for the curated SDK surfaces that lack coverage elsewhere (spec §8):
+// e2e driver for the curated SDK surfaces that lack coverage elsewhere:
 //   - orcr.watch()      — snapshot-then-subscribe: snapshot/snapshotSeq + typed async events
 //   - orcr.prepareAttach() / AttachHandle — command + lease fields, heartbeat/release round-trips
 // Run by tests/recipe_e2e.rs (e2e_sdk_watch_and_attach) via tsx against live herdr + the mock.
@@ -19,7 +19,7 @@ async function main(): Promise<void> {
   });
   await a.wait();
 
-  // --- watch (§8): snapshot-then-subscribe ---
+  // --- watch: snapshot-then-subscribe ---
   const w = await orcr.watch({});
   if (typeof w.snapshotSeq !== "number") fail("watch.snapshotSeq is not a number");
   if (!Array.isArray(w.snapshot.agents)) fail("watch.snapshot.agents missing");
@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   if (!ev) fail("watch iterator yielded no event after a status change");
   if (typeof ev.kind !== "string") fail("watch event missing string `kind`");
 
-  // --- prepareAttach + AttachHandle (§8) ---
+  // --- prepareAttach + AttachHandle ---
   const b = await orcr.agent.run({
     agent: "mock",
     path: "watchee/b",

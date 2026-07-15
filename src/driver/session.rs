@@ -1,5 +1,5 @@
-//! herdr binary discovery, session enumeration, and owned-session bootstrap (spec §5.2,
-//! §11.7). These are the operations a socket alone cannot do: the herdr *binary* is
+//! herdr binary discovery, session enumeration, and owned-session bootstrap. These are
+//! the operations a socket alone cannot do: the herdr *binary* is
 //! discovered and used to enumerate sessions and to start a session's headless server.
 //!
 //! Critical fact (verified against herdr 0.7.2): **sessions are per-socket**. Each
@@ -32,7 +32,7 @@ struct SessionList {
     sessions: Vec<HerdrSession>,
 }
 
-/// A discovered herdr binary. Discovery order (spec §2): config `herdr.bin` →
+/// A discovered herdr binary. Discovery order: config `herdr.bin` →
 /// `$ORCR_HERDR_BIN` → `$PATH`.
 #[derive(Debug, Clone)]
 pub struct HerdrBinary {
@@ -104,7 +104,7 @@ impl HerdrBinary {
     }
 
     /// Ensure the owned session's herdr server is running headless and return its socket
-    /// path (spec §5.2). Idempotent: if the session already runs, its socket is returned;
+    /// path. Idempotent: if the session already runs, its socket is returned;
     /// otherwise a detached `herdr --session <name> server` is spawned and we poll until
     /// the session appears with a socket path.
     pub fn ensure_session(&self, name: &str) -> Result<PathBuf> {

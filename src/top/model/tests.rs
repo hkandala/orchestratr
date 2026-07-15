@@ -1,4 +1,4 @@
-//! Unit tests for the pure `top` tree/filter/lineage model (spec §7 acceptance).
+//! Unit tests for the pure `top` tree/filter/lineage model.
 
 use super::*;
 use serde_json::json;
@@ -37,7 +37,7 @@ fn snap(agents: Vec<Value>, loops: Vec<Value>) -> Snapshot {
 }
 
 /// The `ls` filter the tree must mirror: a plain pattern match over the live agent paths
-/// (the store applies exactly this — anchored §5.1, no implicit prefix).
+/// (the store applies exactly this — anchored, no implicit prefix).
 fn ls_uuids(s: &Snapshot, pattern: &str) -> BTreeSet<String> {
     let pat = Pattern::compile(pattern).unwrap();
     s.agents

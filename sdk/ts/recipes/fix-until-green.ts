@@ -1,4 +1,4 @@
-// §9.1 Fix-until-green — worker + verifier loop. Fix build errors with one agent, verify with
+// Fix-until-green — worker + verifier loop. Fix build errors with one agent, verify with
 // a *different* provider, repeat until the verifier says PASS. (Spec-literal version, with a
 // real `execSync` build, is in skill/references/patterns.md.)
 import { orcr } from "@orchestratr/sdk";

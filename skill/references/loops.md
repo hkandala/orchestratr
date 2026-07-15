@@ -40,9 +40,9 @@ orcr loop logs <name> [--run <id>] [--source orcr|command] [--follow]
 orcr loop rm <name> [--kill-active]  # remove the definition (its script survives)
 ```
 
-## Self-terminating loops (§9.7)
+## Self-terminating loops
 
-A loop's run command runs with the §5.3 env contract (`ORCR_ID` = run uuid, `ORCR_PATH` =
+A loop's run command runs with the env contract (`ORCR_ID` = run uuid, `ORCR_PATH` =
 `<loop>/<run_id>`, `ORCR_LOOP_DATA_DIR`). It parents agents *inside* the run. A loop can remove
 itself when its work is done:
 

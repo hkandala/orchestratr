@@ -1,4 +1,4 @@
-//! The GC engine + reconciliation (spec §5.4, §11.2, §11.5): park/reap/timeout of managed
+//! The GC engine + reconciliation: park/reap/timeout of managed
 //! agents, two-phase crash-safe pane moves, un-park on `send`, attach-lease interlock, and
 //! the drift-repair pass between the store and herdr reality.
 //!
@@ -17,7 +17,7 @@ use crate::store::{now_millis, AgentFull};
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 
-/// The reconciler's drift snapshot, surfaced in `server status` (spec §11.5, §13).
+/// The reconciler's drift snapshot, surfaced in `server status`.
 #[derive(Debug, Clone, Default)]
 pub(super) struct DriftSnapshot {
     /// Managed agents currently `lost` (pane vanished, path reserved).
@@ -30,7 +30,7 @@ pub(super) struct DriftSnapshot {
 }
 
 impl Server {
-    /// Start the background GC + reconciliation engine (spec §11.2, §11.5).
+    /// Start the background GC + reconciliation engine.
     pub(super) fn start_gc_engine(&self) {
         let server = self.clone();
         std::thread::spawn(move || {
@@ -43,14 +43,14 @@ impl Server {
 
     fn gc_tick(&self) {
         let now = now_millis();
-        // Clean up attach leases whose heartbeat expired (§5.4).
+        // Clean up attach leases whose heartbeat expired.
         if let Ok(ev) = {
             let mut store = self.inner.store.lock().unwrap();
             store.expire_leases(now)
         } {
             self.publish(ev);
         }
-        // Explicit `--timeout` deadlines fire in every gc mode (§5.4).
+        // Explicit `--timeout` deadlines fire in every gc mode.
         self.timeout_sweep();
         // Park / reap need herdr; if it is transiently unreachable, skip this tick.
         if let Ok(driver) = self.owned_driver() {
@@ -60,7 +60,7 @@ impl Server {
         }
     }
 
-    // --- timeout (spec §5.4) ---
+    // --- timeout ---
 
     fn timeout_sweep(&self) {
         let due = {
@@ -96,7 +96,7 @@ impl Server {
         }
     }
 
-    // --- park (spec §5.4, §11.2) ---
+    // --- park ---
 
     fn park_sweep(&self, driver: &HerdrDriver) {
         let cutoff = now_millis() - self.inner.config.timings.idle_after.as_millis() as i64;
@@ -117,11 +117,11 @@ impl Server {
     }
 
     /// Two-phase park: claim the move lease, move the pane to the `idle` workspace, then
-    /// finish (status → parked) only if we still own the lease (spec §5.4).
+    /// finish (status → parked) only if we still own the lease.
     fn park_one(&self, driver: &HerdrDriver, a: &AgentFull) -> Result<()> {
         // Hold the per-agent move lock for the whole two-phase move so a concurrent `send`
         // un-park can never observe (and roll back) this move while its pane relocation is still
-        // pending — status and location must always agree (spec §5.4).
+        // pending — status and location must always agree.
         let move_lock = self.lock_move(&a.uuid);
         let _held = move_lock.lock().unwrap();
         let token = uuid::Uuid::new_v4().to_string();
@@ -151,7 +151,7 @@ impl Server {
             },
         )?;
         // Close the idle workspace's root shell (if we just created it) so it holds only
-        // parked agent panes — no leftover foreign-looking shell (§11.5 unmarked count).
+        // parked agent panes — no leftover foreign-looking shell (unmarked count).
         if let Some(root) = &root_pane {
             let _ = driver.pane_close(root);
         }
@@ -175,7 +175,7 @@ impl Server {
         Ok(())
     }
 
-    // --- reap (spec §5.4) ---
+    // --- reap ---
 
     fn reap_sweep(&self, driver: &HerdrDriver) {
         let cutoff = now_millis() - self.inner.config.timings.kill_after.as_millis() as i64;
@@ -190,7 +190,7 @@ impl Server {
             // Hold the per-agent move lock for the whole reap so a concurrent `send` un-park can
             // cancel the reap atomically before we act — a send acquires the same lock, un-parks
             // (parked → idle, pane back home, new pane_id) and delivers input; without this the
-            // reap could shut down the just-un-parked live agent and orphan its home pane (§5.4).
+            // reap could shut down the just-un-parked live agent and orphan its home pane.
             let move_lock = self.lock_move(&a.uuid);
             let _held = move_lock.lock().unwrap();
             // Re-read under the lock: only reap if it is still parked with no move in flight — a
@@ -228,10 +228,10 @@ impl Server {
         }
     }
 
-    // --- un-park on send (spec §5.4, §11.2) ---
+    // --- un-park on send ---
 
     /// Un-park a parked agent (or complete/roll back a move in flight) before delivering a
-    /// `send` (spec §5.4). Returns the refreshed row (status `idle`, back in its home
+    /// `send`. Returns the refreshed row (status `idle`, back in its home
     /// workspace). A no-op for a non-parked agent with no move in flight.
     /// The caller (`handle_agent_send`) already holds this agent's move lock (see
     /// [`Server::lock_move`]), so a GC park cannot interleave with the recovery/move below.
@@ -298,10 +298,10 @@ impl Server {
             .ok_or_else(|| OrcrError::not_found(format!("agent {} vanished", cur.uuid)))
     }
 
-    /// Un-park an agent the completion monitor just observed go `working` again — the §5.4
+    /// Un-park an agent the completion monitor just observed go `working` again — the
     /// background-subagent caveat, which guarantees a resumed parked agent is moved back to
     /// its home workspace so work is not lost. Independent of transcript-based subagent
-    /// *detection* (§17 future work): this fires only on an already-observed `working`
+    /// *detection* (future work): this fires only on an already-observed `working`
     /// transition. Takes the per-agent move lock (the monitor otherwise holds none), then
     /// reuses [`Server::unpark_for_send`] (which lands the agent `idle` in its home
     /// workspace); the monitor's own logic then flips it back to `working`.
@@ -323,9 +323,9 @@ impl Server {
         }
     }
 
-    // --- reconciliation (spec §11.5) ---
+    // --- reconciliation ---
 
-    /// The periodic reconciliation pass (spec §11.5): recover half-done moves, resolve
+    /// The periodic reconciliation pass: recover half-done moves, resolve
     /// already-`lost` agents whose terminal is still gone, detect newly-vanished panes, and
     /// refresh the drift counts. `lost` detection and resolution are ordered so a freshly-lost
     /// agent is only resolved on a *following* poll (never the one that marked it).
@@ -336,7 +336,7 @@ impl Server {
         };
         let live_terminals: HashSet<&str> = panes.iter().map(|p| p.terminal_id.as_str()).collect();
 
-        // 1) Resolve agents that were already lost on a prior poll and are still gone (§11.5).
+        // 1) Resolve agents that were already lost on a prior poll and are still gone.
         let lost = {
             let store = self.inner.store.lock().unwrap();
             store.lost_agents().unwrap_or_default()
@@ -395,7 +395,7 @@ impl Server {
         self.refresh_drift(&panes);
     }
 
-    /// Complete or roll back one in-flight move by its exact `move_token` (spec §5.4, §11.5),
+    /// Complete or roll back one in-flight move by its exact `move_token`,
     /// taking the per-agent move lock first so it never pre-empts a *live* park/un-park still
     /// executing on another thread (that owner is completing the very same move). Used by the
     /// periodic/startup reconcilers, which do not otherwise hold the lock.
@@ -485,7 +485,7 @@ impl Server {
 
     /// Recover half-done moves + refresh drift at server start (called from
     /// [`Server::reconcile_on_start`]). Does NOT resolve `lost` agents — that waits for a
-    /// following periodic poll (spec §11.5 "one following poll").
+    /// following periodic poll ("one following poll").
     pub(super) fn reconcile_moves_on_start(&self) {
         let driver = match self.owned_driver() {
             Ok(d) => d,
@@ -503,7 +503,7 @@ impl Server {
         }
     }
 
-    /// Count drift panes in the owned session and cache the snapshot (spec §11.5): a pane whose
+    /// Count drift panes in the owned session and cache the snapshot: a pane whose
     /// terminal has no active managed store row is "unknown marked" if it carries an agent, else
     /// an "unmarked" foreign shell. Both are reported and never touched.
     fn refresh_drift(&self, panes: &[PaneInfo]) {
@@ -535,7 +535,7 @@ impl Server {
         d.unmarked_panes = unmarked;
     }
 
-    /// Whether an agent has a fresh attach lease (the GC interlock, §5.4).
+    /// Whether an agent has a fresh attach lease (the GC interlock).
     fn lease_fresh(&self, uuid: &str) -> bool {
         let store = self.inner.store.lock().unwrap();
         store.has_fresh_lease(uuid, now_millis()).unwrap_or(false)
@@ -572,7 +572,7 @@ fn crash_hook(phase: &str) {
 
 /// A test-only fault-injection hook: if `ORCR_TEST_REAP_DELAY_MS` is set, sleep that many
 /// milliseconds before a reap candidate acquires its move lock, so an e2e test can drive a
-/// `send` into the reap window and assert the send-cancels-reap interlock (spec §5.4). Never
+/// `send` into the reap window and assert the send-cancels-reap interlock. Never
 /// fires in a normal build (the env var is only set by the e2e harness).
 fn reap_delay_hook() {
     if let Ok(ms) = std::env::var("ORCR_TEST_REAP_DELAY_MS") {
