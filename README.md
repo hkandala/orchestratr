@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="orchestratr" width="640">
+</p>
+
 # orchestratr
 
 a cross-provider orchestrator for AI coding agents, built on [herdr](https://herdr.dev). run,
