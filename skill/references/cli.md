@@ -106,6 +106,8 @@ orcr api schema [--output <file>] | snapshot
 orcr top [<pattern>] [-a <provider>] [--status <s>] [--managed|--unmanaged] [--loops]
 ```
 
+`top` shows managed agents and loops by default; pass `--unmanaged` to inspect discovered agents.
+
 ## Exit codes
 
 | code | meaning                                                              |

@@ -35,6 +35,14 @@ choices worth knowing, and discovered facts. Capture *decisions and deviations*.
   agents (`unmanaged/<session>/<pane>`) need no special casing — the path tree nests them under
   the loop→run and `unmanaged`→session nodes naturally. Only parked agents are relocated (to the
   synthetic `Idle` node).
+- **Managed-only default and unmanaged display path.** A bare `orcr top` now pre-scopes to
+  managed agents; `--unmanaged` is required to inspect discovery results. Discovery and the
+  socket API retain the canonical `unmanaged/<session>/<pane>` path. The TUI treats only the
+  literal `default` session node as transparent, displaying its panes directly beneath
+  `unmanaged`; named sessions stay visible so separate sessions remain distinguishable.
+- **Table renderer.** The TUI uses a borderless four-column table (`TREE`, `STATUS`, `AGENT`,
+  `TIME`) with explicit tree branches. Selection is a cyan gutter marker plus a restrained dark
+  row background, not terminal reverse-video, so colored status cells remain visually stable.
 - **Lineage annotation rule.** A row gets `↖ <parent path>` iff its `parent_path` is set and is
   NOT a proper ancestor of its own path (`!path.starts_with(parent_path + "/")`). A parent that
   is an ancestor already shows the edge by placement, so no annotation. Selection highlight of

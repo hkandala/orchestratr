@@ -10,7 +10,7 @@
 //! Interaction is navigation only: `/` filter (the path pattern grammar), arrows
 //! collapse/expand and move the selection, `q` quits.
 
-use super::model::{build_tree, Row, Snapshot, TopFilter, Tree};
+use super::model::{build_tree, Row as ModelRow, Snapshot, TopFilter, Tree};
 use crate::error::{OrcrError, Result};
 use crate::home::Home;
 use crate::path::{self, Pattern};
@@ -25,7 +25,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Cell, HighlightSpacing, Paragraph, Row as TableRow, Table, TableState};
 use ratatui::Terminal;
 use std::collections::BTreeSet;
 use std::io::Stdout;
@@ -71,7 +71,7 @@ struct App {
     tree: Tree,
     collapsed: BTreeSet<String>,
     selected: usize,
-    list_state: ListState,
+    table_state: TableState,
     /// The `/` filter text buffer while editing.
     input_mode: bool,
     input: String,
@@ -93,7 +93,7 @@ impl App {
             tree: build_tree(&Snapshot::default(), &TopFilter::default()),
             collapsed: BTreeSet::new(),
             selected: 0,
-            list_state: ListState::default(),
+            table_state: TableState::default(),
             input_mode: false,
             input: String::new(),
             message: None,
@@ -176,7 +176,7 @@ impl App {
         self.tree = build_tree(&self.snapshot, &self.filter);
     }
 
-    fn rows(&self) -> Vec<Row> {
+    fn rows(&self) -> Vec<ModelRow> {
         self.tree.flatten(&self.collapsed, now_millis())
     }
 
@@ -317,7 +317,11 @@ impl App {
     fn draw(&mut self, f: &mut ratatui::Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(2),
+                Constraint::Min(2),
+                Constraint::Length(1),
+            ])
             .split(f.area());
 
         let rows = self.rows();
@@ -328,14 +332,26 @@ impl App {
             self.selected = n - 1;
         }
 
-        let items: Vec<ListItem> = rows.iter().map(|r| self.row_item(r)).collect();
-        let header = self.header();
-        let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(header))
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-        self.list_state
+        f.render_widget(Paragraph::new(self.header()), chunks[0]);
+
+        let table_rows = rows.iter().map(|row| self.table_row(row));
+        let header = TableRow::new(["TREE", "STATUS", "AGENT", "TIME"])
+            .style(
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .bottom_margin(1);
+        let (widths, column_spacing) = table_layout(f.area().width);
+        let table = Table::new(table_rows, widths)
+            .header(header)
+            .column_spacing(column_spacing)
+            .highlight_symbol(Span::styled("▌ ", Style::default().fg(Color::Cyan)))
+            .highlight_spacing(HighlightSpacing::Always)
+            .highlight_style(Style::default().bg(Color::Rgb(30, 37, 43)));
+        self.table_state
             .select(if n == 0 { None } else { Some(self.selected) });
-        f.render_stateful_widget(list, chunks[0], &mut self.list_state);
+        f.render_stateful_widget(table, chunks[1], &mut self.table_state);
 
         let footer = if self.input_mode {
             Line::from(vec![
@@ -351,49 +367,63 @@ impl App {
                 Style::default().fg(Color::DarkGray),
             ))
         };
-        f.render_widget(Paragraph::new(footer), chunks[1]);
+        f.render_widget(Paragraph::new(footer), chunks[2]);
     }
 
-    fn header(&self) -> String {
-        let live = self
-            .snapshot
-            .agents
-            .iter()
-            .filter(|a| a.status != "ended" && a.status != "lost")
-            .count();
+    fn header(&self) -> Line<'static> {
+        let visible = self.tree.agent_uuids();
+        let live = visible.len();
         let blocked = self
             .snapshot
             .agents
             .iter()
-            .filter(|a| a.status == "blocked")
+            .filter(|a| a.status == "blocked" && visible.contains(&a.uuid))
             .count();
-        let loops = self.snapshot.loops.len();
-        let mut h = format!(" orcr · {live} agents ({blocked} blocked) · {loops} loops ");
+        let loops = if self.filter.managed == Some(false) {
+            0
+        } else {
+            self.snapshot.loops.len()
+        };
+        let mut spans = vec![
+            Span::styled(
+                "orcr",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {live} agents  ·  {blocked} blocked  ·  {loops} loops"),
+                Style::default().fg(Color::Gray),
+            ),
+        ];
         if let Some(f) = &self.filter_label {
-            h.push_str(&format!("· /{f} "));
+            spans.push(Span::styled(
+                format!("  ·  /{f}"),
+                Style::default().fg(Color::Yellow),
+            ));
         }
-        h
+        Line::from(spans)
     }
 
-    fn row_item(&self, r: &Row) -> ListItem<'static> {
-        let indent = "  ".repeat(r.depth);
-        let marker = if r.has_children {
-            if r.collapsed {
-                "▶ "
+    fn table_row(&self, row: &ModelRow) -> TableRow<'static> {
+        let disclosure = if row.has_children {
+            if row.collapsed {
+                "▸ "
             } else {
-                "▼ "
+                "▾ "
             }
         } else {
             "  "
         };
-        let glyph_style = Style::default().fg(glyph_color(r.glyph));
-        let mut spans = vec![
-            Span::raw(indent),
-            Span::raw(marker.to_string()),
-            Span::styled(format!("{} ", r.glyph), glyph_style),
+        let mut tree = vec![
             Span::styled(
-                r.label.clone(),
-                if r.blocked {
+                row.tree_prefix.clone(),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(disclosure, Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                row.label.clone(),
+                if row.blocked {
                     Style::default()
                         .fg(Color::Magenta)
                         .add_modifier(Modifier::BOLD)
@@ -402,13 +432,31 @@ impl App {
                 },
             ),
         ];
-        if !r.detail.is_empty() {
-            spans.push(Span::styled(
-                format!("   {}", r.detail),
-                Style::default().fg(Color::Gray),
+        if let Some(parent) = &row.lineage {
+            tree.push(Span::styled(
+                format!("  ↖ {parent}"),
+                Style::default().fg(Color::DarkGray),
             ));
         }
-        ListItem::new(Line::from(spans))
+
+        let status = if row.status.is_empty() {
+            Line::default()
+        } else {
+            Line::from(vec![
+                Span::styled(
+                    format!("{} ", row.glyph),
+                    Style::default().fg(glyph_color(row.glyph)),
+                ),
+                Span::styled(row.status.clone(), Style::default().fg(Color::Gray)),
+            ])
+        };
+
+        TableRow::new([
+            Cell::from(Line::from(tree)),
+            Cell::from(status),
+            Cell::from(row.agent.clone()).style(Style::default().fg(Color::Gray)),
+            Cell::from(row.age.clone()).style(Style::default().fg(Color::DarkGray)),
+        ])
     }
 }
 
@@ -420,6 +468,40 @@ fn glyph_color(g: char) -> Color {
         '⟳' => Color::Cyan,
         '◌' => Color::DarkGray,
         _ => Color::Gray,
+    }
+}
+
+fn table_layout(width: u16) -> ([Constraint; 4], u16) {
+    if width >= 90 {
+        (
+            [
+                Constraint::Min(24),
+                Constraint::Length(20),
+                Constraint::Length(22),
+                Constraint::Length(10),
+            ],
+            2,
+        )
+    } else if width >= 64 {
+        (
+            [
+                Constraint::Min(18),
+                Constraint::Length(16),
+                Constraint::Length(16),
+                Constraint::Length(8),
+            ],
+            1,
+        )
+    } else {
+        (
+            [
+                Constraint::Min(10),
+                Constraint::Length(13),
+                Constraint::Length(12),
+                Constraint::Length(6),
+            ],
+            1,
+        )
     }
 }
 
@@ -444,4 +526,93 @@ fn restore_terminal(terminal: &mut Term) {
     let _ = disable_raw_mode();
     let _ = terminal.backend_mut().execute(LeaveAlternateScreen);
     let _ = terminal.show_cursor();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use serde_json::json;
+
+    fn buffer_line(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect()
+    }
+
+    #[test]
+    fn frame_is_borderless_aligned_and_uses_subtle_selection() {
+        let client = Client::new(std::path::PathBuf::from("/tmp/orcr-top-render-test.sock"));
+        let mut app = App::new(
+            client,
+            None,
+            TopFilter {
+                managed: Some(true),
+                ..Default::default()
+            },
+        );
+        app.apply_snapshot(Snapshot::from_json(&json!({
+            "snapshot_seq": 1,
+            "agents": [
+                {
+                    "uuid": "a",
+                    "path": "review/worker_a",
+                    "status": "working",
+                    "managed": true,
+                    "agent": "claude",
+                    "model": "opus",
+                    "created_at": 1_000,
+                    "last_status_change_at": 1_000
+                },
+                {
+                    "uuid": "b",
+                    "path": "review/worker_b",
+                    "status": "idle",
+                    "managed": true,
+                    "agent": "codex",
+                    "model": "o3",
+                    "created_at": 1_000,
+                    "idle_since": 1_000
+                },
+                {
+                    "uuid": "u",
+                    "path": "unmanaged/default/w3_p3k",
+                    "status": "working",
+                    "managed": false,
+                    "agent": "claude",
+                    "created_at": 1_000
+                }
+            ],
+            "loops": []
+        })));
+
+        let backend = TestBackend::new(100, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let lines: Vec<String> = (0..buffer.area.height)
+            .map(|y| buffer_line(buffer, y))
+            .collect();
+
+        assert!(lines[0].starts_with("orcr  2 agents"));
+        assert!(!lines
+            .iter()
+            .any(|line| line.contains('┌') || line.contains('┐') || line.contains('┘')));
+        assert!(!lines.iter().any(|line| line.contains("w3_p3k")));
+
+        let worker_a = lines.iter().find(|line| line.contains("worker_a")).unwrap();
+        let worker_b = lines.iter().find(|line| line.contains("worker_b")).unwrap();
+        assert_eq!(worker_a.find("working"), worker_b.find("idle"));
+        assert_eq!(worker_a.find("claude"), worker_b.find("codex"));
+
+        let selected_y = lines
+            .iter()
+            .position(|line| line.contains("review"))
+            .unwrap() as u16;
+        assert!(lines[selected_y as usize].starts_with("▌ "));
+        assert_eq!(buffer[(2, selected_y)].bg, Color::Rgb(30, 37, 43));
+        assert!(!buffer[(2, selected_y)]
+            .modifier
+            .contains(Modifier::REVERSED));
+    }
 }

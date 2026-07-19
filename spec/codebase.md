@@ -228,12 +228,14 @@ Current state: **through M7 (SDK & skill)** + the comprehensive spec-vs-impl rev
     store filter **byte-for-byte** (so the tree's agent node set == the equivalent `ls`);
     `build_tree` builds the §5.1 **path tree** (level-1 segments as top nodes, loops+active
     runs as subtrees, parked→synthetic `Idle` node, unmanaged grouped by session via their
-    `unmanaged/<session>/<pane>` path) with cross-scope **lineage** shown as a `↖ <parent>`
+    `unmanaged/<session>/<pane>` path; the TUI makes the literal `default` session node
+    transparent) with cross-scope **lineage** shown as a `↖ <parent>`
     annotation (never a second placement/re-root — a parent that is a proper ancestor gets no
     annotation). `structure_lines` = deterministic time-independent render (golden diffs);
     `flatten(collapsed, now)` = UI rows (blocked floats upward, age column, glyphs). Helpers:
     `glyph_for_status`, `format_age`.
-  - `app.rs` — the **ratatui/crossterm app** (`run_top`): `watch.open` → seed snapshot →
+  - `app.rs` — the **ratatui/crossterm app** (`run_top`): borderless aligned tree/status/agent/time
+    table; managed-only default; `watch.open` → seed snapshot →
     background reader thread turns the event stream into a coalesced `Dirty`/`Disconnected`
     signal → render loop re-reads a fresh consistent `api.snapshot` **per frame** (event-driven,
     100ms budget, a burst = one redraw; by construction can't miss/double-apply). Reconnect +

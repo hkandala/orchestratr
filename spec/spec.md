@@ -550,7 +550,10 @@ their own sessions — but only *manages* the ones it created.
   `unmanaged/<session_slug>` with the leaf derived from the pane (e.g.
   `unmanaged/main/w6_p1`; slug collisions after normalization get a deterministic
   `_<short hash>` suffix inside the insertion transaction) — the tree groups by
-  session. Internally each row is keyed
+  session. The stored path always includes the session for identity and cross-session
+  uniqueness; in `top` only, the literal Herdr session `default` is a transparent
+  grouping node, so `unmanaged/default/w3_p3k` displays as `unmanaged/w3_p3k` while
+  named sessions remain visible. Internally each row is keyed
   by **(herdr session, `terminal_id`)** — herdr's `terminal_id` is globally unique and
   never reused, so no wider tuple is needed; a new terminal in the same pane slot is a
   new row (new uuid), and rows whose terminal disappears are marked `ended`
@@ -888,6 +891,9 @@ orcr top [<pattern|uuid>] [-a <provider>] [--status <s>]
          [--managed|--unmanaged] [--loops]
 ```
 
+The default view contains managed agents and loops only. `--unmanaged` switches to
+the discovered unmanaged fleet; `--managed` is the explicit form of the default.
+
 The live dashboard — full description and display mock in §7. A realtime, **view-only**
 TUI tree of all **active** agents arranged by their paths, parent→child edges
 from `ORCR_PARENT_*` lineage, statuses updating live, loops and their active runs shown
@@ -1000,24 +1006,23 @@ not a control surface — acting on an agent is what the CLI verbs (and
 `herdr --session orcr`) are for.
 
 ```
-┌ orcr · 9 agents (1 blocked) · 2 loops ─────────────────────────────┐
-│ ▼ refactor                                                         │
-│   ▼ phase_1                                                        │
-│     ├─ file_1     ● working    claude · opus        2m14s          │
-│     ├─ file_2     ● working    claude · opus        8m12s          │
-│     └─ review     ◐ blocked ⚠  codex · question    11m03s          │
-│ ▼ verify                                                           │
-│   └─ checker      ● working    codex  ↖ refactor/phase_1/file_1    │
-│ ▼ nightly · loop · next 09:00                                      │
-│   └─ ▼ run r82c9s  ⟳ running · due 08:00 · 12m                     │
-│       ├─ triage   ○ idle       claude               done 3m ago    │
-│       └─ fix_1    ● working    codex                4m40s          │
-│ ▼ unmanaged                                                        │
-│   └─ main/w6_p1   ● working    claude               22m            │
-│ ▶ idle (parked · 2)                                                │
-│                                                                    │
-│  [/] filter   [←→] collapse/expand   [q] quit                      │
-└────────────────────────────────────────────────────────────────────┘
+orcr  8 agents  ·  1 blocked  ·  2 loops
+
+  TREE                                  STATUS             AGENT              TIME
+▌ ▾ refactor
+    └─ ▾ phase_1
+          ├─ file_1                     ● working          claude · opus      2m14s
+          ├─ file_2                     ● working          claude · opus      8m12s
+          └─ review                     ◐ blocked · question codex             11m03s
+  ▾ verify
+    └─ checker  ↖ refactor/phase_1/file_1 ● working         codex              1m
+  ▾ nightly                            · loop · active                          next 09:00
+    └─ ▾ run r82c9s                    ⟳ running           scheduled · due 08:00 12m
+          ├─ triage                    ○ idle              claude             3m
+          └─ fix_1                     ● working           codex              4m40s
+  ▸ idle                               ▪ parked · 2
+
+ [/] filter   [←→] collapse/expand   [↑↓] move   [q] quit
 ```
 
 - **Tree = paths; lineage = annotation.** The tree is drawn by **paths** — every
@@ -1037,7 +1042,8 @@ not a control surface — acting on an agent is what the CLI verbs (and
   their queue position.
 - **Interaction is navigation only**: `/` filters by path pattern, arrows
   collapse/expand, `q` quits. The CLI filters (`-a`, `--status`, `--loops`,
-  `--managed|--unmanaged`) pre-scope the tree.
+  `--managed|--unmanaged`) pre-scope the tree. The default view is managed-only;
+  unmanaged agents appear when explicitly requested with `--unmanaged`.
 - **Data path**: one consistent snapshot (agents, loops, runs, queue positions, GC
   clocks, parent edges) at `snapshot_seq`, then the event stream from that sequence
   (§11.6) — the tree can't miss or double-apply an update.

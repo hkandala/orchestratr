@@ -65,10 +65,10 @@ pub enum Command {
         /// Only show agents in this status.
         #[arg(long)]
         status: Option<String>,
-        /// Only show managed agents.
+        /// Only show managed agents (the default).
         #[arg(long)]
         managed: bool,
-        /// Only show unmanaged agents.
+        /// Show unmanaged agents instead of the default managed view.
         #[arg(long)]
         unmanaged: bool,
         /// Show only loops and their run subtrees.
@@ -452,24 +452,26 @@ fn cmd_top(
         }
         None => None,
     };
-    if managed && unmanaged {
-        return Err(OrcrError::invalid_request(
-            "pass at most one of --managed / --unmanaged",
-            "conflicting_flags",
-        ));
-    }
+    let ownership = top_ownership_filter(managed, unmanaged)?;
     let filter = TopFilter {
         pattern: compiled,
         provider: agent.clone(),
         status: status.clone(),
-        managed: match (managed, unmanaged) {
-            (true, false) => Some(true),
-            (false, true) => Some(false),
-            _ => None,
-        },
+        managed: ownership,
         loops_only: loops,
     };
     run_top(scope, filter)
+}
+
+fn top_ownership_filter(managed: bool, unmanaged: bool) -> Result<Option<bool>> {
+    match (managed, unmanaged) {
+        (true, true) => Err(OrcrError::invalid_request(
+            "pass at most one of --managed / --unmanaged",
+            "conflicting_flags",
+        )),
+        (false, true) => Ok(Some(false)),
+        _ => Ok(Some(true)),
+    }
 }
 
 // --- agent ---
@@ -1777,5 +1779,18 @@ fn stream_follow(path: &std::path::Path, tail: Option<usize>, json: bool) -> Res
             pos = len;
         }
         std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::top_ownership_filter;
+
+    #[test]
+    fn top_defaults_to_managed_agents() {
+        assert_eq!(top_ownership_filter(false, false).unwrap(), Some(true));
+        assert_eq!(top_ownership_filter(true, false).unwrap(), Some(true));
+        assert_eq!(top_ownership_filter(false, true).unwrap(), Some(false));
+        assert!(top_ownership_filter(true, true).is_err());
     }
 }

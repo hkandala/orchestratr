@@ -230,6 +230,29 @@ fn unmanaged_agents_grouped_under_session() {
 }
 
 #[test]
+fn default_unmanaged_session_is_transparent_in_display_rows() {
+    let s = snap(
+        vec![unmanaged("default", "w3_p3k"), unmanaged("side", "w1_p1")],
+        vec![],
+    );
+    let tree = build_tree(&s, &TopFilter::default());
+    let rows = tree.flatten(&BTreeSet::new(), 2_000);
+
+    assert!(
+        rows.iter().all(|row| row.path != "unmanaged/default"),
+        "the literal default session is hidden from the TUI"
+    );
+    let pane = rows
+        .iter()
+        .find(|row| row.path == "unmanaged/default/w3_p3k")
+        .expect("default-session pane remains selectable by its canonical path");
+    assert_eq!(pane.depth, 1);
+    assert_eq!(pane.label, "w3_p3k");
+    assert_eq!(pane.tree_prefix, "└─ ");
+    assert!(rows.iter().any(|row| row.path == "unmanaged/side"));
+}
+
+#[test]
 fn loops_and_runs_and_run_agents_form_subtrees() {
     let loops = vec![json!({
         "uuid": "l1",
@@ -373,6 +396,11 @@ fn flatten_floats_blocked_and_honors_collapse() {
         .map(|r| r.label.as_str())
         .collect();
     assert_eq!(names, vec!["z_blocked", "a_idle"]);
+    assert_eq!(rows[1].tree_prefix, "├─ ");
+    assert_eq!(rows[2].tree_prefix, "└─ ");
+    assert_eq!(rows[1].status, "blocked");
+    assert_eq!(rows[1].agent, "codex · opus");
+    assert_eq!(rows[1].age, "1s");
 
     // Collapsing `w` hides its children.
     let mut collapsed = BTreeSet::new();

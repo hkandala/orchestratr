@@ -439,14 +439,26 @@ pub struct Row {
     pub path: String,
     pub has_children: bool,
     pub collapsed: bool,
+    /// Tree drawing prefix (`│  ` / `├─ ` / `└─ `). Root rows have no prefix.
+    pub tree_prefix: String,
     /// The status glyph (or a space).
     pub glyph: char,
     /// The row label (name).
     pub label: String,
-    /// The trailing detail (status · provider·model · blocked · age / loop schedule / run).
-    pub detail: String,
+    /// Optional cross-scope parent annotation, rendered in the tree column.
+    pub lineage: Option<String>,
+    /// Fixed table columns.
+    pub status: String,
+    pub agent: String,
+    pub age: String,
     /// True for blocked agents (the "needs a human" queue floats upward).
     pub blocked: bool,
+}
+
+struct FlattenPosition<'a> {
+    depth: usize,
+    is_last: bool,
+    ancestor_last: &'a mut Vec<bool>,
 }
 
 impl Tree {
@@ -454,8 +466,19 @@ impl Tree {
     /// agents float above their siblings. `now` drives the age column.
     pub fn flatten(&self, collapsed: &BTreeSet<String>, now: i64) -> Vec<Row> {
         let mut out = Vec::new();
-        for n in ordered_children(self.roots.values().collect(), &self.snapshot) {
-            self.flatten_node(n, 0, collapsed, now, &mut out);
+        let roots = ordered_children(self.roots.values().collect(), &self.snapshot);
+        for n in roots {
+            self.flatten_node(
+                n,
+                FlattenPosition {
+                    depth: 0,
+                    is_last: true,
+                    ancestor_last: &mut Vec::new(),
+                },
+                collapsed,
+                now,
+                &mut out,
+            );
         }
         out
     }
@@ -463,83 +486,161 @@ impl Tree {
     fn flatten_node(
         &self,
         n: &Node,
-        depth: usize,
+        position: FlattenPosition<'_>,
         collapsed: &BTreeSet<String>,
         now: i64,
         out: &mut Vec<Row>,
     ) {
-        let has_children = !n.children.is_empty();
+        let FlattenPosition {
+            depth,
+            is_last,
+            ancestor_last,
+        } = position;
+        let children = self.display_children(n);
+        let has_children = !children.is_empty();
         let is_collapsed = collapsed.contains(&n.path);
-        let (glyph, label, detail, blocked) = self.render_node(n, now);
+        let (glyph, label, status, agent, age, blocked) = self.render_node(n, now);
+        let tree_prefix = if depth == 0 {
+            String::new()
+        } else {
+            let mut prefix = String::new();
+            for last in ancestor_last.iter() {
+                prefix.push_str(if *last { "   " } else { "│  " });
+            }
+            prefix.push_str(if is_last { "└─ " } else { "├─ " });
+            prefix
+        };
         out.push(Row {
             depth,
             path: n.path.clone(),
             has_children,
             collapsed: is_collapsed,
+            tree_prefix,
             glyph,
             label,
-            detail,
+            lineage: n.lineage.clone(),
+            status,
+            agent,
+            age,
             blocked,
         });
         if has_children && !is_collapsed {
-            for c in ordered_children(n.children.values().collect(), &self.snapshot) {
-                self.flatten_node(c, depth + 1, collapsed, now, out);
+            let child_count = children.len();
+            for (index, child) in children.into_iter().enumerate() {
+                let child_is_last = index + 1 == child_count;
+                if depth > 0 {
+                    ancestor_last.push(is_last);
+                }
+                self.flatten_node(
+                    child,
+                    FlattenPosition {
+                        depth: depth + 1,
+                        is_last: child_is_last,
+                        ancestor_last: &mut *ancestor_last,
+                    },
+                    collapsed,
+                    now,
+                    out,
+                );
+                if depth > 0 {
+                    ancestor_last.pop();
+                }
             }
         }
     }
 
-    /// (glyph, label, detail, is_blocked) for a node's UI row.
-    fn render_node(&self, n: &Node, now: i64) -> (char, String, String, bool) {
+    /// Hide the literal `default` Herdr session in the TUI while retaining it in the stored
+    /// unmanaged path. Named sessions remain visible, preserving cross-session grouping.
+    fn display_children<'a>(&'a self, n: &'a Node) -> Vec<&'a Node> {
+        let mut children: Vec<&Node> = n.children.values().collect();
+        if n.path == "unmanaged" {
+            if let Some(default) = n.children.get("default") {
+                children.retain(|child| child.path != default.path);
+                children.extend(default.children.values());
+            }
+        }
+        ordered_children(children, &self.snapshot)
+    }
+
+    /// (glyph, label, status, agent, age, is_blocked) for a node's table row.
+    fn render_node(&self, n: &Node, now: i64) -> (char, String, String, String, String, bool) {
         match &n.kind {
             NodeKind::Agent(ai) => {
                 let a = &self.snapshot.agents[*ai];
-                let mut detail = a.status.clone();
+                let mut status = a.status.clone();
                 if let Some(bk) = &a.blocked_kind {
-                    detail.push_str(&format!(" {bk}"));
+                    status.push_str(&format!(" · {bk}"));
                 }
                 let prov = a.agent.as_deref().unwrap_or("-");
-                match &a.model {
-                    Some(m) => detail.push_str(&format!("   {prov} · {m}")),
-                    None => detail.push_str(&format!("   {prov}")),
-                }
+                let agent = a
+                    .model
+                    .as_ref()
+                    .map_or_else(|| prov.to_string(), |model| format!("{prov} · {model}"));
                 if let Some(q) = a.queue_position {
-                    detail.push_str(&format!("   #{q}"));
+                    status.push_str(&format!(" · #{q}"));
                 }
-                if let Some(lin) = &n.lineage {
-                    detail.push_str(&format!("   ↖ {lin}"));
-                }
-                detail.push_str(&format!("   {}", format_age(now - a.since_ms())));
                 (
                     glyph_for_status(&a.status),
                     n.segment.clone(),
-                    detail,
+                    status,
+                    agent,
+                    format_age(now - a.since_ms()),
                     a.status == "blocked",
                 )
             }
             NodeKind::Loop(li) => {
                 let l = &self.snapshot.loops[*li];
-                let mut detail = format!("loop · {}", l.status);
-                if let Some(nf) = l.next_fire_at {
-                    detail.push_str(&format!(" · next {}", format_clock(nf)));
-                }
-                ('·', n.segment.clone(), detail, false)
+                let age = l
+                    .next_fire_at
+                    .map(|next| format!("next {}", format_clock(next)))
+                    .unwrap_or_default();
+                (
+                    '·',
+                    n.segment.clone(),
+                    format!("loop · {}", l.status),
+                    l.cadence.clone().unwrap_or_default(),
+                    age,
+                    false,
+                )
             }
             NodeKind::Run { loop_idx, run_idx } => {
                 let r = &self.snapshot.loops[*loop_idx].runs[*run_idx];
-                let mut detail = format!("running · {}", r.status);
-                if let Some(due) = r.due_at {
-                    detail.push_str(&format!(" · due {}", format_clock(due)));
-                }
-                if let Some(st) = r.started_at {
-                    detail.push_str(&format!(" · {}", format_age(now - st)));
-                }
-                ('⟳', format!("run {}", r.run_id), detail, false)
+                let agent = r
+                    .due_at
+                    .map(|due| format!("{} · due {}", r.kind, format_clock(due)))
+                    .unwrap_or_else(|| r.kind.clone());
+                let age = r
+                    .started_at
+                    .map(|started| format_age(now - started))
+                    .unwrap_or_default();
+                (
+                    '⟳',
+                    format!("run {}", r.run_id),
+                    r.status.clone(),
+                    agent,
+                    age,
+                    false,
+                )
             }
             NodeKind::Idle => {
                 let count = n.children.len();
-                ('▶', "idle".to_string(), format!("parked · {count}"), false)
+                (
+                    '▪',
+                    "idle".to_string(),
+                    format!("parked · {count}"),
+                    String::new(),
+                    String::new(),
+                    false,
+                )
             }
-            NodeKind::Scope => (' ', n.segment.clone(), String::new(), false),
+            NodeKind::Scope => (
+                ' ',
+                n.segment.clone(),
+                String::new(),
+                String::new(),
+                String::new(),
+                false,
+            ),
         }
     }
 }
