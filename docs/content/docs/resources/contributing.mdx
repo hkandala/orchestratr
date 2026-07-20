@@ -82,7 +82,7 @@ match the spec verbatim where it is precise (grammar, status vocabulary, error a
 | new error condition | add or adjust `ErrorCode` in `src/error.rs`; keep the enum small, detail goes in `details` |
 | new store data | schema in `src/store/schema.rs` (bump `schema_version` only on an incompatible on-disk change) + typed access in `src/store/mod.rs` |
 | new herdr op | typed params/result in `src/driver/protocol.rs`, a method in `src/driver/mod.rs`, and pin it in `src/driver/contract.rs` + the conformance fixture |
-| new provider integration | `src/driver/integration.rs`; both layers are required (see [providers and integrations](/docs/concepts/providers)) |
+| new provider integration | implement `AgentIntegration` in a separate `src/driver/integration/<provider>.rs` module and register it in `integration.rs`; Herdr's adapter is still required (see [providers and integrations](/docs/concepts/providers)) |
 | new socket method | register it in `src/api.rs` `methods()` (params/result schema, `implemented`), add its handler in `src/server/mod.rs` `handle_request`, and call it from the CLI verb in `src/cli.rs` |
 | new event kind | add to `EVENT_KINDS` in `src/api.rs`; producers write it with `store::append_event_tx` in the same transaction as the change, then publish |
 | new loop or scheduler behavior | `src/server/loops.rs` + loop/run DAL in `src/store/mod.rs`; keep slot reservation atomic (`claim_pending_run` in one `BEGIN IMMEDIATE`) |

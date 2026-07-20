@@ -14,8 +14,9 @@ mod session;
 pub mod transcript;
 
 pub use integration::{
-    ensure_supported, launch_plan, mock_provider_enabled, tuning_for, IntegrationState, LaunchPlan,
-    ProviderIntegration, TuningParams, MOCK_PROVIDER, ORCR_BUILTIN_PROVIDERS,
+    ensure_supported, launch_plan, mock_provider_enabled, tuning_for, validate_routing,
+    IntegrationState, LaunchPlan, ProviderIntegration, TuningParams, MOCK_PROVIDER,
+    ORCR_BUILTIN_PROVIDERS,
 };
 pub use protocol::*;
 pub use session::{HerdrBinary, HerdrSession};

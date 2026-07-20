@@ -110,7 +110,7 @@ you (or any agent, or a loop)
                                           herdr — session "orcr"
                                             ├─ refactor/  file_1  claude  ● working
                                             ├─ refactor/  review  codex   ◐ blocked ⚠
-                                            ├─ nightly/   triage  claude  ○ idle
+                                            ├─ nightly/   triage  claude  ✓ done
                                             └─ idle/      (parked agents)
 ```
 
@@ -168,8 +168,9 @@ you / a script / another agent
 - **Integrations** — one orcr module per agent provider (named after herdr's own
   integrations): launch argv (bypass flags, model/effort mapping), startup recipe,
   completion-detection parameters, graceful-shutdown recipe, transcript adapter.
-  **claude and codex ship built-in first**; the module boundary is the contract for
-  adding more, and a future `orcr integration add|rm|ls` manages them like herdr does.
+  **claude and codex ship built-in** behind a shared `AgentIntegration` trait; there is
+  no separately installed orcr integration or runtime integration manager. Adding a
+  provider means implementing the trait in its own module and shipping a new orcr release.
   A provider is **supported only when both layers are present** — orcr's integration
   *and* herdr's integration for that provider (`herdr integration install <p>`);
   anything else fails fast at `agent run` with the exact install commands, and
@@ -1006,21 +1007,20 @@ not a control surface — acting on an agent is what the CLI verbs (and
 `herdr --session orcr`) are for.
 
 ```
-orcr  8 agents  ·  1 blocked  ·  2 loops
+orcr  8 agents  ·  1 needs input  ·  2 loops
 
-  TREE                                  STATUS             AGENT              TIME
 ▌ ▾ refactor
     └─ ▾ phase_1
-          ├─ file_1                     ● working          claude · opus      2m14s
-          ├─ file_2                     ● working          claude · opus      8m12s
-          └─ review                     ◐ blocked · question codex             11m03s
+          ├─ file_1                     ● running          claude  opus          high    2m14s
+          ├─ file_2                     ● running          claude  opus          high    8m12s
+          └─ review                     ◐ needs input · question codex   gpt-5.6-luna  high    11m03s
   ▾ verify
-    └─ checker  ↖ refactor/phase_1/file_1 ● working         codex              1m
+    └─ checker  ↖ refactor/phase_1/file_1 ● running         codex   gpt-5.6-luna  high    1m
   ▾ nightly                            · loop · active                          next 09:00
     └─ ▾ run r82c9s                    ⟳ running           scheduled · due 08:00 12m
-          ├─ triage                    ○ idle              claude             3m
-          └─ fix_1                     ● working           codex              4m40s
-  ▸ idle                               ▪ parked · 2
+          ├─ triage                    ✓ done              claude  sonnet        medium  3m
+          └─ fix_1                     ● running           codex   gpt-5.6-luna  high    4m40s
+  ▸ done                               ✓ 2 agents
 
  [/] filter   [←→] collapse/expand   [↑↓] move   [q] quit
 ```
@@ -1036,10 +1036,17 @@ orcr  8 agents  ·  1 blocked  ·  2 loops
   and selecting a row highlights its parent and children wherever they sit. One
   node, one place; cross-scope edges are visible but never duplicate or re-root the
   tree.
-- **Rows** show name, status glyph + status, provider·model (and blocked kind when
-  relevant), and age. Glyphs: `●` working · `○` idle · `◐` blocked (floats upward —
-  the "needs a human" queue) · `⟳` loop run in flight · queued/starting dimmed with
-  their queue position.
+- **Rows** show name, a user-facing status, provider, model, effort, and duration in separate
+  aligned columns. Model and effort are resolved from CLI overrides or the selected provider's
+  configured defaults before enqueueing, explicitly passed at launch, and recorded on the agent;
+  the TUI never has to infer routing metadata from transcripts. Presentation labels
+  intentionally differ from the lifecycle vocabulary: queued → pending, working → running,
+  idle → done, blocked → needs input, parked retains done, and lost → failed; queue
+  positions and GC vocabulary are not shown. The latest turn's timer starts at input delivery,
+  advances only while running, and freezes at completion or the first non-working transition.
+  A new input creates a new turn and restarts the timer from zero. Glyphs: `●` running · `✓`
+  done · `◐` needs input (floats upward —
+  the "needs a human" queue) · `⟳` loop run in flight · queued/starting dimmed.
 - **Interaction is navigation only**: `/` filters by path pattern, arrows
   collapse/expand, `q` quits. The CLI filters (`-a`, `--status`, `--loops`,
   `--managed|--unmanaged`) pre-scope the tree. The default view is managed-only;
@@ -1653,8 +1660,8 @@ worth carrying. So:
 
 - `agent run -a <p>` **fails fast** with `integration_missing` when either layer is
   absent — `details` names which layer(s) and the exact fix
-  (`herdr integration install <p>`, or "provider not yet supported by orcr; see
-  orcr integration add (planned)"). Nothing is spawned.
+  (`herdr integration install <p>`, or "provider not built into this orcr release").
+  Nothing is spawned. There is no command to install an orcr-side integration.
 - **Unmanaged discovery only tracks supported providers.** Agents of providers
   missing either layer are ignored (not stored, not shown); `server status` reports
   per-provider integration state (`integrations: {claude: {orcr, herdr}, …}`) so the
@@ -1665,7 +1672,15 @@ worth carrying. So:
 | --- | --- | --- | --- |
 | claude | built-in (first release) | `herdr integration install claude` | ✓ |
 | codex | built-in (first release) | `herdr integration install codex` | ✓ |
-| pi / opencode / … | planned (`orcr integration add`) | available in herdr | not yet — `run` fails with the message above |
+| pi / opencode / … | requires a built-in module in a future release | available in herdr | not yet — `run` fails with the message above |
+
+Each built-in module implements `AgentIntegration` and validates both model and effort
+before enqueueing. Invalid routes return `invalid_request` with `reason: invalid_model`
+or `invalid_effort`, print the accepted values, and include `valid_models` or
+`valid_efforts` in `details`; no row or pane is created. Claude hardcodes models
+`sonnet|opus|fable|haiku` and efforts `low|medium|high|xhigh|max|ultracode` because
+Claude exposes no headless catalog. Codex queries and briefly caches app-server
+`model/list`, then validates effort against that model's advertised effort set.
 
 **Transcript adapters** (the orcr-integration piece behind `logs`): locate and parse
 the provider's native session files into a common shape (ordered messages, roles, tool
@@ -1912,7 +1927,7 @@ timeout          {elapsed}                  a direct command's own      → 3
                                             deadline; wait-aggregate
                                             outcomes follow §6's table
                                             (a dead target → 5)
-integration_missing {provider, missing:[orcr|herdr], install}           → 2
+integration_missing {provider, missing:[orcr|herdr], fix}               → 2
 transcript_unavailable {uuid, status, cause?}  incl. ambiguous/stale    → 1
 environment_error {cause, …}                server/store/herdr/home/    → 2
                                             platform/version problems
@@ -1934,8 +1949,10 @@ server_error     {cause, …}                 internal failures (spawn/    → 1
 {
   "defaults": {
     "agent": "claude",        // default provider (used when -a is omitted)
-    "model": "",              // empty = provider default
-    "effort": ""
+    "providers": {
+      "claude": { "model": "sonnet", "effort": "medium" },
+      "codex": { "model": "gpt-5.6-luna", "effort": "high" }
+    }
     // no default timeout — agents never time out unless --timeout is passed
   },
   "herdr": {
@@ -2042,8 +2059,8 @@ detailed plan archived under `spec/_impl/`.
 
 Collected from everywhere above; explicitly parked, in rough priority order:
 
-- **pi / opencode integrations** + `orcr integration add|rm|ls` (manage integrations
-  like herdr does) (§11.4).
+- **pi / opencode built-in integrations** — one `AgentIntegration` implementation and
+  provider module each, shipped in a future orcr release (§11.4).
 - **Degraded no-integration modes** — running/tracking providers with only one
   integration layer present (cut deliberately for simplicity; §11.4).
 - **top actions** — a detail panel with attach/send/kill/logs from inside the TUI

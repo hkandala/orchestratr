@@ -64,8 +64,10 @@ these decide when a turn counts as complete (working-after-delivery, stable idle
 {
   "defaults": {
     "agent": "claude",   // default provider when -a is omitted
-    "model": "",         // empty = provider default
-    "effort": ""
+    "providers": {
+      "claude": { "model": "sonnet", "effort": "medium" },
+      "codex": { "model": "gpt-5.6-luna", "effort": "high" }
+    }
     // no default timeout: agents never time out unless --timeout is passed
   },
   "herdr": {
@@ -75,7 +77,10 @@ these decide when a turn counts as complete (working-after-delivery, stable idle
 }
 ```
 
-`defaults.*` is covered in [choose providers and models](/docs/guides/providers-and-models). note there is no default timeout: an agent never times out unless you pass `--timeout`.
+each provider default requires a non-empty model and effort. orcr passes the resolved values
+explicitly on every launch and records them on the agent. `defaults.*` is covered in
+[choose providers and models](/docs/guides/providers-and-models). note there is no default timeout:
+an agent never times out unless you pass `--timeout`.
 
 ## validation is strict
 

@@ -10,8 +10,8 @@
 use super::params::{str_array_param, str_param};
 use super::{agent_row_json, Server};
 use crate::driver::{
-    ensure_supported, launch_plan, tuning_for, AgentStartParams, AgentStatus, HerdrBinary,
-    HerdrDriver, ReadSource, TuningParams,
+    ensure_supported, launch_plan, tuning_for, validate_routing, AgentStartParams, AgentStatus,
+    HerdrBinary, HerdrDriver, ReadSource, TuningParams,
 };
 use crate::error::{OrcrError, Result};
 use crate::path::{self, NameOrPath};
@@ -735,8 +735,34 @@ impl Server {
                 "invalid_gc",
             ));
         }
-        let model = str_param(params, "model").filter(|s| !s.is_empty());
-        let effort = str_param(params, "effort").filter(|s| !s.is_empty());
+        let provider_defaults = self.inner.config.defaults.for_provider(&provider);
+        let model = str_param(params, "model")
+            .filter(|s| !s.is_empty())
+            .or_else(|| provider_defaults.map(|d| d.model.clone()))
+            .or_else(|| (provider == "mock").then(|| "mock".to_string()))
+            .ok_or_else(|| {
+                OrcrError::environment(
+                    "config_invalid",
+                    format!(
+                        "no model configured for provider `{provider}`; set \
+                         defaults.providers.{provider}.model"
+                    ),
+                )
+            })?;
+        let effort = str_param(params, "effort")
+            .filter(|s| !s.is_empty())
+            .or_else(|| provider_defaults.map(|d| d.effort.clone()))
+            .or_else(|| (provider == "mock").then(|| "medium".to_string()))
+            .ok_or_else(|| {
+                OrcrError::environment(
+                    "config_invalid",
+                    format!(
+                        "no effort configured for provider `{provider}`; set \
+                         defaults.providers.{provider}.effort"
+                    ),
+                )
+            })?;
+        validate_routing(&provider, &model, &effort)?;
         let timeout = str_param(params, "timeout").filter(|s| !s.is_empty());
         // Validate --timeout up front (units required); persist the deadline durably.
         let timeout_ms = match &timeout {
@@ -757,7 +783,7 @@ impl Server {
         let effective = path::resolve_create(scope.as_deref(), &input)?;
 
         // Build the launch plan (argv + model/effort mapping).
-        let plan = launch_plan(&provider, model.as_deref(), effort.as_deref())?;
+        let plan = launch_plan(&provider, Some(&model), Some(&effort))?;
 
         // Allocate identity + the launch token (unique per attempt).
         let uuid = uuid::Uuid::now_v7().to_string();
@@ -809,8 +835,8 @@ impl Server {
             provider: provider.clone(),
             argv: plan.argv.clone(),
             prompt: prompt.clone(),
-            model: model.clone(),
-            effort: effort.clone(),
+            model: Some(model.clone()),
+            effort: Some(effort.clone()),
             cwd: cwd.clone(),
             gc_mode: gc.clone(),
             timeout: timeout.clone(),
@@ -835,8 +861,8 @@ impl Server {
             origin: "run".into(),
             parent_id: ctx.parent_id.clone(),
             agent: Some(provider.clone()),
-            model: model.clone(),
-            effort: effort.clone(),
+            model: Some(model.clone()),
+            effort: Some(effort.clone()),
             gc_mode: Some(gc.clone()),
             cwd: cwd.clone(),
             herdr_session: Some(self.inner.config.herdr.session.clone()),

@@ -269,7 +269,8 @@ Current state: **through M7 (SDK & skill)** + the comprehensive spec-vs-impl rev
     socket. **Sessions are per-socket** (major herdr fact — cross-session work fans out
     over each session's socket).
   - `integration.rs` — `IntegrationState` (herdr-layer parse) **plus** the orcr-side
-    integration (M2): `launch_plan(provider, model, effort)` → argv (bypass flags +
+    integration (M2): built-in `AgentIntegration` registry plus separate
+    `integration/claude.rs` and `integration/codex.rs` modules; `launch_plan(provider, model, effort)` → argv (bypass flags +
     model/effort mapping) for claude/codex (and the test-only `mock` provider under
     `ORCR_ALLOW_MOCK_PROVIDER=1`), and `ensure_supported` (both-layers-required →
     `integration_missing` naming the missing layer + install command, §11.4). **M3**:

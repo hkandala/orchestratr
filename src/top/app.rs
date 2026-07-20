@@ -335,16 +335,8 @@ impl App {
         f.render_widget(Paragraph::new(self.header()), chunks[0]);
 
         let table_rows = rows.iter().map(|row| self.table_row(row));
-        let header = TableRow::new(["TREE", "STATUS", "AGENT", "TIME"])
-            .style(
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .bottom_margin(1);
         let (widths, column_spacing) = table_layout(f.area().width);
         let table = Table::new(table_rows, widths)
-            .header(header)
             .column_spacing(column_spacing)
             .highlight_symbol(Span::styled("▌ ", Style::default().fg(Color::Cyan)))
             .highlight_spacing(HighlightSpacing::Always)
@@ -392,7 +384,7 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("  {live} agents  ·  {blocked} blocked  ·  {loops} loops"),
+                format!("  {live} agents  ·  {blocked} needs input  ·  {loops} loops"),
                 Style::default().fg(Color::Gray),
             ),
         ];
@@ -455,6 +447,8 @@ impl App {
             Cell::from(Line::from(tree)),
             Cell::from(status),
             Cell::from(row.agent.clone()).style(Style::default().fg(Color::Gray)),
+            Cell::from(row.model.clone()).style(Style::default().fg(Color::Gray)),
+            Cell::from(row.effort.clone()).style(Style::default().fg(Color::DarkGray)),
             Cell::from(row.age.clone()).style(Style::default().fg(Color::DarkGray)),
         ])
     }
@@ -462,32 +456,37 @@ impl App {
 
 fn glyph_color(g: char) -> Color {
     match g {
-        '●' => Color::Green,
+        '●' | '✓' => Color::Green,
         '○' => Color::Blue,
         '◐' => Color::Magenta,
         '⟳' => Color::Cyan,
         '◌' => Color::DarkGray,
+        '✗' => Color::Red,
         _ => Color::Gray,
     }
 }
 
-fn table_layout(width: u16) -> ([Constraint; 4], u16) {
-    if width >= 90 {
+fn table_layout(width: u16) -> ([Constraint; 6], u16) {
+    if width >= 120 {
         (
             [
                 Constraint::Min(24),
-                Constraint::Length(20),
+                Constraint::Length(18),
+                Constraint::Length(10),
                 Constraint::Length(22),
+                Constraint::Length(10),
                 Constraint::Length(10),
             ],
             2,
         )
-    } else if width >= 64 {
+    } else if width >= 80 {
         (
             [
                 Constraint::Min(18),
                 Constraint::Length(16),
-                Constraint::Length(16),
+                Constraint::Length(8),
+                Constraint::Length(18),
+                Constraint::Length(8),
                 Constraint::Length(8),
             ],
             1,
@@ -496,8 +495,10 @@ fn table_layout(width: u16) -> ([Constraint; 4], u16) {
         (
             [
                 Constraint::Min(10),
-                Constraint::Length(13),
                 Constraint::Length(12),
+                Constraint::Length(7),
+                Constraint::Length(12),
+                Constraint::Length(7),
                 Constraint::Length(6),
             ],
             1,
@@ -561,6 +562,7 @@ mod tests {
                     "managed": true,
                     "agent": "claude",
                     "model": "opus",
+                    "effort": "high",
                     "created_at": 1_000,
                     "last_status_change_at": 1_000
                 },
@@ -571,6 +573,7 @@ mod tests {
                     "managed": true,
                     "agent": "codex",
                     "model": "o3",
+                    "effort": "medium",
                     "created_at": 1_000,
                     "idle_since": 1_000
                 },
@@ -597,13 +600,19 @@ mod tests {
         assert!(lines[0].starts_with("orcr  2 agents"));
         assert!(!lines
             .iter()
+            .any(|line| line.contains("TREE") || line.contains("STATUS")));
+        assert!(lines[2].contains("review"));
+        assert!(!lines
+            .iter()
             .any(|line| line.contains('┌') || line.contains('┐') || line.contains('┘')));
         assert!(!lines.iter().any(|line| line.contains("w3_p3k")));
 
         let worker_a = lines.iter().find(|line| line.contains("worker_a")).unwrap();
         let worker_b = lines.iter().find(|line| line.contains("worker_b")).unwrap();
-        assert_eq!(worker_a.find("working"), worker_b.find("idle"));
+        assert_eq!(worker_a.find("running"), worker_b.find("done"));
         assert_eq!(worker_a.find("claude"), worker_b.find("codex"));
+        assert_eq!(worker_a.find("opus"), worker_b.find("o3"));
+        assert_eq!(worker_a.find("high"), worker_b.find("medium"));
 
         let selected_y = lines
             .iter()
@@ -614,5 +623,11 @@ mod tests {
         assert!(!buffer[(2, selected_y)]
             .modifier
             .contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn done_and_failed_glyphs_have_terminal_colors() {
+        assert_eq!(glyph_color('✓'), Color::Green);
+        assert_eq!(glyph_color('✗'), Color::Red);
     }
 }

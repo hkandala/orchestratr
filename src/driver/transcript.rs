@@ -21,6 +21,12 @@ use crate::error::{ErrorCode, OrcrError, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TranscriptFormat {
+    Claude,
+    Codex,
+}
+
 /// One parsed transcript message in the common shape.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct TranscriptEntry {
@@ -62,9 +68,9 @@ impl TranscriptLocator {
     /// Parse the full transcript into the common entry shape.
     pub fn read_entries(&self) -> Result<Vec<TranscriptEntry>> {
         let text = read_file(&self.path)?;
-        match self.provider.as_str() {
-            "codex" => Ok(parse_codex(&text)),
-            _ => Ok(parse_claude(&text)),
+        match transcript_format(&self.provider) {
+            TranscriptFormat::Codex => Ok(parse_codex(&text)),
+            TranscriptFormat::Claude => Ok(parse_claude(&text)),
         }
     }
 
@@ -151,11 +157,20 @@ pub fn locate_transcript(
         ));
     }
 
-    let candidates = match provider {
-        "codex" => codex_candidates(value),
-        _ => claude_candidates(value, cwd),
+    let candidates = match transcript_format(provider) {
+        TranscriptFormat::Codex => codex_candidates(value),
+        TranscriptFormat::Claude => claude_candidates(value, cwd),
     };
     select_candidate(provider, candidates, created_at_ms, uuid, status, value)
+}
+
+fn transcript_format(provider: &str) -> TranscriptFormat {
+    if provider == "mock" {
+        return TranscriptFormat::Claude;
+    }
+    super::integration::integration_for(provider)
+        .map(|integration| integration.transcript_format())
+        .unwrap_or(TranscriptFormat::Claude)
 }
 
 /// Pick exactly one candidate: 0 → not_found; 1 → it; >1 → prefer the newest that is not

@@ -773,6 +773,7 @@ fn agent_row_json(store: &Store, a: &AgentFull) -> Value {
         "managed": a.managed,
         "agent": a.agent,
         "model": a.model,
+        "effort": a.effort,
         "cwd": a.cwd,
         "pane_id": a.pane_id,
         "move_state": a.move_state,
@@ -792,6 +793,14 @@ fn agent_row_json(store: &Store, a: &AgentFull) -> Value {
     }
     if let Some(t) = a.parked_at {
         row["parked_at"] = json!(t);
+    }
+    if let Ok(Some(turn)) = store.latest_turn(&a.uuid) {
+        if let Some(t) = turn.delivered_at {
+            row["turn_delivered_at"] = json!(t);
+        }
+        if let Some(t) = turn.completed_at {
+            row["turn_completed_at"] = json!(t);
+        }
     }
     if a.status == "queued" {
         if let Ok(Some(q)) = store.queue_position(&a.uuid) {

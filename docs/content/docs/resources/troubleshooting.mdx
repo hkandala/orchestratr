@@ -25,12 +25,12 @@ do not confuse this with `server_unreachable` (the client cannot connect to the 
 
 ### `integration_missing`
 
-code `integration_missing` (`details: {provider, missing:[orcr|herdr], install}`), exit 2. a provider is supported only when **both** integration layers are present: herdr's integration (so herdr can observe the provider) and orcr's integration (so orcr can drive it). this fires fast at `agent run -a <provider>` when either layer is absent, and nothing is spawned.
+code `integration_missing` (`details: {provider, missing:[orcr|herdr], fix}`), exit 2. a provider is supported only when **both** integration layers are present: Herdr's separately installed observation adapter and an integration compiled into orcr. this fires fast at `agent run -a <provider>` when either layer is absent, and nothing is spawned.
 
 fix:
 
-- if `missing` names `herdr`, run the install command in `details.install`, for example `herdr integration install claude` or `herdr integration install codex`.
-- if `missing` names `orcr`, the provider is not yet built into orcr. claude and codex ship first; pi, opencode and others are planned via `orcr integration add`. see [providers and integrations](/docs/concepts/providers).
+- if `missing` names `herdr`, follow `details.fix`, for example `herdr integration install claude` or `herdr integration install codex`.
+- if `missing` names `orcr`, the provider is not built into this orcr release. orcr-side integrations are never installed separately; support requires a provider module in a newer release.
 
 there are no degraded half-modes: a provider missing either layer cannot be run, and unmanaged discovery ignores it entirely. `orcr agent logs --last-response` returns `integration_missing` (exit 2) for the same reason. `server status` shows the per-provider state so you can see the gap before you hit it.
 

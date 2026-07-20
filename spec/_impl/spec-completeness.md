@@ -156,7 +156,7 @@ milestone `notes.md`. Reported here so the audit is exhaustive, not as defects.
 
 | item | source |
 | --- | --- |
-| pi/opencode integrations + `orcr integration add\|rm\|ls` | §17; §11.4 table |
+| pi/opencode built-in `AgentIntegration` modules | §17; §11.4 table |
 | Degraded no-integration (single-layer) modes | §17; §11.4 |
 | `top` actions (detail panel: attach/send/kill/logs from TUI) + live activity feed | §17; §7 ("view-only in first release") |
 | `send` steer/stop options (interrupt/graceful-stop per provider) | §17; §6.1 |

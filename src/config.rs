@@ -44,10 +44,19 @@ pub struct IntegrationTuning {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Defaults {
     pub agent: String,
-    /// Empty string = provider default.
+    pub providers: BTreeMap<String, ProviderDefaults>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderDefaults {
     pub model: String,
-    /// Empty string = provider default.
     pub effort: String,
+}
+
+impl Defaults {
+    pub fn for_provider(&self, provider: &str) -> Option<&ProviderDefaults> {
+        self.providers.get(provider)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,8 +106,22 @@ impl Default for Config {
         Config {
             defaults: Defaults {
                 agent: "claude".to_string(),
-                model: String::new(),
-                effort: String::new(),
+                providers: BTreeMap::from([
+                    (
+                        "claude".to_string(),
+                        ProviderDefaults {
+                            model: "sonnet".to_string(),
+                            effort: "medium".to_string(),
+                        },
+                    ),
+                    (
+                        "codex".to_string(),
+                        ProviderDefaults {
+                            model: "gpt-5.6-luna".to_string(),
+                            effort: "high".to_string(),
+                        },
+                    ),
+                ]),
             },
             herdr: HerdrConfig {
                 bin: String::new(),
@@ -221,16 +244,41 @@ fn parse_defaults(
     warnings: &mut Vec<String>,
 ) -> Result<(), OrcrError> {
     let obj = section_obj(v, "defaults")?;
-    const KEYS: &[&str] = &["agent", "model", "effort"];
+    const KEYS: &[&str] = &["agent", "providers"];
     warn_unknown(obj, "defaults", KEYS, warnings);
     if let Some(s) = obj.get("agent") {
         out.agent = as_string(s, "defaults.agent")?;
     }
-    if let Some(s) = obj.get("model") {
-        out.model = as_string(s, "defaults.model")?;
-    }
-    if let Some(s) = obj.get("effort") {
-        out.effort = as_string(s, "defaults.effort")?;
+    if let Some(v) = obj.get("providers") {
+        let providers = section_obj(v, "defaults.providers")?;
+        for (provider, value) in providers {
+            let route = section_obj(value, &format!("defaults.providers.{provider}"))?;
+            const ROUTE_KEYS: &[&str] = &["model", "effort"];
+            warn_unknown(
+                route,
+                &format!("defaults.providers.{provider}"),
+                ROUTE_KEYS,
+                warnings,
+            );
+            let entry = out
+                .providers
+                .entry(provider.clone())
+                .or_insert_with(|| ProviderDefaults {
+                    model: String::new(),
+                    effort: String::new(),
+                });
+            if let Some(model) = route.get("model") {
+                entry.model = as_string(model, &format!("defaults.providers.{provider}.model"))?;
+            }
+            if let Some(effort) = route.get("effort") {
+                entry.effort = as_string(effort, &format!("defaults.providers.{provider}.effort"))?;
+            }
+            if entry.model.trim().is_empty() || entry.effort.trim().is_empty() {
+                return Err(config_invalid(format!(
+                    "defaults.providers.{provider} requires non-empty model and effort"
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -501,18 +549,39 @@ mod tests {
         assert_eq!(lc.config.concurrency.cap_for("claude"), 10);
         assert_eq!(lc.config.concurrency.cap_for("codex"), 25);
         assert_eq!(lc.config.timings.idle_after, Duration::from_secs(300));
+        assert_eq!(
+            lc.config.defaults.for_provider("claude"),
+            Some(&ProviderDefaults {
+                model: "sonnet".into(),
+                effort: "medium".into(),
+            })
+        );
+        assert_eq!(
+            lc.config.defaults.for_provider("codex"),
+            Some(&ProviderDefaults {
+                model: "gpt-5.6-luna".into(),
+                effort: "high".into(),
+            })
+        );
     }
 
     #[test]
     fn overrides_merge() {
         let lc = Config::parse(
-            r#"{"defaults":{"agent":"codex"},"herdr":{"session":"orcr_x"},
+            r#"{"defaults":{"agent":"codex","providers":{"codex":{"model":"gpt-x","effort":"medium"}}},"herdr":{"session":"orcr_x"},
                 "timings":{"idle_after":"10m"}}"#,
         )
         .unwrap();
         assert_eq!(lc.config.defaults.agent, "codex");
         assert_eq!(lc.config.herdr.session, "orcr_x");
         assert_eq!(lc.config.timings.idle_after, Duration::from_secs(600));
+        assert_eq!(
+            lc.config.defaults.for_provider("codex"),
+            Some(&ProviderDefaults {
+                model: "gpt-x".into(),
+                effort: "medium".into(),
+            })
+        );
         // untouched keys keep defaults
         assert_eq!(lc.config.timings.kill_after, Duration::from_secs(600));
     }
@@ -578,6 +647,14 @@ mod tests {
         assert!(Config::parse(r#"{"concurrency":{"max":"lots"}}"#).is_err());
         assert!(Config::parse(r#"{"defaults":{"agent":5}}"#).is_err());
         assert!(Config::parse(r#"{"defaults":"nope"}"#).is_err());
+    }
+
+    #[test]
+    fn provider_defaults_require_model_and_effort() {
+        assert!(Config::parse(
+            r#"{"defaults":{"providers":{"custom":{"model":"x","effort":""}}}}"#
+        )
+        .is_err());
     }
 
     #[test]

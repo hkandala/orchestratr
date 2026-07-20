@@ -8,13 +8,13 @@ a provider is an agent CLI orcr can run: claude, codex, and more over time. supp
 ## the two layers
 
 - **herdr's integration**: installed with `herdr integration install <provider>`. it hooks the provider so herdr can *observe* it: agent state (`working`, `idle`, `blocked`) and the `agent_session` transcript pointer. herdr reports a blocked *state*, sometimes with a free-text message, but no structured reason.
-- **orcr's integration**: built into orcr (claude and codex ship first). it is how orcr *drives* the provider: launch argv (bypass-permissions flags, model and effort mapping), the startup recipe, completion tuning (the [named parameters](/docs/concepts/status-and-completion#integration-tuning-parameters)), the graceful-shutdown recipe, the transcript adapter, and `blocked_kind` classification.
+- **orcr's integration**: compiled into orcr (claude and codex ship built in). it is how orcr *drives* the provider: model and effort validation, launch argv, the startup recipe, completion tuning, graceful shutdown, the transcript adapter, and `blocked_kind` classification. each provider implements the shared `AgentIntegration` trait in its own module. there is no separate orcr integration installation command.
 
 a provider is supported only when **both** are present.
 
 ## fail fast, no half-modes
 
-`agent run -a <provider>` fails fast with `integration_missing` when either layer is absent. the `details` name which layer or layers are missing and the exact fix: `herdr integration install <provider>`, or a pointer that the provider is not yet supported by orcr. nothing is spawned.
+`agent run -a <provider>` fails fast with `integration_missing` when either layer is absent. the `details` name which layer or layers are missing and the exact fix: install Herdr's adapter, or use a provider built into this orcr release. nothing is spawned. adding another orcr provider requires a provider module and a new orcr release.
 
 unmanaged discovery only tracks supported providers; agents of a provider missing either layer are ignored. `server status` reports per-provider integration state (`integrations: {claude: {orcr, herdr}, …}`) so the gap is visible, and both `server status` and `--help` list the supported provider set. see [managed vs unmanaged agents](/docs/concepts/managed-vs-unmanaged#discovery-is-for-supported-providers-only).
 
@@ -26,7 +26,20 @@ degraded no-integration modes are deliberately cut for simplicity. they are on t
 | --- | --- | --- | --- |
 | claude | built-in (first release) | `herdr integration install claude` | yes |
 | codex | built-in (first release) | `herdr integration install codex` | yes |
-| pi / opencode / … | planned (`orcr integration add`) | available in herdr | not yet; `run` fails with the message above |
+| pi / opencode / … | requires a future built-in module | available in herdr | not yet; `run` fails with the message above |
+
+## model and effort validation
+
+every built-in integration validates both routing values before enqueueing, so an invalid route
+creates no store row or pane. errors use `invalid_request` with `reason: invalid_model` or
+`invalid_effort` and include `valid_models` or `valid_efforts` in `details`.
+
+- Claude's CLI has no headless model-catalog command, so its integration deliberately hardcodes
+  the supported model IDs `sonnet`, `opus`, `fable`, and `haiku`, and efforts `low`, `medium`,
+  `high`, `xhigh`, `max`, and `ultracode`. Supporting a new Claude route requires an orcr update.
+- Codex exposes an account-aware app-server `model/list` method. Its integration fetches and
+  briefly caches that catalog, validates the model dynamically, then validates effort against
+  that model's advertised `supportedReasoningEfforts`.
 
 a test-only `mock` provider exists for the e2e suite. it runs a scriptable fake agent TUI, writes a claude-format transcript into its own data dir, and is enabled only under `ORCR_ALLOW_MOCK_PROVIDER=1`. it is not for production use, but it is why every pattern in the cookbook has an end-to-end test.
 

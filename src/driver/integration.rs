@@ -5,11 +5,15 @@
 //! socket method exists in protocol 16 — see the driver reference). orcr's built-in set
 //! (claude + codex in the first release) is known statically.
 
+use super::transcript::TranscriptFormat;
 use crate::config::IntegrationTuning;
 use crate::error::{OrcrError, Result};
 use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeMap;
+
+mod claude;
+mod codex;
 
 /// Per-provider completion tuning. Defaults ship inside the integration; a
 /// user/test may override any knob via `integrations.<provider>.*` in config. Values
@@ -48,34 +52,29 @@ pub struct TuningParams {
 }
 
 impl TuningParams {
-    /// The built-in defaults for a provider. claude/codex use conservative real-provider
-    /// windows; the test-only `mock` uses short windows so the e2e gate stays fast (and it
-    /// has no native transcript, so the settle window is 0).
-    fn defaults_for(provider: &str) -> TuningParams {
-        match provider {
-            MOCK_PROVIDER => TuningParams {
-                fast_turn_grace_ms: 1500,
-                idle_stable_ms: 1200,
-                transcript_settle_ms: 0,
-                transcript_freshness_timeout_ms: 3000,
-                shutdown_grace_ms: 400,
-                submit_ready_ms: 0,
-                submit_confirm_ms: 0,
-                submit_attempts: 0,
-            },
-            _ => TuningParams {
-                fast_turn_grace_ms: 2500,
-                idle_stable_ms: 2500,
-                transcript_settle_ms: 1500,
-                transcript_freshness_timeout_ms: 15000,
-                shutdown_grace_ms: 5000,
-                // Adaptive submit-confirm: wait for readiness, then verify + re-deliver across a
-                // long window with several full re-sends, for slow (enterprise) provider boots
-                // (known-issues #2 / E02).
-                submit_ready_ms: 8000,
-                submit_confirm_ms: 20000,
-                submit_attempts: 6,
-            },
+    pub(super) fn real_provider_defaults() -> TuningParams {
+        TuningParams {
+            fast_turn_grace_ms: 2500,
+            idle_stable_ms: 2500,
+            transcript_settle_ms: 1500,
+            transcript_freshness_timeout_ms: 15000,
+            shutdown_grace_ms: 5000,
+            submit_ready_ms: 8000,
+            submit_confirm_ms: 20000,
+            submit_attempts: 6,
+        }
+    }
+
+    fn mock_defaults() -> TuningParams {
+        TuningParams {
+            fast_turn_grace_ms: 1500,
+            idle_stable_ms: 1200,
+            transcript_settle_ms: 0,
+            transcript_freshness_timeout_ms: 3000,
+            shutdown_grace_ms: 400,
+            submit_ready_ms: 0,
+            submit_confirm_ms: 0,
+            submit_attempts: 0,
         }
     }
 
@@ -110,7 +109,13 @@ impl TuningParams {
 /// Resolve the completion tuning for a provider: built-in defaults merged with any
 /// `integrations.<provider>.*` config overrides.
 pub fn tuning_for(provider: &str, overrides: &BTreeMap<String, IntegrationTuning>) -> TuningParams {
-    let mut t = TuningParams::defaults_for(provider);
+    let mut t = if provider == MOCK_PROVIDER {
+        TuningParams::mock_defaults()
+    } else {
+        integration_for(provider)
+            .map(AgentIntegration::tuning_defaults)
+            .unwrap_or_else(TuningParams::real_provider_defaults)
+    };
     if let Some(o) = overrides.get(provider) {
         t.apply(o);
     }
@@ -125,6 +130,40 @@ pub const ORCR_BUILTIN_PROVIDERS: &[&str] = &["claude", "codex"];
 /// in the e2e gate (it self-reports via `pane.report_agent`, so both observation layers are
 /// effectively present). Never available in a normal build.
 pub const MOCK_PROVIDER: &str = "mock";
+
+/// One built-in orcr provider integration. Provider support is compiled into the binary; this
+/// trait is the extension boundary for routing validation, launch arguments, lifecycle tuning,
+/// and (as providers diverge) startup/shutdown behavior.
+pub trait AgentIntegration: Sync {
+    fn provider(&self) -> &'static str;
+    fn validate_routing(&self, model: &str, effort: &str) -> Result<()>;
+    fn launch_plan(&self, model: Option<&str>, effort: Option<&str>) -> Result<LaunchPlan>;
+    fn tuning_defaults(&self) -> TuningParams;
+    fn transcript_format(&self) -> TranscriptFormat;
+}
+
+static CLAUDE_INTEGRATION: claude::ClaudeIntegration = claude::ClaudeIntegration;
+static CODEX_INTEGRATION: codex::CodexIntegration = codex::CodexIntegration;
+
+/// Look up an integration compiled into this orcr release. There is intentionally no runtime
+/// orcr integration installation path.
+pub fn integration_for(provider: &str) -> Option<&'static dyn AgentIntegration> {
+    match provider {
+        "claude" => Some(&CLAUDE_INTEGRATION),
+        "codex" => Some(&CODEX_INTEGRATION),
+        _ => None,
+    }
+}
+
+/// Validate the concrete routing values before an agent is enqueued.
+pub fn validate_routing(provider: &str, model: &str, effort: &str) -> Result<()> {
+    if provider == MOCK_PROVIDER && mock_provider_enabled() {
+        return Ok(());
+    }
+    integration_for(provider)
+        .ok_or_else(|| integration_missing(provider, &["orcr"]))?
+        .validate_routing(model, effort)
+}
 
 /// True if the test-only mock provider is enabled for this process.
 pub fn mock_provider_enabled() -> bool {
@@ -145,76 +184,40 @@ pub struct LaunchPlan {
 }
 
 /// Build the launch plan for a provider, mapping `model`/`effort` per its CLI.
-/// Empty `model`/`effort` mean "provider default". Unknown providers → `integration_missing`.
+/// Managed launches resolve non-empty values before calling this function; optional values remain
+/// useful for lifecycle-only plans such as graceful shutdown. Unknown providers →
+/// `integration_missing`.
 pub fn launch_plan(
     provider: &str,
     model: Option<&str>,
     effort: Option<&str>,
 ) -> Result<LaunchPlan> {
-    let model = model.filter(|s| !s.is_empty());
-    let effort = effort.filter(|s| !s.is_empty());
-    match provider {
-        "claude" => {
-            // Bypass permissions so the agent runs unattended (everything runs
-            // bypass-permissions in this release).
-            let mut argv = vec![
-                "claude".to_string(),
-                "--dangerously-skip-permissions".to_string(),
-            ];
-            if let Some(m) = model {
-                argv.push("--model".to_string());
-                argv.push(m.to_string());
-            }
-            // claude has no separate effort knob; effort is ignored (documented).
-            let _ = effort;
-            Ok(LaunchPlan {
-                argv,
-                shutdown_line: None,
-            })
-        }
-        "codex" => {
-            let mut argv = vec![
-                "codex".to_string(),
-                "--dangerously-bypass-approvals-and-sandbox".to_string(),
-            ];
-            if let Some(m) = model {
-                argv.push("--model".to_string());
-                argv.push(m.to_string());
-            }
-            if let Some(e) = effort {
-                argv.push("-c".to_string());
-                argv.push(format!("model_reasoning_effort={e}"));
-            }
-            Ok(LaunchPlan {
-                argv,
-                shutdown_line: None,
-            })
-        }
-        MOCK_PROVIDER if mock_provider_enabled() => {
-            let bin = std::env::var("ORCR_MOCK_AGENT_BIN").map_err(|_| {
-                OrcrError::server_error(
-                    "mock_bin_unset",
-                    "ORCR_ALLOW_MOCK_PROVIDER=1 but ORCR_MOCK_AGENT_BIN is not set",
-                )
-            })?;
-            Ok(LaunchPlan {
-                argv: vec![bin],
-                shutdown_line: Some("/quit".to_string()),
-            })
-        }
-        other => Err(integration_missing(other, &["orcr"])),
+    if provider == MOCK_PROVIDER && mock_provider_enabled() {
+        let bin = std::env::var("ORCR_MOCK_AGENT_BIN").map_err(|_| {
+            OrcrError::server_error(
+                "mock_bin_unset",
+                "ORCR_ALLOW_MOCK_PROVIDER=1 but ORCR_MOCK_AGENT_BIN is not set",
+            )
+        })?;
+        return Ok(LaunchPlan {
+            argv: vec![bin],
+            shutdown_line: Some("/quit".to_string()),
+        });
     }
+    integration_for(provider)
+        .ok_or_else(|| integration_missing(provider, &["orcr"]))?
+        .launch_plan(model, effort)
 }
 
 /// Enforce the both-layers-required rule: a provider is supported only when
 /// orcr's built-in integration **and** herdr's integration are both present. Fails fast with
-/// `integration_missing` naming the missing layer(s) and the exact install command; nothing
-/// is spawned. The mock provider (test flag) bypasses this check.
+/// `integration_missing` naming the missing layer(s) and the exact fix; nothing is spawned.
+/// The mock provider (test flag) bypasses this check.
 pub fn ensure_supported(state: &IntegrationState, provider: &str) -> Result<()> {
     if provider == MOCK_PROVIDER && mock_provider_enabled() {
         return Ok(());
     }
-    let orcr = ORCR_BUILTIN_PROVIDERS.contains(&provider);
+    let orcr = integration_for(provider).is_some();
     let herdr = state.get(provider).map(|p| p.herdr).unwrap_or(false);
     if orcr && herdr {
         return Ok(());
@@ -232,15 +235,16 @@ pub fn ensure_supported(state: &IntegrationState, provider: &str) -> Result<()> 
 /// The `integration_missing` error: names the missing layer(s) and the
 /// exact fix (exit 2).
 fn integration_missing(provider: &str, missing: &[&str]) -> OrcrError {
-    let install = if missing.contains(&"herdr") && missing.contains(&"orcr") {
+    let fix = if missing.contains(&"herdr") && missing.contains(&"orcr") {
         format!(
-            "provider `{provider}` is not yet supported by orcr (see `orcr integration add`, \
-             planned) and its herdr integration is not installed"
+            "provider `{provider}` is not built into this orcr release; built-in providers: {}; \
+             its Herdr integration is also not installed",
+            ORCR_BUILTIN_PROVIDERS.join(", ")
         )
     } else if missing.contains(&"orcr") {
         format!(
-            "provider `{provider}` has no orcr integration yet \
-             (supported: claude, codex; more via `orcr integration add`, planned)"
+            "provider `{provider}` is not built into this orcr release; built-in providers: {}",
+            ORCR_BUILTIN_PROVIDERS.join(", ")
         )
     } else {
         format!("run `herdr integration install {provider}` to install herdr's integration")
@@ -249,7 +253,7 @@ fn integration_missing(provider: &str, missing: &[&str]) -> OrcrError {
         crate::error::ErrorCode::IntegrationMissing,
         format!("provider `{provider}` is not fully supported: missing {missing:?} integration"),
     )
-    .with_details(json!({ "provider": provider, "missing": missing, "install": install }))
+    .with_details(json!({ "provider": provider, "missing": missing, "fix": fix }))
 }
 
 /// Whether each integration layer is present for a provider.
@@ -378,6 +382,14 @@ cursor: current (v1) (/p)
     }
 
     #[test]
+    fn registry_and_builtin_provider_list_stay_in_sync() {
+        for provider in ORCR_BUILTIN_PROVIDERS {
+            assert_eq!(integration_for(provider).unwrap().provider(), *provider);
+        }
+        assert!(integration_for("pi").is_none());
+    }
+
+    #[test]
     fn orcr_builtin_reported_even_if_herdr_absent() {
         // codex missing from herdr output entirely.
         let raw = "claude: current (v7) (/p)\n";
@@ -396,13 +408,14 @@ cursor: current (v1) (/p)
 
     #[test]
     fn launch_plan_maps_model_and_effort() {
-        let claude = launch_plan("claude", Some("opus"), None).unwrap();
+        let claude = launch_plan("claude", Some("opus"), Some("medium")).unwrap();
         assert_eq!(claude.argv[0], "claude");
         assert!(claude
             .argv
             .iter()
             .any(|a| a == "--dangerously-skip-permissions"));
         assert!(claude.argv.windows(2).any(|w| w == ["--model", "opus"]));
+        assert!(claude.argv.windows(2).any(|w| w == ["--effort", "medium"]));
 
         let codex = launch_plan("codex", Some("gpt-5"), Some("high")).unwrap();
         assert!(codex
@@ -415,7 +428,7 @@ cursor: current (v1) (/p)
             .iter()
             .any(|a| a == "model_reasoning_effort=high"));
 
-        // Empty model/effort → provider defaults (no flags added).
+        // Lifecycle-only plans may omit launch routing flags.
         let bare = launch_plan("claude", Some(""), Some("")).unwrap();
         assert!(!bare.argv.iter().any(|a| a == "--model"));
     }
@@ -436,7 +449,7 @@ cursor: current (v1) (/p)
         let e = ensure_supported(&no_herdr, "claude").unwrap_err();
         assert_eq!(e.code, crate::error::ErrorCode::IntegrationMissing);
         assert_eq!(e.details["missing"], serde_json::json!(["herdr"]));
-        assert!(e.details["install"]
+        assert!(e.details["fix"]
             .as_str()
             .unwrap()
             .contains("herdr integration install claude"));

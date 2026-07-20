@@ -25,6 +25,7 @@ pub struct SnapAgent {
     pub managed: bool,
     pub agent: Option<String>,
     pub model: Option<String>,
+    pub effort: Option<String>,
     pub blocked_kind: Option<String>,
     pub parent_path: Option<String>,
     pub herdr_session: Option<String>,
@@ -34,6 +35,8 @@ pub struct SnapAgent {
     pub starting_at: Option<i64>,
     pub idle_since: Option<i64>,
     pub parked_at: Option<i64>,
+    pub turn_delivered_at: Option<i64>,
+    pub turn_completed_at: Option<i64>,
 }
 
 /// One active run of a loop.
@@ -100,6 +103,7 @@ impl SnapAgent {
             managed: v.get("managed").and_then(|x| x.as_bool()).unwrap_or(true),
             agent: s(v, "agent"),
             model: s(v, "model"),
+            effort: s(v, "effort"),
             blocked_kind: s(v, "blocked_kind"),
             parent_path: s(v, "parent_path"),
             herdr_session: s(v, "herdr_session"),
@@ -109,18 +113,32 @@ impl SnapAgent {
             starting_at: i(v, "starting_at"),
             idle_since: i(v, "idle_since"),
             parked_at: i(v, "parked_at"),
+            turn_delivered_at: i(v, "turn_delivered_at"),
+            turn_completed_at: i(v, "turn_completed_at"),
         }
     }
 
-    /// The moment the current status began — the basis for the age column.
-    pub fn since_ms(&self) -> i64 {
-        match self.status.as_str() {
+    /// The latest turn's wall-clock duration. A new input supplies a new `delivered_at`, so the
+    /// clock restarts from zero. It advances only while the public status is `working`; every
+    /// non-working state freezes at turn completion (when available) or at the status transition.
+    /// States without a turn retain their lifecycle-age fallback.
+    pub fn duration_ms(&self, now: i64) -> i64 {
+        if let Some(delivered) = self.turn_delivered_at {
+            if self.status == "working" {
+                return now.saturating_sub(delivered);
+            }
+            if let Some(stopped) = self.turn_completed_at.or(self.last_status_change_at) {
+                return stopped.saturating_sub(delivered);
+            }
+        }
+        let since = match self.status.as_str() {
             "starting" => self.starting_at,
             "idle" => self.idle_since,
             "parked" => self.parked_at,
             _ => self.last_status_change_at,
         }
-        .unwrap_or(self.created_at)
+        .unwrap_or(self.created_at);
+        now.saturating_sub(since)
     }
 }
 
@@ -450,6 +468,8 @@ pub struct Row {
     /// Fixed table columns.
     pub status: String,
     pub agent: String,
+    pub model: String,
+    pub effort: String,
     pub age: String,
     /// True for blocked agents (the "needs a human" queue floats upward).
     pub blocked: bool,
@@ -499,7 +519,7 @@ impl Tree {
         let children = self.display_children(n);
         let has_children = !children.is_empty();
         let is_collapsed = collapsed.contains(&n.path);
-        let (glyph, label, status, agent, age, blocked) = self.render_node(n, now);
+        let (glyph, label, status, agent, model, effort, age, blocked) = self.render_node(n, now);
         let tree_prefix = if depth == 0 {
             String::new()
         } else {
@@ -521,6 +541,8 @@ impl Tree {
             lineage: n.lineage.clone(),
             status,
             agent,
+            model,
+            effort,
             age,
             blocked,
         });
@@ -562,29 +584,28 @@ impl Tree {
         ordered_children(children, &self.snapshot)
     }
 
-    /// (glyph, label, status, agent, age, is_blocked) for a node's table row.
-    fn render_node(&self, n: &Node, now: i64) -> (char, String, String, String, String, bool) {
+    /// Display fields for one node's table row.
+    #[allow(clippy::type_complexity)]
+    fn render_node(
+        &self,
+        n: &Node,
+        now: i64,
+    ) -> (char, String, String, String, String, String, String, bool) {
         match &n.kind {
             NodeKind::Agent(ai) => {
                 let a = &self.snapshot.agents[*ai];
-                let mut status = a.status.clone();
+                let mut status = display_status(&a.status).to_string();
                 if let Some(bk) = &a.blocked_kind {
                     status.push_str(&format!(" · {bk}"));
-                }
-                let prov = a.agent.as_deref().unwrap_or("-");
-                let agent = a
-                    .model
-                    .as_ref()
-                    .map_or_else(|| prov.to_string(), |model| format!("{prov} · {model}"));
-                if let Some(q) = a.queue_position {
-                    status.push_str(&format!(" · #{q}"));
                 }
                 (
                     glyph_for_status(&a.status),
                     n.segment.clone(),
                     status,
-                    agent,
-                    format_age(now - a.since_ms()),
+                    a.agent.clone().unwrap_or_else(|| "-".to_string()),
+                    a.model.clone().unwrap_or_default(),
+                    a.effort.clone().unwrap_or_default(),
+                    format_age(a.duration_ms(now)),
                     a.status == "blocked",
                 )
             }
@@ -599,16 +620,18 @@ impl Tree {
                     n.segment.clone(),
                     format!("loop · {}", l.status),
                     l.cadence.clone().unwrap_or_default(),
+                    String::new(),
+                    String::new(),
                     age,
                     false,
                 )
             }
             NodeKind::Run { loop_idx, run_idx } => {
                 let r = &self.snapshot.loops[*loop_idx].runs[*run_idx];
-                let agent = r
+                let due = r
                     .due_at
-                    .map(|due| format!("{} · due {}", r.kind, format_clock(due)))
-                    .unwrap_or_else(|| r.kind.clone());
+                    .map(|due| format!("due {}", format_clock(due)))
+                    .unwrap_or_default();
                 let age = r
                     .started_at
                     .map(|started| format_age(now - started))
@@ -617,7 +640,9 @@ impl Tree {
                     '⟳',
                     format!("run {}", r.run_id),
                     r.status.clone(),
-                    agent,
+                    r.kind.clone(),
+                    due,
+                    String::new(),
                     age,
                     false,
                 )
@@ -625,9 +650,11 @@ impl Tree {
             NodeKind::Idle => {
                 let count = n.children.len();
                 (
-                    '▪',
-                    "idle".to_string(),
-                    format!("parked · {count}"),
+                    '✓',
+                    "done".to_string(),
+                    format!("{count} agents"),
+                    String::new(),
+                    String::new(),
                     String::new(),
                     String::new(),
                     false,
@@ -636,6 +663,8 @@ impl Tree {
             NodeKind::Scope => (
                 ' ',
                 n.segment.clone(),
+                String::new(),
+                String::new(),
                 String::new(),
                 String::new(),
                 String::new(),
@@ -660,14 +689,27 @@ fn node_is_blocked(n: &Node, snap: &Snapshot) -> bool {
     matches!(n.kind, NodeKind::Agent(ai) if snap.agents[ai].status == "blocked")
 }
 
+/// Human-facing TUI labels. The socket/store vocabulary stays unchanged. `parked` is a GC
+/// location/state reached only from completed `idle`, so it retains the user's last visible
+/// status instead of exposing the GC transition.
+pub fn display_status(status: &str) -> &str {
+    match status {
+        "queued" => "pending",
+        "working" => "running",
+        "idle" | "parked" => "done",
+        "blocked" => "needs input",
+        "lost" => "failed",
+        other => other,
+    }
+}
+
 /// The status glyph.
 pub fn glyph_for_status(status: &str) -> char {
     match status {
         "working" => '●',
-        "idle" => '○',
+        "idle" | "parked" => '✓',
         "blocked" => '◐',
         "queued" | "starting" => '◌',
-        "parked" => '▪',
         "lost" => '✗',
         _ => '·',
     }

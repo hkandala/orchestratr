@@ -68,6 +68,6 @@ orcr scaffold copy-workflow && cd copy-workflow
 npx tsx workflow.ts
 ```
 
-every provider in the roster needs both integration layers installed, or the run fails fast with `integration_missing`. see [providers & integrations](/docs/concepts/providers).
+every provider in the roster must be built into orcr and have its Herdr adapter installed, or the run fails fast with `integration_missing`. see [providers & integrations](/docs/concepts/providers).
 
 next: [tournament](/docs/patterns/tournament) is what to reach for when the roster grows too large to judge in one prompt.

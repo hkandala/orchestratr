@@ -52,7 +52,7 @@ prompts are plain text. if a step needs files attached or a guaranteed-format an
 ## shared flags
 
 - `-a <provider>`: the provider (also the filter on `ls`). optional; falls back to `defaults.agent` in config (default `claude`). precedence is CLI over config. see [choose providers and models](/docs/guides/providers-and-models).
-- `--model <m>` / `--effort <e>`: provider-specific model and reasoning-effort mapping; empty means the provider default.
+- `--model <m>` / `--effort <e>`: override the selected provider's configured defaults; both resolved values are passed explicitly and recorded.
 - `--cwd <dir>`: the working directory of the agent's pane. defaults to the caller's cwd.
 - `--timeout <dur>`: kill the agent with `exit_reason: timeout` when the duration expires. there is no default timeout; an agent never times out unless you pass this. set it on anything unattended.
 - `--gc auto|immediate|never`: pane lifetime policy (`run` only). see [agent lifecycle and GC](/docs/concepts/lifecycle).

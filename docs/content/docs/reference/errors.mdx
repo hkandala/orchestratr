@@ -16,7 +16,7 @@ orcr has a deliberately small error enum: nine stable codes, with everything fin
 | `state_conflict` | 7 | wrong state for the verb | `{current_status, reason?}`: `reason: "force_required"` for unmanaged kills, `reason: "path_in_use"` with the occupying `{uuid, path, status}` |
 | `blocked` | 4 | a waited agent needs a human | `{blocked_kind}` (`question` / `limit` / `login` / `unknown`) |
 | `timeout` | 3 | a direct command's own deadline expired | `{elapsed}` |
-| `integration_missing` | 2 | a provider is missing an integration layer | `{provider, missing:[orcr\|herdr], install}` (the exact install command) |
+| `integration_missing` | 2 | a provider is not built into orcr or lacks its Herdr adapter | `{provider, missing:[orcr\|herdr], fix}` |
 | `transcript_unavailable` | 1 | no final response is identifiable, including ambiguous or stale transcripts | `{uuid, status, cause?}` |
 | `environment_error` | 2 | server, store, herdr, home, platform, or version problem | `{cause, …}` (see below) |
 | `server_error` | 1 | internal failure (spawn, signal, cursor) | `{cause, …}` |

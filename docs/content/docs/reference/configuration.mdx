@@ -10,8 +10,10 @@ orcr reads `~/.orcr/config.json` (strict JSON, no comments in the real file). ev
 {
   "defaults": {
     "agent": "claude",        // default provider (used when -a is omitted)
-    "model": "",              // empty = provider default
-    "effort": ""
+    "providers": {
+      "claude": { "model": "sonnet", "effort": "medium" },
+      "codex": { "model": "gpt-5.6-luna", "effort": "high" }
+    }
     // no default timeout: agents never time out unless --timeout is passed
   },
   "herdr": {
@@ -43,8 +45,19 @@ orcr reads `~/.orcr/config.json` (strict JSON, no comments in the real file). ev
 | key | default | constraint |
 | --- | --- | --- |
 | `defaults.agent` | `"claude"` | the provider used when `-a` is omitted |
-| `defaults.model` | `""` | empty means the provider default |
-| `defaults.effort` | `""` | empty means the provider default |
+| `defaults.providers.claude.model` | `"sonnet"` | one of `sonnet`, `opus`, `fable`, `haiku` |
+| `defaults.providers.claude.effort` | `"medium"` | one of `low`, `medium`, `high`, `xhigh`, `max`, `ultracode` |
+| `defaults.providers.codex.model` | `"gpt-5.6-luna"` | must appear in Codex app-server `model/list` |
+| `defaults.providers.codex.effort` | `"high"` | must be advertised by the selected Codex model |
+| `defaults.providers.<provider>.model` | (none) | required and non-empty for a configured custom provider |
+| `defaults.providers.<provider>.effort` | (none) | required and non-empty for a configured custom provider |
+
+`--model` and `--effort` override the selected provider's entries. orcr resolves both values
+before enqueueing, passes both explicitly to the provider, and records the resolved pair on the
+agent.
+
+model and effort availability is checked at `agent run`, after CLI/config resolution and before
+the agent is enqueued. invalid errors print the valid values and expose them as structured arrays.
 
 there is no default timeout. an agent never times out unless `--timeout` is passed.
 

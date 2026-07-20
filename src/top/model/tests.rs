@@ -374,8 +374,117 @@ fn age_formats_are_compact() {
 #[test]
 fn glyphs_follow_status() {
     assert_eq!(glyph_for_status("working"), '●');
-    assert_eq!(glyph_for_status("idle"), '○');
+    assert_eq!(glyph_for_status("idle"), '✓');
+    assert_eq!(glyph_for_status("parked"), '✓');
     assert_eq!(glyph_for_status("blocked"), '◐');
+}
+
+#[test]
+fn presentation_statuses_hide_internal_vocabulary() {
+    assert_eq!(display_status("queued"), "pending");
+    assert_eq!(display_status("working"), "running");
+    assert_eq!(display_status("blocked"), "needs input");
+    assert_eq!(display_status("lost"), "failed");
+    assert_eq!(display_status("idle"), "done");
+    assert_eq!(display_status("parked"), "done");
+}
+
+#[test]
+fn turn_duration_runs_then_freezes_at_completion() {
+    let running = Snapshot::from_json(&json!({
+        "agents": [{
+            "uuid": "running",
+            "path": "running",
+            "status": "working",
+            "turn_delivered_at": 1_000,
+            "created_at": 0
+        }]
+    }));
+    assert_eq!(running.agents[0].duration_ms(6_000), 5_000);
+
+    let idle = Snapshot::from_json(&json!({
+        "agents": [{
+            "uuid": "idle",
+            "path": "idle_agent",
+            "status": "idle",
+            "turn_delivered_at": 1_000,
+            "turn_completed_at": 4_500,
+            "created_at": 0
+        }]
+    }));
+    assert_eq!(idle.agents[0].duration_ms(99_000), 3_500);
+
+    let parked = Snapshot::from_json(&json!({
+        "agents": [{
+            "uuid": "parked",
+            "path": "parked_agent",
+            "status": "parked",
+            "turn_delivered_at": 1_000,
+            "turn_completed_at": 4_500,
+            "last_status_change_at": 80_000,
+            "parked_at": 80_000,
+            "created_at": 0
+        }]
+    }));
+    assert_eq!(parked.agents[0].duration_ms(99_000), 3_500);
+
+    let blocked = Snapshot::from_json(&json!({
+        "agents": [{
+            "uuid": "blocked",
+            "path": "blocked_agent",
+            "status": "blocked",
+            "turn_delivered_at": 1_000,
+            "last_status_change_at": 3_000,
+            "created_at": 0
+        }]
+    }));
+    assert_eq!(blocked.agents[0].duration_ms(99_000), 2_000);
+
+    let failed = Snapshot::from_json(&json!({
+        "agents": [{
+            "uuid": "failed",
+            "path": "failed_agent",
+            "status": "lost",
+            "turn_delivered_at": 1_000,
+            "last_status_change_at": 5_000,
+            "created_at": 0
+        }]
+    }));
+    assert_eq!(failed.agents[0].duration_ms(99_000), 4_000);
+
+    let restarted = Snapshot::from_json(&json!({
+        "agents": [{
+            "uuid": "restarted",
+            "path": "restarted_agent",
+            "status": "working",
+            "turn_delivered_at": 90_000,
+            "last_status_change_at": 90_000,
+            "created_at": 0
+        }]
+    }));
+    assert_eq!(restarted.agents[0].duration_ms(91_250), 1_250);
+}
+
+#[test]
+fn rows_show_model_details_without_queue_positions() {
+    let s = Snapshot::from_json(&json!({
+        "agents": [{
+            "uuid": "queued",
+            "path": "queued_agent",
+            "status": "queued",
+            "managed": true,
+            "agent": "codex",
+            "effort": "high",
+            "queue_position": 7,
+            "created_at": 1_000,
+            "last_status_change_at": 1_000
+        }]
+    }));
+    let rows = build_tree(&s, &TopFilter::default()).flatten(&BTreeSet::new(), 2_000);
+    assert_eq!(rows[0].status, "pending");
+    assert_eq!(rows[0].agent, "codex");
+    assert_eq!(rows[0].model, "");
+    assert_eq!(rows[0].effort, "high");
 }
 
 #[test]
@@ -398,8 +507,9 @@ fn flatten_floats_blocked_and_honors_collapse() {
     assert_eq!(names, vec!["z_blocked", "a_idle"]);
     assert_eq!(rows[1].tree_prefix, "├─ ");
     assert_eq!(rows[2].tree_prefix, "└─ ");
-    assert_eq!(rows[1].status, "blocked");
-    assert_eq!(rows[1].agent, "codex · opus");
+    assert_eq!(rows[1].status, "needs input");
+    assert_eq!(rows[1].agent, "codex");
+    assert_eq!(rows[1].model, "opus");
     assert_eq!(rows[1].age, "1s");
 
     // Collapsing `w` hides its children.

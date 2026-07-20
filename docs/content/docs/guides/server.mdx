@@ -64,7 +64,7 @@ orcr server status --json
 
 what to read it for:
 
-- **integration state**: `integrations` shows which providers have both layers installed. a missing layer is why `agent run -a <p>` would fail with `integration_missing`. see [providers and integrations](/docs/concepts/providers).
+- **integration state**: `integrations` shows which providers are built into orcr and whether their Herdr adapters are installed. a missing layer is why `agent run -a <p>` would fail with `integration_missing`. see [providers and integrations](/docs/concepts/providers).
 - **counts**: `live`/`queued`/`blocked`/`unmanaged` are the fleet at a glance. `orphan_agent_panes` and `unmarked_panes` are panes in the owned session that orcr reports but never touches (clean those up through herdr directly).
 - **drift**: `lost` and `repaired` come from reconciliation, the periodic repair between what the store says and what herdr actually shows. see [durability and recovery](/docs/concepts/durability).
 

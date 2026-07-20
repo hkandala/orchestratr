@@ -40,16 +40,27 @@ choices worth knowing, and discovered facts. Capture *decisions and deviations*.
   socket API retain the canonical `unmanaged/<session>/<pane>` path. The TUI treats only the
   literal `default` session node as transparent, displaying its panes directly beneath
   `unmanaged`; named sessions stay visible so separate sessions remain distinguishable.
-- **Table renderer.** The TUI uses a borderless four-column table (`TREE`, `STATUS`, `AGENT`,
-  `TIME`) with explicit tree branches. Selection is a cyan gutter marker plus a restrained dark
-  row background, not terminal reverse-video, so colored status cells remain visually stable.
+- **Table renderer.** The TUI uses a borderless four-column layout (tree, status, agent, time)
+  without a visible header row, plus explicit tree branches. Selection is a cyan gutter marker
+  and a restrained dark row background, not terminal reverse-video, so colored status cells remain
+  visually stable.
 - **Lineage annotation rule.** A row gets `↖ <parent path>` iff its `parent_path` is set and is
   NOT a proper ancestor of its own path (`!path.starts_with(parent_path + "/")`). A parent that
   is an ancestor already shows the edge by placement, so no annotation. Selection highlight of
   lineage is a UI nicety in `app.rs`.
-- **Age column basis.** Age = `now − since_ms()`, where `since_ms` picks the status-appropriate
-  clock (`starting_at`/`idle_since`/`parked_at`, else `last_status_change_at`, else
-  `created_at`). Deterministic golden output (`structure_lines`) omits age.
+- **Duration column basis.** A latest turn starts at `delivered_at`. While working its duration is
+  `now - delivered_at`; every non-working state freezes at `completed_at` when present, otherwise
+  at `last_status_change_at`. A new input creates a new latest turn and therefore restarts at zero.
+  Rows without a turn retain the lifecycle-clock fallback. Deterministic golden output
+  (`structure_lines`) omits duration.
+- **Presentation vocabulary.** The TUI maps internal lifecycle terms to user-facing labels:
+  queued → pending, working → running, idle/parked → done, blocked → needs input, and
+  lost → failed. It omits queue positions and GC vocabulary; done uses a green check.
+- **Routing details.** Provider, model, and effort render as separate aligned columns. CLI values
+  override `defaults.providers.<provider>`; otherwise the built-ins are Claude `sonnet` / `medium`
+  and Codex `gpt-5.6-luna` / `high`. The server resolves both before enqueueing, passes both
+  explicitly to the provider, and records them on the agent. Transcript parsing is not part of
+  routing metadata discovery.
 - **Scope for the `/` and CLI patterns.** Resolved against `scope_of_agent(ORCR_PATH)` — the
   same scope `agent ls` uses for a non-run caller — so a `/`-prefixed input is absolute and a
   bare pattern is relative to the caller's scope, matching `ls`.

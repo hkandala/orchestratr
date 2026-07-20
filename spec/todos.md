@@ -24,7 +24,7 @@ the actionable digest. open bugs/limitations live in issues.md.
 
 full list + sources in spec §17 and spec/_impl/spec-completeness.md. highlights:
 
-- pi/opencode integrations + `orcr integration add|rm|ls`; degraded single-layer
+- pi/opencode built-in `AgentIntegration` modules; degraded single-layer
   (no-integration) modes.
 - `top` actions (detail panel: attach/send/kill/logs from the TUI) + live activity feed.
 - `send` steer/stop options (interrupt / graceful-stop per provider).

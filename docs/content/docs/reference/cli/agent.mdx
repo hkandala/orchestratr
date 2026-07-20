@@ -26,7 +26,7 @@ orcr agent ls     [<pattern|uuid>] [-a <provider>] [--status <s>]
 
 **prompts**: `run` and `ask` take `-p/--prompt <text>`; `send` takes the prompt as its positional argument (and also accepts `-p`). in all of them, `-p -` reads the prompt from stdin, which is the long-prompt escape hatch; there is no file flag.
 
-**provider**: `-a <provider>` is optional on `run`, `ask`, and `ls`. it falls back to `defaults.agent` in [config](/docs/reference/configuration) (default `claude`); precedence is CLI over config. the provider must have both integration layers installed or `run` fails with `integration_missing` (see [providers and integrations](/docs/concepts/providers)).
+**provider**: `-a <provider>` is optional on `run`, `ask`, and `ls`. it falls back to `defaults.agent` in [config](/docs/reference/configuration) (default `claude`); precedence is CLI over config. the provider must be built into orcr and have its Herdr adapter installed or `run` fails with `integration_missing` (see [providers and integrations](/docs/concepts/providers)).
 
 ## run
 
@@ -38,7 +38,7 @@ orcr agent run --path refactor/reviewer -a codex -p "Review the diff on this bra
 ```
 
 - `--gc auto|immediate|never` governs pane lifetime only, never store history. `auto` (default) parks then reaps on idle; `immediate` closes the pane after the first turn's final response is captured; `never` keeps it alive until an explicit kill. see [lifecycle and GC](/docs/concepts/lifecycle).
-- `--model <m>` and `--effort <e>` map to the provider's model / reasoning-effort flags (empty means the provider default).
+- `--model <m>` and `--effort <e>` override the selected provider's configured defaults; both resolved values are passed explicitly and recorded.
 - `--cwd <dir>` sets the pane's working directory (default: the caller's cwd).
 - `--timeout <dur>` kills the agent with `exit_reason: timeout` when it expires. there is no default timeout; without this flag an agent never times out.
 

@@ -10,8 +10,8 @@ orcr runs agents across providers so you can send each piece of work to the tool
 ## the three flags
 
 - `-a <provider>`: the provider. optional; when omitted it falls back to `defaults.agent` in config (default `claude`). it also filters `orcr agent ls` and `orcr top`.
-- `--model <m>`: the model within that provider. empty means the provider default.
-- `--effort <e>`: the reasoning-effort level, mapped per provider. empty means the provider default.
+- `--model <m>`: the model within that provider. when omitted, uses that provider's configured default.
+- `--effort <e>`: the reasoning-effort level, mapped per provider. when omitted, uses that provider's configured default.
 
 ```sh
 orcr agent run --name reviewer -a codex -p "…"
@@ -30,7 +30,7 @@ await orcr.agent.run({ agent: "claude", model: "opus", effort: "high", name: "fi
 the provider (and any tuning) resolves in this order:
 
 ```text
-CLI flag  →  config (defaults.agent / defaults.model / defaults.effort)  →  built-in default
+CLI flag  →  config (defaults.agent / defaults.providers.<provider>)  →  built-in default
 ```
 
 set the defaults you use most in `~/.orcr/config.json`, and override per agent on the command line:
@@ -39,11 +39,21 @@ set the defaults you use most in `~/.orcr/config.json`, and override per agent o
 {
   "defaults": {
     "agent": "claude",   // used when -a is omitted
-    "model": "",         // empty = provider default
-    "effort": ""
+    "providers": {
+      "claude": { "model": "sonnet", "effort": "medium" },
+      "codex": { "model": "gpt-5.6-luna", "effort": "high" }
+    }
   }
 }
 ```
+
+the resolved model and effort are always passed explicitly and recorded with the agent, so
+monitoring does not have to infer either value from provider transcripts.
+
+routes are validated before enqueueing. Claude accepts the built-in model IDs `sonnet`, `opus`,
+`fable`, and `haiku` with efforts `low`, `medium`, `high`, `xhigh`, `max`, or `ultracode`.
+Codex models and each model's supported efforts are discovered dynamically from its app-server.
+an invalid value prints the corresponding valid list and creates no agent.
 
 there is no default timeout, which is deliberate and separate from provider defaults. see [configure orchestratr](/docs/guides/configuration).
 
