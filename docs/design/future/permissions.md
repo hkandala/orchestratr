@@ -1,0 +1,93 @@
+# Permissions
+
+orcr starts every agent with permissions fully bypassed. This file records what replaces
+permission bypass, and why orcr cannot do it yet.
+
+## The intended default: each kind's own auto mode
+
+Every kind offers a middle setting between asking about each action and checking nothing.
+
+| Kind | Full bypass | Auto mode | Does the auto mode ever ask? |
+|---|---|---|---|
+| Claude | `--dangerously-skip-permissions` | `--permission-mode auto` | Yes, measured |
+| Codex | `--yolo` | `--approve-for-me` | Probably, not provoked |
+| OpenCode | `--yolo` | `--auto` | No such mode exists |
+| Pi | permissive by default | none | No such mode exists |
+
+The auto modes are better where they exist. They keep each agent's own safety checks on risky
+actions. On at least one kind, the bypass flag also turns off a sandbox that the auto mode
+keeps. Bypass is more permissive, and it removes a containment boundary as well.
+
+The bypass flags are documented by their own projects as appropriate for machines that are
+sandboxed by something else. orcr does not sandbox anything.
+
+So the auto mode is the right default for the kinds that have one, once orcr can answer a
+dialog. Two of the four have one.
+
+### What the measurements showed
+
+**Claude's auto mode asks, and only after a while.** All nine graded requests passed silently,
+including writing to an absolute path outside the workspace, which the classifier reviewed and
+allowed. The escalation is not per action: after three consecutive classifier denials in one
+session, a blocking dialog appears reading "Auto mode classifier requires confirmation for this
+command", and it does not time out. It was still blocking after 172 seconds. There is a second
+limit at twenty denials in a session, and a third path when the classifier's own transcript
+outgrows its context window.
+
+A short test says the mode never asks. A long-running agent, which is what orcr is for,
+eventually hits a counter and stops.
+
+**Claude's `dontAsk` is not the answer.** It reads as a mode that never prompts, and it is
+defined in the shipped bundle as "Don't prompt for permissions, deny if not pre-approved". It
+does not ask. It refuses. An agent whose tool calls are silently denied fails at its work
+rather than stalling.
+
+**OpenCode has no intermediate mode.** `--auto`, `--yolo` and `--dangerously-skip-permissions`
+are three spellings of one boolean, combined into a single value. There is nothing between
+asking and not asking.
+
+**Pi has no intermediate mode either.** It is permissive and offers no gradation.
+
+So this work applies to Claude and Codex. For the other two there is nothing to switch to.
+
+## Why orcr cannot use them yet
+
+An auto mode approves routine actions and stops to ask about risky ones. Stopping to ask is
+the problem.
+
+orcr has no command to approve or reject anything. An agent that stops to ask sits in its
+pane until a person opens that pane by hand and answers. Nothing in orcr can clear it, and on
+one kind nothing in orcr can even report that it happened.
+
+That is the cost of auto mode without an approve command: a per-agent screen reader, which is
+the one thing orcr has decided not to own.
+
+## What has to be built first
+
+In this order.
+
+1. **Report a waiting agent accurately.** A caller must be able to see that an agent stopped
+   to ask, and what it asked. Until then an auto mode turns a working agent into a silent
+   stall.
+2. **Answer from orcr.** A command that approves or rejects the pending request, and a socket
+   method behind it. Without this, reporting only tells a person to do it by hand.
+3. **Then switch the default,** per kind, to the auto mode.
+
+Step 1 is the hard one, and it is not uniform. One kind reports a waiting state in a file it
+already writes. One exposes a pending request over a local HTTP endpoint. One carries typed
+waiting states in a protocol orcr does not currently speak. One reports nothing at all.
+
+## Pi
+
+If Pi has no graduated mode, it keeps its current behavior after this work lands. orcr should
+say so rather than implying that a single permissions setting covers all four kinds equally.
+
+## What not to do
+
+Do not add an approve command that works by sending keystrokes to a screen orcr has matched
+against a pattern. That is the screen reading this design exists to avoid, and it fails in the
+worst possible direction: pressing the wrong row answers a question that a person was about to
+answer differently.
+
+An approve command should use the same class of signal the rest of orcr uses. Where a kind
+offers no such signal, orcr should refuse to answer for that kind and say why.

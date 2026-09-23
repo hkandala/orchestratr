@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>orcr — Claude Code</title>
+<link rel="icon" href="data:image/svg+xml,
+  %3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E
+  %3Crect width='32' height='32' rx='7' fill='%233b5bdb'/%3E
+  %3Ctext x='16' y='23' font-family='monospace' font-size='19' font-weight='700'
+  fill='white' text-anchor='middle'%3Eo%3C/text%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#fbfbfa; --panel:#fff; --fg:#1b1b1a; --dim:#6b6b66; --line:#e6e5e1;
+  --accent:#3b5bdb; --code-bg:#f4f4f1; --full:#2f8a55; --part:#b8860b; --none:#a8a8a2;
+  --mark-v:#2f8a55; --mark-u:#b0562a;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#16161a; --panel:#1c1c21; --fg:#e6e6e3; --dim:#9a9a94; --line:#2c2c33;
+    --accent:#8aa2ff; --code-bg:#22222a; --full:#5fbd84; --part:#d6a63a; --none:#6b6b73;
+    --mark-v:#5fbd84; --mark-u:#e08a5a;
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:16px/1.65 ui-sans-serif,-apple-system,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{display:grid; grid-template-columns:270px minmax(0,1fr); gap:0; max-width:1400px; margin:0 auto}
+nav{
+  position:sticky; top:0; height:100vh; overflow-y:auto; padding:28px 20px 60px;
+  border-right:1px solid var(--line); font-size:13.5px;
+}
+nav .brand{font-weight:650; font-size:17px; letter-spacing:-.01em; margin-bottom:2px}
+nav .sub{color:var(--dim); font-size:12.5px; margin-bottom:22px}
+nav .back{
+  display:block; font-size:12.5px; color:var(--dim); text-decoration:none;
+  margin:0 0 18px; padding:5px 10px; border:1px solid var(--line); border-radius:6px;
+}
+nav .back:hover{color:var(--fg); background:var(--code-bg)}
+nav .group{
+  font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.07em;
+  margin:18px 0 6px; font-weight:600;
+}
+nav .group:first-of-type{margin-top:0}
+nav .doc{
+  display:block; padding:6px 10px; margin:1px 0; border-radius:6px; color:var(--fg);
+  text-decoration:none; border:1px solid transparent;
+}
+nav .doc .t{display:block; font-weight:550; font-size:13.5px}
+nav .doc .b{display:block; font-size:11.5px; opacity:.65; margin-top:1px}
+nav .doc:hover{background:var(--code-bg)}
+nav .doc.on{background:var(--accent); border-color:var(--accent); color:#fff}
+nav .doc.on .f,nav .doc.on .b{opacity:.85}
+nav .hint{font-size:11.5px; color:var(--dim); margin:14px 0 4px;
+  text-transform:uppercase; letter-spacing:.06em}
+nav .toc{margin:6px 0 20px; padding:0 0 0 2px; list-style:none}
+nav .toc li{margin:0}
+nav .toc a{
+  display:block; padding:4px 10px; color:var(--dim); text-decoration:none;
+  border-left:2px solid transparent; line-height:1.4;
+}
+nav .toc a:hover{color:var(--fg)}
+nav .toc a.active{color:var(--accent); border-left-color:var(--accent); background:var(--code-bg)}
+nav .toc .l3 a{padding-left:24px; font-size:12.5px}
+main{padding:44px 52px 140px; min-width:0}
+section.doc{display:none}
+section.doc.on{display:block}
+h1{font-size:30px; letter-spacing:-.02em; margin:0 0 6px}
+h2{font-size:21px; letter-spacing:-.015em; margin:56px 0 14px; padding-bottom:8px; border-bottom:1px solid var(--line)}
+h3{font-size:16.5px; margin:32px 0 10px; letter-spacing:-.01em}
+h4{font-size:15px; margin:22px 0 8px; color:var(--dim)}
+p,li{max-width:74ch}
+p{margin:0 0 14px}
+ul,ol{margin:0 0 16px; padding-left:22px}
+li{margin:5px 0}
+hr{border:0; border-top:1px solid var(--line); margin:40px 0}
+a{color:var(--accent)}
+code{
+  background:var(--code-bg); padding:1.5px 5px; border-radius:4px; font-size:13px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+pre{
+  background:var(--code-bg); border:1px solid var(--line); border-radius:8px;
+  padding:14px 16px; overflow-x:auto; margin:0 0 18px;
+}
+pre code{background:none; padding:0; font-size:12.5px; line-height:1.55}
+.tw{overflow-x:auto; margin:0 0 20px; border:1px solid var(--line); border-radius:8px}
+table{border-collapse:collapse; width:100%; font-size:13.5px}
+th,td{text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top}
+th{font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--dim);
+   background:var(--code-bg); white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--code-bg)}
+td code{font-size:12px; white-space:nowrap}
+table.wide{font-size:12.5px}
+table.wide th,table.wide td{padding:7px 10px}
+table.wide th:first-child,table.wide td:first-child{
+  position:sticky; left:0; z-index:1; background:var(--bg);
+  border-right:1px solid var(--line); font-weight:560;
+}
+table.wide thead th:first-child{background:var(--code-bg); z-index:2}
+table.wide tbody tr:hover td:first-child{background:var(--code-bg)}
+h2[id],h3[id]{scroll-margin-top:24px}
+.g{font-size:14px; margin-right:3px}
+.g.full{color:var(--full)} .g.part{color:var(--part)} .g.none{color:var(--none)}
+.mark{
+  display:inline-block; min-width:16px; text-align:center; font-size:10.5px; font-weight:700;
+  padding:1px 5px; border-radius:4px; vertical-align:2px; letter-spacing:.03em;
+}
+.mark.v{background:color-mix(in srgb,var(--mark-v) 16%,transparent); color:var(--mark-v)}
+.mark.u{background:color-mix(in srgb,var(--mark-u) 16%,transparent); color:var(--mark-u)}
+.st{font-weight:560}
+.st.working{color:var(--accent)} .st.blocked{color:var(--mark-u)} .st.error{color:#c0392b}
+.st.idle,.st.exited,.st.unknown{color:var(--dim)}
+.anchor{
+  margin-left:8px; color:var(--line); text-decoration:none; font-weight:400;
+  opacity:0; transition:opacity .12s;
+}
+h2:hover .anchor,h3:hover .anchor{opacity:1}
+.meta{color:var(--dim); font-size:13.5px; margin-bottom:34px}
+
+/* comments */
+mark.cm{
+  background:color-mix(in srgb,#f5c542 34%,transparent); color:inherit;
+  border-bottom:1.5px solid #d8a318; border-radius:2px; cursor:pointer;
+}
+mark.cm:hover{background:color-mix(in srgb,#f5c542 55%,transparent)}
+#ctip{
+  position:absolute; display:none; z-index:60; padding:5px 11px; border:0;
+  border-radius:6px; background:var(--accent); color:#fff; font:inherit;
+  font-size:12.5px; font-weight:560; cursor:pointer; box-shadow:0 2px 10px rgba(0,0,0,.22);
+}
+#ctoggle{
+  position:fixed; right:18px; bottom:18px; z-index:50; display:flex; align-items:center;
+  gap:6px; padding:9px 13px; border:1px solid var(--line); border-radius:22px;
+  background:var(--panel); color:var(--fg); cursor:pointer; font:inherit; font-size:13px;
+  box-shadow:0 2px 12px rgba(0,0,0,.14);
+}
+#ctoggle:hover{border-color:var(--accent); color:var(--accent)}
+#ccount:empty{display:none}
+#ccount{
+  min-width:17px; padding:0 5px; border-radius:9px; background:var(--accent);
+  color:#fff; font-size:11px; font-weight:700; line-height:17px; text-align:center;
+}
+#cpanel{
+  position:fixed; top:0; right:0; width:360px; height:100vh; z-index:55;
+  display:flex; flex-direction:column; background:var(--panel);
+  border-left:1px solid var(--line); transform:translateX(100%);
+  transition:transform .16s ease; box-shadow:-2px 0 18px rgba(0,0,0,.10);
+}
+body.cpanel-on #cpanel{transform:none}
+body.cpanel-on #ctoggle{display:none}
+@media(min-width:1500px){ body.cpanel-on .wrap{margin-right:360px} }
+#cpanel header{
+  display:flex; align-items:center; gap:7px; padding:13px 14px;
+  border-bottom:1px solid var(--line); font-size:14px;
+}
+#cpanel header .sp{flex:1}
+#cpanel header button{
+  border:1px solid var(--line); background:none; color:var(--dim); cursor:pointer;
+  font:inherit; font-size:11.5px; padding:3px 9px; border-radius:5px;
+}
+#cpanel header button:hover{color:var(--fg); border-color:var(--fg)}
+#cclose{font-size:15px !important; line-height:1; padding:2px 8px !important}
+#clist{flex:1; overflow-y:auto; padding:10px 12px 30px}
+#clist .empty{color:var(--dim); font-size:13px; padding:14px 2px; max-width:none}
+.citem{
+  border:1px solid var(--line); border-radius:8px; padding:10px 11px; margin-bottom:10px;
+  background:var(--bg);
+}
+.citem.on{border-color:var(--accent)}
+.citem.orphan{opacity:.72}
+.csec{font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.04em;
+      margin-bottom:6px}
+.citem blockquote{
+  margin:0 0 7px; padding:5px 9px; border-left:2px solid #d8a318; font-size:12.5px;
+  color:var(--dim); background:var(--code-bg); border-radius:0 4px 4px 0;
+  max-height:88px; overflow:hidden;
+}
+.cbody{font-size:13.5px; white-space:pre-wrap; margin-bottom:8px}
+.cact{display:flex; gap:6px}
+.cact button{
+  border:1px solid var(--line); background:none; color:var(--dim); cursor:pointer;
+  font:inherit; font-size:11.5px; padding:2px 8px; border-radius:5px;
+}
+.cact button:hover{color:var(--fg); border-color:var(--fg)}
+#cpanel footer{
+  padding:9px 14px; border-top:1px solid var(--line); color:var(--dim); font-size:11.5px;
+}
+@media(max-width:900px){ #cpanel{width:100%} }
+#cpop{
+  position:fixed; display:none; z-index:70; width:340px; padding:11px;
+  background:var(--panel); border:1px solid var(--line); border-radius:9px;
+  box-shadow:0 6px 26px rgba(0,0,0,.20);
+}
+#cpop.on{display:block}
+#cpop .q{
+  font-size:12px; color:var(--dim); background:var(--code-bg);
+  border-left:2px solid #d8a318; border-radius:0 4px 4px 0; padding:5px 8px;
+  margin-bottom:8px; max-height:60px; overflow:hidden;
+}
+#cpop textarea{
+  width:100%; resize:vertical; font:inherit; font-size:13.5px; padding:7px 9px;
+  border:1px solid var(--line); border-radius:6px; background:var(--bg);
+  color:var(--fg);
+}
+#cpop textarea:focus{outline:none; border-color:var(--accent)}
+#cpop .row{display:flex; align-items:center; gap:7px; margin-top:8px}
+#cpop .row .sp{flex:1}
+#cpop .k{font-size:11px; color:var(--dim)}
+#cpop button{
+  border:1px solid var(--line); background:none; color:var(--dim); cursor:pointer;
+  font:inherit; font-size:12px; padding:4px 11px; border-radius:6px;
+}
+#cpop button:hover{color:var(--fg); border-color:var(--fg)}
+#cpop button.pri{background:var(--accent); border-color:var(--accent); color:#fff}
+#cpop button.pri:hover{opacity:.9; color:#fff}
+#cclear.armed{color:#c0392b; border-color:#c0392b}
+.legend{display:flex; gap:18px; flex-wrap:wrap; font-size:12.5px; color:var(--dim); margin:-6px 0 22px}
+@media(max-width:900px){
+  .wrap{grid-template-columns:1fr}
+  nav{position:static; height:auto; border-right:0; border-bottom:1px solid var(--line)}
+  main{padding:28px 20px 80px}
+}
+</style>
+</head><body>
+<div class="wrap">
+  <nav>
+    <div class="brand">orcr</div>
+    <div class="sub">one CLI for coding agent sessions</div>
+    <a class="back" href="index.html">&#8592; all documents</a><a class="doc" data-doc="claude" href="#claude" title="agents/claude.md"><span class="t">Claude Code</span><span class="b">--kind claude</span></a><ul class="toc" data-doc="claude"><li class="l2"><a href="#launch">Launch</a></li><li class="l3"><a href="#environment">Environment</a></li><li class="l2"><a href="#startup">Startup</a></li><li class="l3"><a href="#the-bypass-warning">The bypass warning</a></li><li class="l3"><a href="#interactive-tools">Interactive tools</a></li><li class="l3"><a href="#the-three-written-keys">The three written keys</a></li><li class="l2"><a href="#readiness">Readiness</a></li><li class="l2"><a href="#state">State</a></li><li class="l2"><a href="#message-delivery">Message delivery</a></li><li class="l2"><a href="#interrupt">Interrupt</a></li><li class="l2"><a href="#transcript">Transcript</a></li><li class="l2"><a href="#session-identity">Session identity</a></li><li class="l2"><a href="#steering">Steering</a></li><li class="l2"><a href="#not-verified">Not verified</a></li></ul>
+  </nav>
+  <main><section class="doc" id="doc-claude"><h1 id="claude-code">Claude Code<a class="anchor" href="#claude-code" aria-hidden="true">#</a></h1>
+<p><code>--kind claude</code></p>
+<h2 id="launch">Launch<a class="anchor" href="#launch" aria-hidden="true">#</a></h2>
+<pre><code>claude --dangerously-skip-permissions [--model &lt;model&gt;] [--effort &lt;effort&gt;]</code></pre>
+<p><code>--effort</code> accepts the values that <code>orcr models</code> reports for the chosen model. One model reports no effort values at all. Pass no effort for that model.</p>
+<h3 id="environment">Environment<a class="anchor" href="#environment" aria-hidden="true">#</a></h3>
+<p>orcr removes every <code>CLAUDE_CODE_*</code> variable from the environment it gives the agent.</p>
+<p>An inherited <code>CLAUDE_CODE_CHILD_SESSION</code> disables <strong>session persistence</strong> for an interactive session, not only the transcript. It removes the transcript file, the prompt history, the status file at <code>sessions/&lt;pid&gt;.json</code>, and the ability to resume.</p>
+<p>The status file is orcr's readiness signal and its state source for this kind. Losing it disables readiness, state and delivery confirmation together.</p>
+<p>It happens whenever the herdr server was started from inside another Claude session. That is the normal case when orcr itself is run by an agent. <code>CLAUDE_CODE_FORCE_SESSION_PERSISTENCE</code> overrides it, and the condition applies only to interactive sessions, but orcr scrubs the variable rather than relying on either.</p>
+<h2 id="startup">Startup<a class="anchor" href="#startup" aria-hidden="true">#</a></h2>
+<p>Claude shows up to four screens before it accepts input. Permission bypass removes none of them.</p>
+<div class="tw"><table><thead><tr><th>Screen</th><th>Removed by</th></tr></thead><tbody><tr><td>Theme picker</td><td><code>hasCompletedOnboarding</code></td></tr><tr><td>Security notes</td><td><code>lastOnboardingVersion</code></td></tr><tr><td>Folder trust</td><td><code>hasTrustDialogAccepted</code> for that directory</td></tr><tr><td>Bypass permissions warning</td><td><code>skipDangerousModePermissionPrompt</code> in settings</td></tr></tbody></table></div>
+<p>The first two are separate keys and both are needed. <code>hasCompletedOnboarding</code> alone suppresses only the theme picker. The security notes screen then blocks on "Press Enter to continue", and nothing in an orcr agent will answer it. Pressing Enter there writes exactly one key: <code>lastOnboardingVersion</code>.</p>
+<p>The value of <code>lastOnboardingVersion</code> does not have to match the running version. A stale value works, so a constant is safe.</p>
+<p>orcr sets all four. Three are keys it writes to <code>~/.claude.json</code>, and the fourth is a setting it passes in the launch arguments.</p>
+<p>For anyone who has already run Claude, the first two keys are usually present and orcr changes nothing. The trust key is per directory, so a new working directory needs it every time.</p>
+<h3 id="the-bypass-warning">The bypass warning<a class="anchor" href="#the-bypass-warning" aria-hidden="true">#</a></h3>
+<p>orcr passes the setting in the launch arguments. It writes no file.</p>
+<pre><code>--settings '{"skipDangerousModePermissionPrompt": true}'</code></pre>
+<p>The binary's own schema describes this key as whether the user has accepted the bypass permissions mode dialog.</p>
+<p>Do not use the older <code>bypassPermissionsModeAccepted</code> key. It is a one time migration into the key above, gated on a migration version, and it does nothing on a configuration whose migration has already run. Setting it globally and per project, five times, did not suppress the dialog.</p>
+<h3 id="interactive-tools">Interactive tools<a class="anchor" href="#interactive-tools" aria-hidden="true">#</a></h3>
+<pre><code>--disallowedTools AskUserQuestion,ExitPlanMode,EnterPlanMode,Workflow</code></pre>
+<p>Verified live: with these disabled, a request that normally opens a question dialog is answered in prose instead, and the turn completes.</p>
+<p>The flag is variadic. It must be last, or it swallows anything that follows. orcr never passes a positional prompt, so this is a constraint on argument order rather than a hazard.</p>
+<p>The deny list can also be written in settings, and is the same mechanism:</p>
+<pre><code>{"permissions": {"deny": ["AskUserQuestion", "ExitPlanMode", "EnterPlanMode", "Workflow"]}}</code></pre>
+<p>Do not write <code>permissions.defaultMode: "bypassPermissions"</code> and expect it to replace the launch flag. It is not equivalent. That key is honored only from the highest priority settings source present. A managed or policy settings file that sets <code>defaultMode</code> silently outranks it, and several hosts ignore it outright. Tested on a machine with a managed settings file: the agent did not enter bypass and the footer showed a different mode.</p>
+<p>orcr passes the flag. A setting that can be outranked without saying so is not a way to guarantee anything.</p>
+<p><code>askUserQuestionTimeout</code> accepts <code>60s</code>, <code>5m</code>, <code>10m</code> or <code>never</code>, and defaults to <code>never</code>. It bounds the stall rather than removing it, so orcr removes the tool instead.</p>
+<p><code>dialogExpiry</code> and <code>CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS</code> look relevant and are not. Their own description says local prompts with no remote client are unaffected, which is every dialog orcr will ever see.</p>
+<h3 id="the-three-written-keys">The three written keys<a class="anchor" href="#the-three-written-keys" aria-hidden="true">#</a></h3>
+<p>Claude is the only kind for which orcr writes to a configuration file.</p>
+<pre><code>~/.claude.json
+  projects["&lt;resolved real path of the working directory&gt;"].hasTrustDialogAccepted = true
+  hasCompletedOnboarding = true
+  lastOnboardingVersion  = "&lt;any non-empty string&gt;"</code></pre>
+<p>orcr writes each key only when it is absent, and writes the trust key only for the working directory of the agent. It writes a temporary file and renames it, so a concurrent Claude cannot lose the update. The result is the same state that answering the dialogs once produces.</p>
+<p>The trust path must be the resolved real path. On macOS, <code>/tmp/x</code> must be written as <code>/private/tmp/x</code>. Any other form of the path is silently ignored. There is no inheritance from a parent directory.</p>
+<p>No flag and no environment variable clears the folder trust dialog. Claude itself prints the instruction to set this key.</p>
+<p>When orcr cannot write a key, <code>orcr agent new</code> fails before the agent starts. It does not start an agent that will stop on a dialog whose default answer is to exit.</p>
+<h2 id="readiness">Readiness<a class="anchor" href="#readiness" aria-hidden="true">#</a></h2>
+<pre><code>$CLAUDE_CONFIG_DIR/sessions/&lt;pid&gt;.json    exists, and its "status" field is "idle"</code></pre>
+<p>Claude writes this file only after every startup screen is cleared.</p>
+<div class="tw"><table><thead><tr><th>Signal</th><th>When it appears</th></tr></thead><tbody><tr><td><code>sessions/&lt;pid&gt;.&lt;hash&gt;.key</code></td><td>About 70 seconds too early. Present while a dialog is up.</td></tr><tr><td><code>cc-socks/&lt;pid&gt;.sock</code></td><td>About 70 seconds too early. Present while a dialog is up.</td></tr><tr><td><code>sessions/&lt;pid&gt;.json</code></td><td>0.35 seconds after the last dialog is cleared.</td></tr><tr><td>Session start hook</td><td>About 1 second after the status file.</td></tr><tr><td>Transcript file</td><td>Not until the first turn.</td></tr></tbody></table></div>
+<p>The negative test is what makes the status file trustworthy. During a 71 second run with the bypass dialog on screen, the key file and the socket both existed and the status file did not.</p>
+<p>A message sent 0.69 seconds after the status file appeared was accepted and answered.</p>
+<p>Claude opens no TCP port.</p>
+<h2 id="state">State<a class="anchor" href="#state" aria-hidden="true">#</a></h2>
+<p>The status file is a live state machine, and orcr reads its state from there.</p>
+<div class="tw"><table><thead><tr><th>File value</th><th>orcr state</th></tr></thead><tbody><tr><td><code><span class="st idle">idle</span></code></td><td><code><span class="st idle">idle</span></code></td></tr><tr><td><code>busy</code></td><td><code><span class="st working">working</span></code></td></tr><tr><td><code>waiting</code>, with <code>waitingFor</code></td><td><code><span class="st blocked">blocked</span></code></td></tr></tbody></table></div>
+<p>Measured latency from submitting a message to <code>busy</code> is 0.37 seconds.</p>
+<p>The backend also reports <code>blocked</code> correctly for these dialogs, and it is the default source. The status file adds one thing the backend does not give: the reason. <code>waitingFor</code> reads <code>permission prompt</code> for a permission dialog and <code>input needed</code> for a question the model asked. orcr reports that reason because the two need different responses from a person.</p>
+<p>When a question dialog opened, the status file showed <code>waiting</code> 6.7 seconds before the notification hook fired.</p>
+<p>Claude stops and asks even with permissions bypassed. Bypass removes the permission prompt. It does not remove the model's own question tool, which opens a dialog and waits indefinitely. This was reproduced under bypass. A blocked Claude agent is normal, and orcr cannot clear it.</p>
+<h2 id="message-delivery">Message delivery<a class="anchor" href="#message-delivery" aria-hidden="true">#</a></h2>
+<p>Before submitting, note the transcript line count as a watermark. Treat a missing file as zero. After submitting, poll the transcript every 200 milliseconds and accept either record.</p>
+<div class="tw"><table><thead><tr><th>Case</th><th>Record</th></tr></thead><tbody><tr><td>Agent at rest</td><td><code>type</code> is <code>user</code>, and the message content holds the submitted text</td></tr><tr><td>Agent <span class="st working">working</span></td><td><code>type</code> is <code>queue-operation</code>, <code>operation</code> is <code>enqueue</code>, <code>content</code> equals the submitted text</td></tr></tbody></table></div>
+<p>A message sent while the agent is working always produces the <code>queue-operation</code> record first. What happens next depends on the turn.</p>
+<ul><li>If the turn absorbs it, a second <code>queue-operation</code> follows with operation <code>remove</code> and reason <code>absorbed_mid_turn</code>, plus an attachment row of type <code>queued_command</code>.</li><li>If the turn ends first, the message is then delivered as an ordinary <code>user</code> record.</li></ul>
+<p>So a mid turn message can produce both records, and a check matching only <code>user</code> records misses the first case entirely. orcr matches either and accepts the earliest. Anything that counts messages must treat the pair as one message, not two.</p>
+<p>Measured latency:</p>
+<div class="tw"><table><thead><tr><th>Case</th><th>Delay</th></tr></thead><tbody><tr><td>From rest</td><td>0.59 to 2.51 seconds</td></tr><tr><td>Mid turn</td><td>0.51 to 0.59 seconds</td></tr></tbody></table></div>
+<p>Timeout 10 seconds. The worst measured case was 3.07 seconds.</p>
+<p>The timestamp inside the record is earlier than the moment the record can be read. Compare positions in the file, not times inside it.</p>
+<h2 id="interrupt">Interrupt<a class="anchor" href="#interrupt" aria-hidden="true">#</a></h2>
+<p>One Escape.</p>
+<p>Two Escapes at rest open the rewind view, which offers to restore code and conversation to an earlier point. orcr sends an interrupt only while the agent is working, which is what keeps it away from that view.</p>
+<h2 id="transcript">Transcript<a class="anchor" href="#transcript" aria-hidden="true">#</a></h2>
+<pre><code>$CLAUDE_CONFIG_DIR/projects/&lt;resolved cwd, every / replaced by -&gt;/&lt;session uuid&gt;.jsonl</code></pre>
+<p>The root is the configuration directory, not the home directory, so it moves with <code>CLAUDE_CONFIG_DIR</code>. The directory name is the resolved real working directory with every slash replaced by a hyphen, including the leading one: <code>/private/tmp/work</code> becomes <code>-private-tmp-work</code>. The file name is the session uuid, which is the same value the status file reports.</p>
+<p>The file is absent while the agent is idle before its first message, and is created early in the first turn, measured 4 to 8 seconds after submission with the turn still running. It is not created when the turn completes.</p>
+<p>So orcr can start tailing as soon as it submits, and must never read "the file exists" as "the turn finished".</p>
+<p>The session start hook reports a transcript path for a file that does not yet exist. orcr tolerates a known path with no file.</p>
+<p>Never derive a working directory from this path. The directory name is mangled and the mangling is lossy.</p>
+<h2 id="session-identity">Session identity<a class="anchor" href="#session-identity" aria-hidden="true">#</a></h2>
+<p>The backend binds the Claude session id at session start, and reports it as an id. orcr derives the transcript path from that id and the working directory.</p>
+<p>The integration hands the backend both the id and the transcript path, and the backend keeps only the id. Claude is the one kind where a ready made transcript path exists and is discarded.</p>
+<h2 id="steering">Steering<a class="anchor" href="#steering" aria-hidden="true">#</a></h2>
+<p>A message sent while the agent is working reaches the model at the next tool call. If the turn makes no further tool call, it runs as a separate turn afterwards. Claude's screen calls this a queued message.</p>
+<h2 id="not-verified">Not verified<a class="anchor" href="#not-verified" aria-hidden="true">#</a></h2>
+<ul><li>Whether <code>--bare</code> shortens the model catalogue probe, which spends most of its 20 seconds in session start hooks.</li><li>Whether a status file is left behind when the process is killed rather than exiting.</li></ul></section></main>
+</div>
+
+<button id="ctoggle" title="Comments">
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.1A8.4 8.4 0 0 1 4 11.5a8.4 8.4 0 0 1 9-8.4 8.4 8.4 0 0 1 8 8.4z"/>
+  </svg>
+  <span id="ccount"></span>
+</button>
+
+<aside id="cpanel">
+  <header>
+    <strong>Comments</strong>
+    <div class="sp"></div>
+    <button id="ccopy">copy all</button>
+    <button id="cclear">clear</button>
+    <button id="cclose" title="Close">&#215;</button>
+  </header>
+  <div id="clist"></div>
+  <footer>Stored in this browser only. Use copy all to paste them back.</footer>
+</aside>
+
+<button id="ctip">Comment</button>
+
+<div id="cpop">
+  <div class="q"></div>
+  <textarea rows="4" placeholder="Your comment"></textarea>
+  <div class="row">
+    <span class="k">&#8984;&#9166; to save &#183; esc to cancel</span>
+    <div class="sp"></div>
+    <button data-a="cancel">cancel</button>
+    <button data-a="save" class="pri">save</button>
+  </div>
+</div>
+
+<script>
+const docs=[...document.querySelectorAll('section.doc')];
+const tabs=[...document.querySelectorAll('nav .doc')];
+function show(id,keepScroll){
+  docs.forEach(d=>d.classList.toggle('on',d.id==='doc-'+id));
+  tabs.forEach(t=>t.classList.toggle('on',t.dataset.doc===id));
+  document.querySelectorAll('nav .toc').forEach(u=>u.style.display=u.dataset.doc===id?'':'none');
+  if(!keepScroll){history.replaceState(null,'','#'+id); window.scrollTo(0,0);}
+}
+tabs.forEach(t=>t.addEventListener('click',e=>{e.preventDefault();show(t.dataset.doc)}));
+// A section anchor must also switch to the document that contains it.
+function docOf(el){const s=el.closest('section.doc'); return s?s.id.slice(4):null;}
+document.querySelectorAll('nav .toc a').forEach(a=>a.addEventListener('click',e=>{
+  const t=document.getElementById(a.getAttribute('href').slice(1));
+  if(t){const d=docOf(t); if(d) show(d,true);}
+}));
+const links=[...document.querySelectorAll('nav .toc a')];
+const spy=new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    if(!e.isIntersecting) return;
+    links.forEach(a=>a.classList.toggle('active',a.getAttribute('href')==='#'+e.target.id));
+  });
+},{rootMargin:'-80px 0px -75% 0px'});
+document.querySelectorAll('h2[id],h3[id]').forEach(h=>spy.observe(h));
+const start=location.hash.replace('#','');
+const first=docs.length?docs[0].id.slice(4):'';
+if(docs.some(d=>d.id==='doc-'+start)){show(start);}
+else{
+  const t=start&&document.getElementById(start);
+  if(t){show(docOf(t)||first,true); t.scrollIntoView();}
+  else show(first);
+}
+
+/* ---------------- comments ---------------- */
+
+const KEY='orcr-comments-v1';
+const main=document.querySelector('main');
+const panel=document.getElementById('cpanel');
+const listEl=document.getElementById('clist');
+const countEl=document.getElementById('ccount');
+const tip=document.getElementById('ctip');
+let items=[];
+
+const load=()=>{try{items=JSON.parse(localStorage.getItem(KEY))||[]}catch{items=[]}};
+const save=()=>localStorage.setItem(KEY,JSON.stringify(items));
+const esc=t=>t.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// The section a node sits under, for grouping and re-anchoring.
+function sectionOf(node){
+  let el=node.nodeType===3?node.parentElement:node;
+  const doc=el?(docOf(el)||''):'';
+  while(el&&el!==main){
+    let p=el.previousElementSibling;
+    while(p){ if(/^H[23]$/.test(p.tagName)) return {id:p.id,title:p.textContent.replace(/#$/,'').trim(),doc}; p=p.previousElementSibling; }
+    el=el.parentElement;
+  }
+  return {id:'',title:'(top)',doc};
+}
+
+// Nine documents share one page, so a comment must name the one it came from.
+function docLabel(key){
+  const a=key&&document.querySelector(`nav a.doc[data-doc="${key}"] .t`);
+  return a?a.textContent:(key||'');
+}
+function whereLabel(c){
+  const d=docLabel(c.doc), s=c.section||'(top)';
+  return d?`${d} · ${s}`:s;
+}
+
+// Re-anchor by searching for the quote. Simpler than serialising ranges, and
+// it survives a rebuild of the document.
+function highlight(c){
+  const walk=document.createTreeWalker(main,NodeFilter.SHOW_TEXT);
+  let n;
+  while((n=walk.nextNode())){
+    if(n.parentElement.closest('mark.cm')) continue;
+    const i=n.nodeValue.indexOf(c.quote);
+    if(i<0) continue;
+    const r=document.createRange();
+    r.setStart(n,i); r.setEnd(n,i+c.quote.length);
+    const m=document.createElement('mark');
+    m.className='cm'; m.dataset.id=c.id;
+    try{ r.surroundContents(m); }catch{ return false; }
+    m.addEventListener('click',()=>focusComment(c.id));
+    return true;
+  }
+  return false;
+}
+
+function applyAll(){
+  main.querySelectorAll('mark.cm').forEach(m=>{
+    const p=m.parentNode; while(m.firstChild) p.insertBefore(m.firstChild,m);
+    p.removeChild(m); p.normalize();
+  });
+  items.forEach(c=>{ c.anchored=highlight(c); });
+}
+
+function render(){
+  countEl.textContent=items.length||'';
+  document.body.classList.toggle('has-comments',items.length>0);
+  if(!items.length){ listEl.innerHTML='<p class="empty">Select any text in the document to comment on it.</p>'; return; }
+  listEl.innerHTML=items.map(c=>`
+    <div class="citem${c.anchored?'':' orphan'}" data-id="${c.id}">
+      <div class="csec">${esc(whereLabel(c))}${c.anchored?'':' · text moved'}</div>
+      <blockquote>${esc(c.quote)}</blockquote>
+      <div class="cbody">${esc(c.text)}</div>
+      <div class="cact">
+        <button data-act="goto">go to</button>
+        <button data-act="edit">edit</button>
+        <button data-act="del">delete</button>
+      </div>
+    </div>`).join('');
+}
+
+function focusComment(id){
+  openPanel();
+  const el=listEl.querySelector(`.citem[data-id="${id}"]`);
+  if(!el) return;
+  listEl.querySelectorAll('.citem').forEach(x=>x.classList.remove('on'));
+  el.classList.add('on');
+  el.scrollIntoView({block:'nearest'});
+}
+
+listEl.addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  const id=b.closest('.citem').dataset.id;
+  const c=items.find(x=>x.id===id); if(!c) return;
+  if(b.dataset.act==='del'){ items=items.filter(x=>x.id!==id); save(); applyAll(); render(); }
+  if(b.dataset.act==='edit'){
+    openPop({quote:c.quote, text:c.text, rect:b.getBoundingClientRect(),
+             onSave:t=>{ c.text=t; save(); render(); }});
+  }
+  if(b.dataset.act==='goto'){
+    const c=items.find(x=>x.id===id);
+    if(c&&c.doc&&document.getElementById('doc-'+c.doc)) show(c.doc);
+    const m=main.querySelector(`mark.cm[data-id="${id}"]`); if(m) m.scrollIntoView({block:'center'});
+  }
+});
+
+/* one popover, used for both new and edit */
+const pop=document.getElementById('cpop');
+const popQ=pop.querySelector('.q'), popT=pop.querySelector('textarea');
+let onSaveFn=null;
+
+function openPop({quote,text,rect,onSave}){
+  onSaveFn=onSave;
+  popQ.textContent=quote;
+  popT.value=text||'';
+  pop.classList.add('on');
+  const w=pop.offsetWidth, h=pop.offsetHeight, pad=10;
+  let left=Math.min(rect.left, window.innerWidth-w-pad);
+  let top=rect.bottom+8;
+  if(top+h>window.innerHeight-pad) top=Math.max(pad, rect.top-h-8);
+  pop.style.left=Math.max(pad,left)+'px';
+  pop.style.top=top+'px';
+  popT.focus();
+}
+function closePop(){ pop.classList.remove('on'); onSaveFn=null; }
+
+pop.addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  if(b.dataset.a==='cancel') return closePop();
+  const t=popT.value.trim(); if(!t) return closePop();
+  const fn=onSaveFn; closePop(); if(fn) fn(t);
+});
+popT.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){ e.preventDefault(); closePop(); }
+  if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){ e.preventDefault(); pop.querySelector('[data-a=save]').click(); }
+});
+document.addEventListener('mousedown',e=>{
+  if(pop.classList.contains('on')&&!e.target.closest('#cpop')&&!e.target.closest('#ctip')) closePop();
+});
+
+/* selection -> floating add button */
+let pending=null;
+document.addEventListener('mouseup',e=>{
+  const t=e.target instanceof Element?e.target:null;
+  if(t&&(t.closest('#cpanel')||t.closest('#ctip'))) return;
+  setTimeout(()=>{
+    const sel=window.getSelection();
+    const txt=sel&&sel.toString().trim();
+    if(!txt||!sel.rangeCount){ tip.style.display='none'; pending=null; return; }
+    const r=sel.getRangeAt(0);
+    if(!main.contains(r.commonAncestorContainer)){ tip.style.display='none'; return; }
+    pending={quote:txt,...sectionOf(r.startContainer)};
+    const b=r.getBoundingClientRect();
+    tip.style.display='block';
+    tip.style.top=(window.scrollY+b.bottom+8)+'px';
+    tip.style.left=(window.scrollX+b.left)+'px';
+  },0);
+});
+
+tip.addEventListener('click',()=>{
+  if(!pending) return;
+  const p=pending, r=tip.getBoundingClientRect();
+  tip.style.display='none';
+  openPop({quote:p.quote, text:'', rect:r, onSave:t=>{
+    items.push({id:String(Object.keys(items).length+1)+'-'+p.quote.length+'-'+p.quote.slice(0,8),
+                quote:p.quote, section:p.title, sectionId:p.id, doc:p.doc, text:t});
+    save(); applyAll(); render();
+    const sel=window.getSelection(); if(sel) sel.removeAllRanges();
+  }});
+  pending=null;
+});
+
+/* panel + copy */
+function openPanel(){ document.body.classList.add('cpanel-on'); }
+document.getElementById('ctoggle').addEventListener('click',()=>document.body.classList.toggle('cpanel-on'));
+document.getElementById('cclose').addEventListener('click',()=>document.body.classList.remove('cpanel-on'));
+
+document.getElementById('ccopy').addEventListener('click',async()=>{
+  if(!items.length) return;
+  const out=items.map((c,i)=>
+    `### ${i+1}. ${whereLabel(c)}\n\n> ${c.quote.replace(/\n/g,'\n> ')}\n\n${c.text}`
+  ).join('\n\n');
+  const body=`# orcr design comments (${items.length})\n\n${out}\n`;
+  try{ await navigator.clipboard.writeText(body); flash('copied'); }
+  catch{ const t=document.createElement('textarea'); t.value=body; document.body.appendChild(t);
+         t.select(); document.execCommand('copy'); t.remove(); flash('copied'); }
+});
+
+const clearBtn=document.getElementById('cclear');
+let armed=false, armTimer=null;
+clearBtn.addEventListener('click',()=>{
+  if(!items.length) return;
+  if(!armed){
+    armed=true; clearBtn.textContent='sure?'; clearBtn.classList.add('armed');
+    armTimer=setTimeout(()=>{armed=false; clearBtn.textContent='clear';
+                             clearBtn.classList.remove('armed');},3000);
+    return;
+  }
+  clearTimeout(armTimer); armed=false;
+  clearBtn.textContent='clear'; clearBtn.classList.remove('armed');
+  items=[]; save(); applyAll(); render();
+});
+
+function flash(msg){
+  const b=document.getElementById('ccopy'), old=b.textContent;
+  b.textContent=msg; setTimeout(()=>b.textContent=old,1200);
+}
+
+load(); applyAll(); render();
+</script>
+</body></html>

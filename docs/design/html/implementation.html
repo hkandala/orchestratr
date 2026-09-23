@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>orcr — Implementation</title>
+<link rel="icon" href="data:image/svg+xml,
+  %3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E
+  %3Crect width='32' height='32' rx='7' fill='%233b5bdb'/%3E
+  %3Ctext x='16' y='23' font-family='monospace' font-size='19' font-weight='700'
+  fill='white' text-anchor='middle'%3Eo%3C/text%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#fbfbfa; --panel:#fff; --fg:#1b1b1a; --dim:#6b6b66; --line:#e6e5e1;
+  --accent:#3b5bdb; --code-bg:#f4f4f1; --full:#2f8a55; --part:#b8860b; --none:#a8a8a2;
+  --mark-v:#2f8a55; --mark-u:#b0562a;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#16161a; --panel:#1c1c21; --fg:#e6e6e3; --dim:#9a9a94; --line:#2c2c33;
+    --accent:#8aa2ff; --code-bg:#22222a; --full:#5fbd84; --part:#d6a63a; --none:#6b6b73;
+    --mark-v:#5fbd84; --mark-u:#e08a5a;
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:16px/1.65 ui-sans-serif,-apple-system,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{display:grid; grid-template-columns:270px minmax(0,1fr); gap:0; max-width:1400px; margin:0 auto}
+nav{
+  position:sticky; top:0; height:100vh; overflow-y:auto; padding:28px 20px 60px;
+  border-right:1px solid var(--line); font-size:13.5px;
+}
+nav .brand{font-weight:650; font-size:17px; letter-spacing:-.01em; margin-bottom:2px}
+nav .sub{color:var(--dim); font-size:12.5px; margin-bottom:22px}
+nav .back{
+  display:block; font-size:12.5px; color:var(--dim); text-decoration:none;
+  margin:0 0 18px; padding:5px 10px; border:1px solid var(--line); border-radius:6px;
+}
+nav .back:hover{color:var(--fg); background:var(--code-bg)}
+nav .group{
+  font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.07em;
+  margin:18px 0 6px; font-weight:600;
+}
+nav .group:first-of-type{margin-top:0}
+nav .doc{
+  display:block; padding:6px 10px; margin:1px 0; border-radius:6px; color:var(--fg);
+  text-decoration:none; border:1px solid transparent;
+}
+nav .doc .t{display:block; font-weight:550; font-size:13.5px}
+nav .doc .b{display:block; font-size:11.5px; opacity:.65; margin-top:1px}
+nav .doc:hover{background:var(--code-bg)}
+nav .doc.on{background:var(--accent); border-color:var(--accent); color:#fff}
+nav .doc.on .f,nav .doc.on .b{opacity:.85}
+nav .hint{font-size:11.5px; color:var(--dim); margin:14px 0 4px;
+  text-transform:uppercase; letter-spacing:.06em}
+nav .toc{margin:6px 0 20px; padding:0 0 0 2px; list-style:none}
+nav .toc li{margin:0}
+nav .toc a{
+  display:block; padding:4px 10px; color:var(--dim); text-decoration:none;
+  border-left:2px solid transparent; line-height:1.4;
+}
+nav .toc a:hover{color:var(--fg)}
+nav .toc a.active{color:var(--accent); border-left-color:var(--accent); background:var(--code-bg)}
+nav .toc .l3 a{padding-left:24px; font-size:12.5px}
+main{padding:44px 52px 140px; min-width:0}
+section.doc{display:none}
+section.doc.on{display:block}
+h1{font-size:30px; letter-spacing:-.02em; margin:0 0 6px}
+h2{font-size:21px; letter-spacing:-.015em; margin:56px 0 14px; padding-bottom:8px; border-bottom:1px solid var(--line)}
+h3{font-size:16.5px; margin:32px 0 10px; letter-spacing:-.01em}
+h4{font-size:15px; margin:22px 0 8px; color:var(--dim)}
+p,li{max-width:74ch}
+p{margin:0 0 14px}
+ul,ol{margin:0 0 16px; padding-left:22px}
+li{margin:5px 0}
+hr{border:0; border-top:1px solid var(--line); margin:40px 0}
+a{color:var(--accent)}
+code{
+  background:var(--code-bg); padding:1.5px 5px; border-radius:4px; font-size:13px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+pre{
+  background:var(--code-bg); border:1px solid var(--line); border-radius:8px;
+  padding:14px 16px; overflow-x:auto; margin:0 0 18px;
+}
+pre code{background:none; padding:0; font-size:12.5px; line-height:1.55}
+.tw{overflow-x:auto; margin:0 0 20px; border:1px solid var(--line); border-radius:8px}
+table{border-collapse:collapse; width:100%; font-size:13.5px}
+th,td{text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top}
+th{font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--dim);
+   background:var(--code-bg); white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--code-bg)}
+td code{font-size:12px; white-space:nowrap}
+table.wide{font-size:12.5px}
+table.wide th,table.wide td{padding:7px 10px}
+table.wide th:first-child,table.wide td:first-child{
+  position:sticky; left:0; z-index:1; background:var(--bg);
+  border-right:1px solid var(--line); font-weight:560;
+}
+table.wide thead th:first-child{background:var(--code-bg); z-index:2}
+table.wide tbody tr:hover td:first-child{background:var(--code-bg)}
+h2[id],h3[id]{scroll-margin-top:24px}
+.g{font-size:14px; margin-right:3px}
+.g.full{color:var(--full)} .g.part{color:var(--part)} .g.none{color:var(--none)}
+.mark{
+  display:inline-block; min-width:16px; text-align:center; font-size:10.5px; font-weight:700;
+  padding:1px 5px; border-radius:4px; vertical-align:2px; letter-spacing:.03em;
+}
+.mark.v{background:color-mix(in srgb,var(--mark-v) 16%,transparent); color:var(--mark-v)}
+.mark.u{background:color-mix(in srgb,var(--mark-u) 16%,transparent); color:var(--mark-u)}
+.st{font-weight:560}
+.st.working{color:var(--accent)} .st.blocked{color:var(--mark-u)} .st.error{color:#c0392b}
+.st.idle,.st.exited,.st.unknown{color:var(--dim)}
+.anchor{
+  margin-left:8px; color:var(--line); text-decoration:none; font-weight:400;
+  opacity:0; transition:opacity .12s;
+}
+h2:hover .anchor,h3:hover .anchor{opacity:1}
+.meta{color:var(--dim); font-size:13.5px; margin-bottom:34px}
+
+/* comments */
+mark.cm{
+  background:color-mix(in srgb,#f5c542 34%,transparent); color:inherit;
+  border-bottom:1.5px solid #d8a318; border-radius:2px; cursor:pointer;
+}
+mark.cm:hover{background:color-mix(in srgb,#f5c542 55%,transparent)}
+#ctip{
+  position:absolute; display:none; z-index:60; padding:5px 11px; border:0;
+  border-radius:6px; background:var(--accent); color:#fff; font:inherit;
+  font-size:12.5px; font-weight:560; cursor:pointer; box-shadow:0 2px 10px rgba(0,0,0,.22);
+}
+#ctoggle{
+  position:fixed; right:18px; bottom:18px; z-index:50; display:flex; align-items:center;
+  gap:6px; padding:9px 13px; border:1px solid var(--line); border-radius:22px;
+  background:var(--panel); color:var(--fg); cursor:pointer; font:inherit; font-size:13px;
+  box-shadow:0 2px 12px rgba(0,0,0,.14);
+}
+#ctoggle:hover{border-color:var(--accent); color:var(--accent)}
+#ccount:empty{display:none}
+#ccount{
+  min-width:17px; padding:0 5px; border-radius:9px; background:var(--accent);
+  color:#fff; font-size:11px; font-weight:700; line-height:17px; text-align:center;
+}
+#cpanel{
+  position:fixed; top:0; right:0; width:360px; height:100vh; z-index:55;
+  display:flex; flex-direction:column; background:var(--panel);
+  border-left:1px solid var(--line); transform:translateX(100%);
+  transition:transform .16s ease; box-shadow:-2px 0 18px rgba(0,0,0,.10);
+}
+body.cpanel-on #cpanel{transform:none}
+body.cpanel-on #ctoggle{display:none}
+@media(min-width:1500px){ body.cpanel-on .wrap{margin-right:360px} }
+#cpanel header{
+  display:flex; align-items:center; gap:7px; padding:13px 14px;
+  border-bottom:1px solid var(--line); font-size:14px;
+}
+#cpanel header .sp{flex:1}
+#cpanel header button{
+  border:1px solid var(--line); background:none; color:var(--dim); cursor:pointer;
+  font:inherit; font-size:11.5px; padding:3px 9px; border-radius:5px;
+}
+#cpanel header button:hover{color:var(--fg); border-color:var(--fg)}
+#cclose{font-size:15px !important; line-height:1; padding:2px 8px !important}
+#clist{flex:1; overflow-y:auto; padding:10px 12px 30px}
+#clist .empty{color:var(--dim); font-size:13px; padding:14px 2px; max-width:none}
+.citem{
+  border:1px solid var(--line); border-radius:8px; padding:10px 11px; margin-bottom:10px;
+  background:var(--bg);
+}
+.citem.on{border-color:var(--accent)}
+.citem.orphan{opacity:.72}
+.csec{font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.04em;
+      margin-bottom:6px}
+.citem blockquote{
+  margin:0 0 7px; padding:5px 9px; border-left:2px solid #d8a318; font-size:12.5px;
+  color:var(--dim); background:var(--code-bg); border-radius:0 4px 4px 0;
+  max-height:88px; overflow:hidden;
+}
+.cbody{font-size:13.5px; white-space:pre-wrap; margin-bottom:8px}
+.cact{display:flex; gap:6px}
+.cact button{
+  border:1px solid var(--line); background:none; color:var(--dim); cursor:pointer;
+  font:inherit; font-size:11.5px; padding:2px 8px; border-radius:5px;
+}
+.cact button:hover{color:var(--fg); border-color:var(--fg)}
+#cpanel footer{
+  padding:9px 14px; border-top:1px solid var(--line); color:var(--dim); font-size:11.5px;
+}
+@media(max-width:900px){ #cpanel{width:100%} }
+#cpop{
+  position:fixed; display:none; z-index:70; width:340px; padding:11px;
+  background:var(--panel); border:1px solid var(--line); border-radius:9px;
+  box-shadow:0 6px 26px rgba(0,0,0,.20);
+}
+#cpop.on{display:block}
+#cpop .q{
+  font-size:12px; color:var(--dim); background:var(--code-bg);
+  border-left:2px solid #d8a318; border-radius:0 4px 4px 0; padding:5px 8px;
+  margin-bottom:8px; max-height:60px; overflow:hidden;
+}
+#cpop textarea{
+  width:100%; resize:vertical; font:inherit; font-size:13.5px; padding:7px 9px;
+  border:1px solid var(--line); border-radius:6px; background:var(--bg);
+  color:var(--fg);
+}
+#cpop textarea:focus{outline:none; border-color:var(--accent)}
+#cpop .row{display:flex; align-items:center; gap:7px; margin-top:8px}
+#cpop .row .sp{flex:1}
+#cpop .k{font-size:11px; color:var(--dim)}
+#cpop button{
+  border:1px solid var(--line); background:none; color:var(--dim); cursor:pointer;
+  font:inherit; font-size:12px; padding:4px 11px; border-radius:6px;
+}
+#cpop button:hover{color:var(--fg); border-color:var(--fg)}
+#cpop button.pri{background:var(--accent); border-color:var(--accent); color:#fff}
+#cpop button.pri:hover{opacity:.9; color:#fff}
+#cclear.armed{color:#c0392b; border-color:#c0392b}
+.legend{display:flex; gap:18px; flex-wrap:wrap; font-size:12.5px; color:var(--dim); margin:-6px 0 22px}
+@media(max-width:900px){
+  .wrap{grid-template-columns:1fr}
+  nav{position:static; height:auto; border-right:0; border-bottom:1px solid var(--line)}
+  main{padding:28px 20px 80px}
+}
+</style>
+</head><body>
+<div class="wrap">
+  <nav>
+    <div class="brand">orcr</div>
+    <div class="sub">one CLI for coding agent sessions</div>
+    <a class="back" href="index.html">&#8592; all documents</a><a class="doc" data-doc="impl" href="#impl" title="implementation.md"><span class="t">Implementation</span><span class="b">layers and the kind adapter</span></a><ul class="toc" data-doc="impl"><li class="l2"><a href="#layers">Layers</a></li><li class="l2"><a href="#the-registry">The registry</a></li><li class="l2"><a href="#the-kind-adapter">The kind adapter</a></li><li class="l3"><a href="#what-the-interface-deliberately-excludes">What the interface deliberately excludes</a></li><li class="l3"><a href="#where-a-member-may-be-absent">Where a member may be absent</a></li><li class="l2"><a href="#sending-a-message">Sending a message</a></li><li class="l3"><a href="#the-three-outcomes">The three outcomes</a></li><li class="l2"><a href="#starting-an-agent">Starting an agent</a></li><li class="l2"><a href="#writing-a-persons-configuration">Writing a person&#x27;s configuration</a></li><li class="l2"><a href="#placement">Placement</a></li><li class="l2"><a href="#transcripts">Transcripts</a></li><li class="l2"><a href="#backend-interaction">Backend interaction</a></li><li class="l2"><a href="#errors">Errors</a></li><li class="l2"><a href="#concurrency">Concurrency</a></li><li class="l2"><a href="#testing">Testing</a></li></ul>
+  </nav>
+  <main><section class="doc" id="doc-impl"><h1 id="implementation">Implementation<a class="anchor" href="#implementation" aria-hidden="true">#</a></h1>
+<p>This document defines the internal structure. It names no agent. Everything specific to one kind lives in <code>docs/design/agents/</code>.</p>
+<h2 id="layers">Layers<a class="anchor" href="#layers" aria-hidden="true">#</a></h2>
+<pre><code>orcr command line
+      |  socket, newline JSON
+orcr server
+      |
+   core: registry, lifecycle, state, transcripts
+      |                        |
+ backend driver          kind adapters
+      |                        |
+    herdr               agent processes and their files</code></pre>
+<p>The command line holds no logic beyond parsing arguments, formatting output, and mapping an error code to an exit code. Every decision happens in the server. Adding a command means adding a method, then a thin wrapper.</p>
+<h2 id="the-registry">The registry<a class="anchor" href="#the-registry" aria-hidden="true">#</a></h2>
+<p>orcr keeps its own registry entry for every agent it started. The registry is the source of truth for which agents exist and what they are. The backend is a cache of that, and orcr reconciles against it.</p>
+<p>Run state is the other way round. The backend reports whether an agent is working, idle or blocked, and orcr does not second-guess it. See section "State" in the CLI reference.</p>
+<pre><code>~/.local/state/orcr/registry.json</code></pre>
+<p>One registry entry per agent: name, kind, working directory, model, effort, backend pane, agent session id, transcript path, creation time, last known state.</p>
+<p>Rules:</p>
+<ul><li>Write by writing a temporary file and renaming it. Never write in place.</li><li>Resolve a symbolic link before writing any file orcr does not own. See "Writing a person's configuration" below.</li><li>Reconcile against the backend at startup and on every list. An agent the backend no longer reports is <code>exited</code>.</li><li>Key state on the agent session id first and the backend pane second.</li><li>Never store a terminal identifier. It looks like a stable key and it changes on every restart of the backend.</li></ul>
+<p>The backend restores its own agents across a restart, relaunching each with its own resume argument. Treat that as a useful optimization, never as a guarantee. It did not restore every kind in testing, and a pane with no bound session is not restored at all.</p>
+<h2 id="the-kind-adapter">The kind adapter<a class="anchor" href="#the-kind-adapter" aria-hidden="true">#</a></h2>
+<p>One adapter per kind. The interface is small on purpose. Most members are data.</p>
+<div class="tw"><table><thead><tr><th>Member</th><th>Kind</th><th>Purpose</th></tr></thead><tbody><tr><td><code>launch_argv(model, effort)</code></td><td>data</td><td>The argument list, including the permission bypass argument.</td></tr><tr><td><code>prepare(cwd)</code></td><td>action</td><td>Set every configuration key that stops a startup screen. Fails loudly.</td></tr><tr><td><code>ready(pid, cwd)</code></td><td>predicate</td><td>True when the kind's readiness file says the agent accepts input.</td></tr><tr><td><code>state(pid, cwd)</code></td><td>function</td><td>The state from the kind's own file, or nothing if it has none.</td></tr><tr><td><code>watermark(session)</code></td><td>function</td><td>The position to resume reading the delivery record from.</td></tr><tr><td><code>confirm(session, watermark, text)</code></td><td>function</td><td>True when the delivery record for this text exists.</td></tr><tr><td><code>session_id(pid, cwd)</code></td><td>function</td><td>The agent's own session identifier.</td></tr><tr><td><code>transcript_path(session_id, cwd)</code></td><td>function</td><td>Where the conversation is written.</td></tr><tr><td><code>parse(line)</code></td><td>function</td><td>One transcript line to one normalized message.</td></tr><tr><td><code>interrupt_keys()</code></td><td>data</td><td>The key sequence that stops a turn.</td></tr><tr><td><code>catalogue()</code></td><td>action</td><td>The model and effort list.</td></tr></tbody></table></div>
+<h3 id="what-the-interface-deliberately-excludes">What the interface deliberately excludes<a class="anchor" href="#what-the-interface-deliberately-excludes" aria-hidden="true">#</a></h3>
+<p>There is no screen reading member, no per-kind message sending member, and no per-kind interrupt procedure. Only the key sequence differs, and that is data.</p>
+<p>There is no classification of why an agent is blocked. orcr passes through whatever text the source provides.</p>
+<h3 id="where-a-member-may-be-absent">Where a member may be absent<a class="anchor" href="#where-a-member-may-be-absent" aria-hidden="true">#</a></h3>
+<p><code>state</code> and <code>session_id</code> can return nothing for a kind whose files do not carry them. The core falls back to the backend and records <code>state_source</code> accordingly.</p>
+<h2 id="sending-a-message">Sending a message<a class="anchor" href="#sending-a-message" aria-hidden="true">#</a></h2>
+<p>One procedure, every kind.</p>
+<pre><code>send(name, text, immediate):
+    a = registry.get(name)                  -&gt; not_found
+    if not backend.alive(a)                 -&gt; exited
+    if a.state == blocked                   -&gt; blocked, send nothing at all
+    if immediate and a.state == working:
+        interrupt(a)
+        wait until state != working         -&gt; timeout
+    if not adapter.ready(a)                 -&gt; not_ready
+    w = adapter.watermark(a.session)
+    backend.clear_composer(a)
+    backend.paste(a, text)
+    backend.press_enter(a)
+    poll until deadline:
+        adapter.confirm(a.session, w, text)  -&gt; delivered
+        state became idle and still no record -&gt; possibly_delivered, stop early
+        nothing yet, and enters_sent &lt; 2      -&gt; backend.press_enter(a)
+    -&gt; possibly_delivered</code></pre>
+<h3 id="the-three-outcomes">The three outcomes<a class="anchor" href="#the-three-outcomes" aria-hidden="true">#</a></h3>
+<p>The dividing line is proof, and it comes from one flag: <code>write_attempted</code>, set immediately before the socket write. Every backend failure sorts by which side of that flag it occurred on.</p>
+<div class="tw"><table><thead><tr><th>Backend outcome</th><th>Side</th><th>Reported</th></tr></thead><tbody><tr><td>The delivery record appeared</td><td>after</td><td><code>delivered</code></td></tr><tr><td><code>agent_blocked</code></td><td>before, proven: pane unchanged, text never appears</td><td><code>failed</code></td></tr><tr><td>Invalid key. The backend validates every key before writing any byte.</td><td>before</td><td><code>failed</code></td></tr><tr><td>Agent not found, not running, or gone</td><td>before</td><td><code>failed</code></td></tr><tr><td><code>invalid_request</code>, <code>unsupported_method</code></td><td>before, and a defect in orcr</td><td><code>failed</code></td></tr><tr><td>Connect failure, oversized request</td><td>before</td><td><code>failed</code></td></tr><tr><td><code>agent_prompt_stalled</code></td><td>after</td><td><code>possibly_delivered</code></td></tr><tr><td><code>timeout</code></td><td>after</td><td><code>possibly_delivered</code></td></tr><tr><td>Internal error, connection closed, malformed reply</td><td>after</td><td><code>possibly_delivered</code></td></tr><tr><td>Wrote fine, no record inside the deadline</td><td>after</td><td><code>possibly_delivered</code></td></tr></tbody></table></div>
+<p>Two mechanical rules keep that table decidable.</p>
+<p><strong>Declare the mutation class per request.</strong> A request known to change nothing can be reported as a proven failure. A request that can change something cannot.</p>
+<p><strong>Send one key per request.</strong> A batch of keys that fails part way is ambiguous about which key landed, and that ambiguity would push otherwise provable cases into <code>possibly_delivered</code>.</p>
+<p>Retry rules follow from the side, not from the code. Anything on the "before" side can be retried once, except a blocked agent, which is a refusal. Nothing on the "after" side can be retried, because a duplicate is possible. Enter alone is exempt, since re-sending it cannot duplicate a message.</p>
+<p>The composer is cleared before every send. orcr does not detect that the composer is empty. It makes it empty. One kind restores unsent text into the composer after an interrupt, and without the clear the next message is submitted joined to that text as one message.</p>
+<p>Polling interval is 100 to 200 milliseconds. The deadline is per kind, set well above the worst measured latency.</p>
+<p>Stopping early on an idle agent with no delivery record matters for one kind. On that kind the delivery record for a mid turn message does not appear until the running tool call returns. There the deadline is the end of the turn rather than a number. orcr waits for the work and reports <code>possibly_delivered</code> the moment the turn ends without the record. The rule is written once and applies to every kind, because it is never wrong for the others.</p>
+<h2 id="starting-an-agent">Starting an agent<a class="anchor" href="#starting-an-agent" aria-hidden="true">#</a></h2>
+<pre><code>new(kind, cwd, model, effort, name):
+    backend.check()                         -&gt; backend_unavailable
+    backend.check_integration(kind)         -&gt; integration_missing
+    adapter.prepare(cwd)                    -&gt; fails before anything is launched
+    ws = backend.workspace_for(cwd)
+    tab = backend.create_tab(ws)
+    backend.start(tab, adapter.launch_argv(model, effort))
+    poll adapter.ready() until deadline     -&gt; on failure, stop and remove the tab
+    registry.put(...)</code></pre>
+<p><code>prepare</code> runs before anything is launched, so a configuration failure costs nothing. A failure after launch removes the tab. orcr never leaves a half started agent.</p>
+<p>The backend's own readiness answer is not used. See <code>limitations.md</code> for the evidence. It returned true while a startup screen was displayed on three kinds, and on one kind it returned true 25.4 seconds before the terminal had drawn itself.</p>
+<h2 id="writing-a-persons-configuration">Writing a person's configuration<a class="anchor" href="#writing-a-persons-configuration" aria-hidden="true">#</a></h2>
+<p><code>prepare</code> writes nothing for three of the four kinds. For Claude it writes three keys to the person's configuration file. Three rules.</p>
+<p><strong>Resolve the link before writing.</strong> A configuration path is often a symbolic link into a repository that the person manages. Writing a temporary file and renaming it over that path replaces the link with a plain file. Every later edit in the repository then silently stops taking effect. Resolve the real path first, then write a temporary file beside the real file and rename it there.</p>
+<p><strong>Write only when the key is absent.</strong> Never overwrite a value the person set.</p>
+<p><strong>Preserve everything else.</strong> For a structured format, parse, add the one key, and serialize. For a format that allows the same table twice, check for a duplicate before adding, because appending a second table changes which value wins.</p>
+<p>Report what was done: written, already present, or skipped. <code>orcr doctor</code> shows it.</p>
+<h2 id="placement">Placement<a class="anchor" href="#placement" aria-hidden="true">#</a></h2>
+<p>One backend session, named <code>orcr</code>. One workspace per distinct working directory. One tab per agent, and the agent runs in that tab's pane. orcr records the pane identifier, because that is what the backend's own methods take.</p>
+<p>orcr creates and manages only that session. It never stops or deletes a session it did not create.</p>
+<h2 id="transcripts">Transcripts<a class="anchor" href="#transcripts" aria-hidden="true">#</a></h2>
+<p>Every kind writes a different format. <code>parse</code> converts one line into the normalized message defined in the CLI reference: sequence, role, time, text, tool names.</p>
+<p>Two rules:</p>
+<ul><li>Never derive a working directory from a transcript path. Every kind mangles the directory into the path, and the mangling is lossy.</li><li>Tolerate a known path with no file. Some kinds report a transcript path before the file exists.</li></ul>
+<p>Following a transcript is a file watch with a poll fallback. Reading must handle a partial final line, because a reader can see a line mid write.</p>
+<h2 id="backend-interaction">Backend interaction<a class="anchor" href="#backend-interaction" aria-hidden="true">#</a></h2>
+<p>orcr speaks the backend's socket directly. It shells out for exactly two things: creating the backend session, which has no socket method, and attaching a terminal, which cannot be an API call.</p>
+<p>Handshake on every connection. Compare the protocol number and refuse with one clear error rather than failing method by method.</p>
+<p>The backend takes its timeouts in milliseconds. orcr accepts a human duration and converts. This has already cost one round of false failures.</p>
+<p>orcr scrubs known child session markers from the environment it gives the herdr server. See <code>agents/claude.md</code> for the marker that disables transcript writing.</p>
+<h2 id="errors">Errors<a class="anchor" href="#errors" aria-hidden="true">#</a></h2>
+<p>Nine codes, closed, defined in the CLI reference. Each maps to one exit code.</p>
+<p>Specifics go in <code>details</code>, not in new codes. A small code set stays usable only if it is not allowed to grow.</p>
+<p>Every message states what orcr looked for. A failure to confirm delivery reports the text and the timeout, so a caller can look for themselves.</p>
+<h2 id="concurrency">Concurrency<a class="anchor" href="#concurrency" aria-hidden="true">#</a></h2>
+<p>The server handles requests concurrently. Per agent, serialize anything that types: sending, interrupting, and clearing. Two concurrent sends to one agent would interleave keystrokes.</p>
+<p>Reads, listing and transcript following need no lock.</p>
+<h2 id="testing">Testing<a class="anchor" href="#testing" aria-hidden="true">#</a></h2>
+<p>Three levels:</p>
+<ol><li>Adapter unit tests over captured files. Every measurement in <code>docs/design/agents/</code> came from a captured file, and those files are the fixtures.</li><li>Backend tests against a throwaway backend session. Never against a session orcr did not create.</li><li>A live test per kind that starts an agent, sends one message, confirms delivery, and stops it.</li></ol>
+<p>The second and third levels must run in an isolated configuration directory, and must never write to a person's real configuration file.</p>
+<p>For the first level, bb is useful prior art. It records the traffic of each agent as newline delimited JSON, keeps a manifest that pins the agent version beside each recording, and replays the recording in its tests. See <code>packages/provider-bridge-protocol/recordings/</code> in https://github.com/get-bb/bb.</p></section></main>
+</div>
+
+<button id="ctoggle" title="Comments">
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.1A8.4 8.4 0 0 1 4 11.5a8.4 8.4 0 0 1 9-8.4 8.4 8.4 0 0 1 8 8.4z"/>
+  </svg>
+  <span id="ccount"></span>
+</button>
+
+<aside id="cpanel">
+  <header>
+    <strong>Comments</strong>
+    <div class="sp"></div>
+    <button id="ccopy">copy all</button>
+    <button id="cclear">clear</button>
+    <button id="cclose" title="Close">&#215;</button>
+  </header>
+  <div id="clist"></div>
+  <footer>Stored in this browser only. Use copy all to paste them back.</footer>
+</aside>
+
+<button id="ctip">Comment</button>
+
+<div id="cpop">
+  <div class="q"></div>
+  <textarea rows="4" placeholder="Your comment"></textarea>
+  <div class="row">
+    <span class="k">&#8984;&#9166; to save &#183; esc to cancel</span>
+    <div class="sp"></div>
+    <button data-a="cancel">cancel</button>
+    <button data-a="save" class="pri">save</button>
+  </div>
+</div>
+
+<script>
+const docs=[...document.querySelectorAll('section.doc')];
+const tabs=[...document.querySelectorAll('nav .doc')];
+function show(id,keepScroll){
+  docs.forEach(d=>d.classList.toggle('on',d.id==='doc-'+id));
+  tabs.forEach(t=>t.classList.toggle('on',t.dataset.doc===id));
+  document.querySelectorAll('nav .toc').forEach(u=>u.style.display=u.dataset.doc===id?'':'none');
+  if(!keepScroll){history.replaceState(null,'','#'+id); window.scrollTo(0,0);}
+}
+tabs.forEach(t=>t.addEventListener('click',e=>{e.preventDefault();show(t.dataset.doc)}));
+// A section anchor must also switch to the document that contains it.
+function docOf(el){const s=el.closest('section.doc'); return s?s.id.slice(4):null;}
+document.querySelectorAll('nav .toc a').forEach(a=>a.addEventListener('click',e=>{
+  const t=document.getElementById(a.getAttribute('href').slice(1));
+  if(t){const d=docOf(t); if(d) show(d,true);}
+}));
+const links=[...document.querySelectorAll('nav .toc a')];
+const spy=new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    if(!e.isIntersecting) return;
+    links.forEach(a=>a.classList.toggle('active',a.getAttribute('href')==='#'+e.target.id));
+  });
+},{rootMargin:'-80px 0px -75% 0px'});
+document.querySelectorAll('h2[id],h3[id]').forEach(h=>spy.observe(h));
+const start=location.hash.replace('#','');
+const first=docs.length?docs[0].id.slice(4):'';
+if(docs.some(d=>d.id==='doc-'+start)){show(start);}
+else{
+  const t=start&&document.getElementById(start);
+  if(t){show(docOf(t)||first,true); t.scrollIntoView();}
+  else show(first);
+}
+
+/* ---------------- comments ---------------- */
+
+const KEY='orcr-comments-v1';
+const main=document.querySelector('main');
+const panel=document.getElementById('cpanel');
+const listEl=document.getElementById('clist');
+const countEl=document.getElementById('ccount');
+const tip=document.getElementById('ctip');
+let items=[];
+
+const load=()=>{try{items=JSON.parse(localStorage.getItem(KEY))||[]}catch{items=[]}};
+const save=()=>localStorage.setItem(KEY,JSON.stringify(items));
+const esc=t=>t.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// The section a node sits under, for grouping and re-anchoring.
+function sectionOf(node){
+  let el=node.nodeType===3?node.parentElement:node;
+  const doc=el?(docOf(el)||''):'';
+  while(el&&el!==main){
+    let p=el.previousElementSibling;
+    while(p){ if(/^H[23]$/.test(p.tagName)) return {id:p.id,title:p.textContent.replace(/#$/,'').trim(),doc}; p=p.previousElementSibling; }
+    el=el.parentElement;
+  }
+  return {id:'',title:'(top)',doc};
+}
+
+// Nine documents share one page, so a comment must name the one it came from.
+function docLabel(key){
+  const a=key&&document.querySelector(`nav a.doc[data-doc="${key}"] .t`);
+  return a?a.textContent:(key||'');
+}
+function whereLabel(c){
+  const d=docLabel(c.doc), s=c.section||'(top)';
+  return d?`${d} · ${s}`:s;
+}
+
+// Re-anchor by searching for the quote. Simpler than serialising ranges, and
+// it survives a rebuild of the document.
+function highlight(c){
+  const walk=document.createTreeWalker(main,NodeFilter.SHOW_TEXT);
+  let n;
+  while((n=walk.nextNode())){
+    if(n.parentElement.closest('mark.cm')) continue;
+    const i=n.nodeValue.indexOf(c.quote);
+    if(i<0) continue;
+    const r=document.createRange();
+    r.setStart(n,i); r.setEnd(n,i+c.quote.length);
+    const m=document.createElement('mark');
+    m.className='cm'; m.dataset.id=c.id;
+    try{ r.surroundContents(m); }catch{ return false; }
+    m.addEventListener('click',()=>focusComment(c.id));
+    return true;
+  }
+  return false;
+}
+
+function applyAll(){
+  main.querySelectorAll('mark.cm').forEach(m=>{
+    const p=m.parentNode; while(m.firstChild) p.insertBefore(m.firstChild,m);
+    p.removeChild(m); p.normalize();
+  });
+  items.forEach(c=>{ c.anchored=highlight(c); });
+}
+
+function render(){
+  countEl.textContent=items.length||'';
+  document.body.classList.toggle('has-comments',items.length>0);
+  if(!items.length){ listEl.innerHTML='<p class="empty">Select any text in the document to comment on it.</p>'; return; }
+  listEl.innerHTML=items.map(c=>`
+    <div class="citem${c.anchored?'':' orphan'}" data-id="${c.id}">
+      <div class="csec">${esc(whereLabel(c))}${c.anchored?'':' · text moved'}</div>
+      <blockquote>${esc(c.quote)}</blockquote>
+      <div class="cbody">${esc(c.text)}</div>
+      <div class="cact">
+        <button data-act="goto">go to</button>
+        <button data-act="edit">edit</button>
+        <button data-act="del">delete</button>
+      </div>
+    </div>`).join('');
+}
+
+function focusComment(id){
+  openPanel();
+  const el=listEl.querySelector(`.citem[data-id="${id}"]`);
+  if(!el) return;
+  listEl.querySelectorAll('.citem').forEach(x=>x.classList.remove('on'));
+  el.classList.add('on');
+  el.scrollIntoView({block:'nearest'});
+}
+
+listEl.addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  const id=b.closest('.citem').dataset.id;
+  const c=items.find(x=>x.id===id); if(!c) return;
+  if(b.dataset.act==='del'){ items=items.filter(x=>x.id!==id); save(); applyAll(); render(); }
+  if(b.dataset.act==='edit'){
+    openPop({quote:c.quote, text:c.text, rect:b.getBoundingClientRect(),
+             onSave:t=>{ c.text=t; save(); render(); }});
+  }
+  if(b.dataset.act==='goto'){
+    const c=items.find(x=>x.id===id);
+    if(c&&c.doc&&document.getElementById('doc-'+c.doc)) show(c.doc);
+    const m=main.querySelector(`mark.cm[data-id="${id}"]`); if(m) m.scrollIntoView({block:'center'});
+  }
+});
+
+/* one popover, used for both new and edit */
+const pop=document.getElementById('cpop');
+const popQ=pop.querySelector('.q'), popT=pop.querySelector('textarea');
+let onSaveFn=null;
+
+function openPop({quote,text,rect,onSave}){
+  onSaveFn=onSave;
+  popQ.textContent=quote;
+  popT.value=text||'';
+  pop.classList.add('on');
+  const w=pop.offsetWidth, h=pop.offsetHeight, pad=10;
+  let left=Math.min(rect.left, window.innerWidth-w-pad);
+  let top=rect.bottom+8;
+  if(top+h>window.innerHeight-pad) top=Math.max(pad, rect.top-h-8);
+  pop.style.left=Math.max(pad,left)+'px';
+  pop.style.top=top+'px';
+  popT.focus();
+}
+function closePop(){ pop.classList.remove('on'); onSaveFn=null; }
+
+pop.addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  if(b.dataset.a==='cancel') return closePop();
+  const t=popT.value.trim(); if(!t) return closePop();
+  const fn=onSaveFn; closePop(); if(fn) fn(t);
+});
+popT.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){ e.preventDefault(); closePop(); }
+  if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){ e.preventDefault(); pop.querySelector('[data-a=save]').click(); }
+});
+document.addEventListener('mousedown',e=>{
+  if(pop.classList.contains('on')&&!e.target.closest('#cpop')&&!e.target.closest('#ctip')) closePop();
+});
+
+/* selection -> floating add button */
+let pending=null;
+document.addEventListener('mouseup',e=>{
+  const t=e.target instanceof Element?e.target:null;
+  if(t&&(t.closest('#cpanel')||t.closest('#ctip'))) return;
+  setTimeout(()=>{
+    const sel=window.getSelection();
+    const txt=sel&&sel.toString().trim();
+    if(!txt||!sel.rangeCount){ tip.style.display='none'; pending=null; return; }
+    const r=sel.getRangeAt(0);
+    if(!main.contains(r.commonAncestorContainer)){ tip.style.display='none'; return; }
+    pending={quote:txt,...sectionOf(r.startContainer)};
+    const b=r.getBoundingClientRect();
+    tip.style.display='block';
+    tip.style.top=(window.scrollY+b.bottom+8)+'px';
+    tip.style.left=(window.scrollX+b.left)+'px';
+  },0);
+});
+
+tip.addEventListener('click',()=>{
+  if(!pending) return;
+  const p=pending, r=tip.getBoundingClientRect();
+  tip.style.display='none';
+  openPop({quote:p.quote, text:'', rect:r, onSave:t=>{
+    items.push({id:String(Object.keys(items).length+1)+'-'+p.quote.length+'-'+p.quote.slice(0,8),
+                quote:p.quote, section:p.title, sectionId:p.id, doc:p.doc, text:t});
+    save(); applyAll(); render();
+    const sel=window.getSelection(); if(sel) sel.removeAllRanges();
+  }});
+  pending=null;
+});
+
+/* panel + copy */
+function openPanel(){ document.body.classList.add('cpanel-on'); }
+document.getElementById('ctoggle').addEventListener('click',()=>document.body.classList.toggle('cpanel-on'));
+document.getElementById('cclose').addEventListener('click',()=>document.body.classList.remove('cpanel-on'));
+
+document.getElementById('ccopy').addEventListener('click',async()=>{
+  if(!items.length) return;
+  const out=items.map((c,i)=>
+    `### ${i+1}. ${whereLabel(c)}\n\n> ${c.quote.replace(/\n/g,'\n> ')}\n\n${c.text}`
+  ).join('\n\n');
+  const body=`# orcr design comments (${items.length})\n\n${out}\n`;
+  try{ await navigator.clipboard.writeText(body); flash('copied'); }
+  catch{ const t=document.createElement('textarea'); t.value=body; document.body.appendChild(t);
+         t.select(); document.execCommand('copy'); t.remove(); flash('copied'); }
+});
+
+const clearBtn=document.getElementById('cclear');
+let armed=false, armTimer=null;
+clearBtn.addEventListener('click',()=>{
+  if(!items.length) return;
+  if(!armed){
+    armed=true; clearBtn.textContent='sure?'; clearBtn.classList.add('armed');
+    armTimer=setTimeout(()=>{armed=false; clearBtn.textContent='clear';
+                             clearBtn.classList.remove('armed');},3000);
+    return;
+  }
+  clearTimeout(armTimer); armed=false;
+  clearBtn.textContent='clear'; clearBtn.classList.remove('armed');
+  items=[]; save(); applyAll(); render();
+});
+
+function flash(msg){
+  const b=document.getElementById('ccopy'), old=b.textContent;
+  b.textContent=msg; setTimeout(()=>b.textContent=old,1200);
+}
+
+load(); applyAll(); render();
+</script>
+</body></html>

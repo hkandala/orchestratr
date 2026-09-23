@@ -1,0 +1,845 @@
+# CLI reference and socket API
+
+This document defines the complete orcr contract. Part 1 defines the command line tool.
+Part 2 defines the socket API. The command line tool is a caller of the socket API. Every
+command maps to one API method.
+
+---
+
+# Part 1 — Command line
+
+## 1.1 Conventions
+
+### Names
+
+Every agent has one identifier, its name. orcr generates a name when you do not supply one.
+A generated name is the kind, a hyphen, and the lowest free number for that kind.
+
+```
+claude-1  codex-1  codex-2  pi-1  opencode-1
+```
+
+A name is unique across orcr. Every command that acts on an agent takes a name.
+
+### Output
+
+Text output is the default. It is for a person to read. Its exact layout can change between
+releases.
+
+`--json` output is stable. Programs must use `--json`. Each command documents its JSON
+shape below. All JSON output is a single object, never a bare array.
+
+Times in JSON are RFC 3339 strings in UTC. Time arguments accept an RFC 3339 string, a Unix
+timestamp in seconds, or a relative duration such as `30m` or `2h`.
+
+Durations accept a unit suffix of `s`, `m`, or `h`. A bare number means seconds.
+
+### Exit codes
+
+| Code | Meaning | Error code |
+|---|---|---|
+| 0 | Success | none |
+| 1 | Internal failure | `internal` |
+| 2 | The command was used wrongly | `invalid_request` |
+| 3 | The agent does not exist | `not_found` |
+| 4 | The agent cannot accept this action now | `not_ready`, `blocked` |
+| 5 | The action did not finish in time | `timeout` |
+| 6 | herdr is missing, stopped, or a different protocol | `backend_unavailable` |
+| 7 | The herdr integration for this kind is missing or stale | `integration_missing` |
+
+The set is closed. Every failure maps to one of these seven codes.
+
+### State
+
+An agent is always in exactly one state.
+
+| State | Meaning |
+|---|---|
+| `working` | The agent is running a turn. |
+| `blocked` | The agent waits for a person to answer something on screen. |
+| `idle` | The agent is ready for a message. |
+| `exited` | The agent process ended. |
+| `unknown` | orcr cannot determine the state. |
+
+orcr evaluates liveness first. A dead process is `exited` even when the last known screen
+said `working`.
+
+---
+
+## 1.2 `orcr agent new`
+
+Start a new agent.
+
+```
+orcr agent new --kind <kind> [--model <model>] [--effort <effort>]
+               [--cwd <dir>] [--name <name>] [--prompt <text>]
+               [--timeout <duration>] [--json]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--kind` | required | `claude`, `codex`, `pi`, or `opencode`. |
+| `--model` | the kind's own default | The value reaches the agent unchanged. |
+| `--effort` | the kind's own default | The value reaches the agent unchanged. |
+| `--cwd` | the current directory | The working directory of the agent. |
+| `--name` | generated | The name of the agent. Must be unique. |
+| `--prompt` | none | A first message, sent once the agent is ready. |
+| `--timeout` | `120s` | How long to wait for the agent to become ready. |
+
+### What it does
+
+1. Make sure herdr is running and speaks a supported protocol. Make sure the herdr
+   integration for this kind is installed and current.
+2. Find or create the workspace for `--cwd`. Agents that share a working directory share a
+   workspace.
+3. Create a tab. Start the agent in the tab's pane, with permission prompts turned off.
+4. Run the startup steps for the kind. A kind can open a startup screen that permission
+   bypass does not remove. The startup steps clear those screens.
+5. Wait until the agent reports a ready state that orcr can confirm. See section 1.11.
+6. Record the agent in the orcr registry.
+7. If `--prompt` was given, send it as a message.
+
+`orcr agent new` fails if the agent does not reach a confirmed ready state inside
+`--timeout`. It does not leave a half started agent behind. It stops the agent and removes
+the tab.
+
+`--model` and `--effort` are not validated against a catalogue. orcr passes them through.
+Run `orcr models` to see what a kind accepts.
+
+### Output
+
+```json
+{
+  "name": "codex-1",
+  "kind": "codex",
+  "cwd": "/Users/me/code/project",
+  "model": "gpt-5.6-sol",
+  "effort": "high",
+  "state": "idle",
+  "created_at": "2026-09-18T09:14:02Z"
+}
+```
+
+---
+
+## 1.3 `orcr agent list`
+
+List the agents that orcr started.
+
+```
+orcr agent list [--kind <kind>] [--state <state>] [--cwd <glob>]
+                [--since <time>] [--json]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--kind` | Show only this kind. |
+| `--state` | Show only agents in this state. |
+| `--cwd` | Show only agents whose working directory matches this glob. |
+| `--since` | Show only agents created at or after this time. |
+
+Filters combine with AND.
+
+orcr reconciles its registry against herdr on every call. An agent that herdr no longer
+reports is `exited`.
+
+### Output
+
+```json
+{
+  "agents": [
+    {
+      "name": "codex-1",
+      "kind": "codex",
+      "cwd": "/Users/me/code/project",
+      "model": "gpt-5.6-sol",
+      "effort": "high",
+      "state": "working",
+      "state_source": "rule:osc_title_working",
+      "created_at": "2026-09-18T09:14:02Z",
+      "agent_session": "01a0b2fe-c554-7ae0-92ab-5e9213d77517",
+      "transcript": "/Users/me/.codex/sessions/2026/09/18/rollout-....jsonl"
+    }
+  ]
+}
+```
+
+`state_source` names where the state came from. See section 1.11. `agent_session` and
+`transcript` are null until the kind binds them. See `docs/design/agents/`.
+
+---
+
+## 1.4 `orcr agent status`
+
+Show one agent, and optionally wait for it to change.
+
+```
+orcr agent status <name> [--wait <state>] [--timeout <duration>] [--json]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--wait` | none | Return when the agent reaches this state. |
+| `--timeout` | `300s` | Give up after this long. Exit code 5. |
+
+`--wait` accepts one state or several, separated by commas. `--wait idle,blocked` returns
+on whichever comes first.
+
+Without `--wait` the command returns at once. Output is one agent object, as in
+`orcr agent list`.
+
+---
+
+## 1.5 `orcr agent read`
+
+Read the conversation of an agent.
+
+```
+orcr agent read <name> [--last <n>] [--format text|jsonl] [--follow] [--json]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--last` | `50` | Show the last N messages. `--last 0` shows all. |
+| `--format` | `text` | `text` for people, `jsonl` for programs. |
+| `--follow` | off | Keep the output open and print new messages as they arrive. |
+
+orcr reads the transcript that the agent itself writes. It does not read the terminal.
+Every kind stores its transcript differently. orcr converts all of them into one shape.
+
+`text` renders one block per message: the role, the time, and the content. Tool calls
+render as a one line summary, not as full arguments and results.
+
+`jsonl` prints one JSON object per line.
+
+```json
+{"seq":12,"role":"assistant","at":"2026-09-18T09:20:31Z","text":"...","tools":["Bash","Read"]}
+```
+
+| Field | Meaning |
+|---|---|
+| `seq` | Position in the conversation, starting at 1. |
+| `role` | `user`, `assistant`, or `system`. |
+| `at` | When the message was recorded. |
+| `text` | The message text. |
+| `tools` | Names of the tools this message called. Empty when there are none. |
+
+A transcript can be absent even when the agent runs. Some kinds do not write a file until
+the first turn finishes. `orcr agent read` reports an empty conversation in that case. It
+does not fail.
+
+---
+
+## 1.6 `orcr agent message`
+
+Send a message to an agent.
+
+```
+orcr agent message <name> <text> [--immediate] [--timeout <duration>] [--json]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--immediate` | off | Interrupt the current turn first. |
+| `--timeout` | the kind's own deadline | How long to wait for delivery confirmation. |
+
+Read the text from standard input by passing `-` as the text.
+
+### What it does
+
+1. Read the state. Refuse when the agent is `blocked`, `exited`, or `unknown`. See section
+   1.11.
+2. With `--immediate`, interrupt the agent and wait for it to become `idle`. This is the
+   same as running `orcr agent interrupt` and then `orcr agent message`.
+3. Clear the composer.
+4. Paste the text.
+5. Press Enter.
+6. Confirm that the message was delivered.
+
+Steps 1 to 6 are the same for every kind.
+
+A message sent while the agent is `working` reaches the model at the next tool call the
+agent makes. If the turn makes no further tool call, the message runs as the next turn.
+This is the behavior of all four kinds. Each kind uses a different word for it on screen.
+
+### A blocked agent
+
+When the agent is `blocked`, orcr refuses before it sends anything. It does not clear the
+dialog, and it does not type past it.
+
+```
+orcr: agent codex-1 is blocked and is waiting for a person.
+      orcr cannot answer it. Attach and clear it first:
+        orcr agent attach codex-1
+```
+
+Exit code 4, error code `blocked`.
+
+This is the one case where orcr knows the message was never sent, because the backend proved
+it: a send to a blocked agent leaves the pane unchanged and the text never appears.
+
+### Confirmation
+
+There are three outcomes.
+
+| Outcome | Meaning | Exit |
+|---|---|---|
+| `delivered` | orcr read the agent's own record of this message. | 0 |
+| `possibly_delivered` | orcr wrote the keystrokes and saw no record inside the timeout. | 5 |
+| `failed` | Nothing was sent, and orcr can prove it. | 4 |
+
+orcr confirms delivery by reading the delivery record that the agent itself writes when it
+accepts a message. It does not read the terminal, and it does not treat a keystroke as proof.
+Section 1.11 defines the record for each kind, and every kind has one. On three kinds it is a
+file written for this purpose. On Pi it is the transcript, which costs a longer wait mid turn.
+
+**`failed` means nothing happened.** The agent was blocked, or the agent is gone, or the
+backend refused the request before writing any bytes. The dividing line is proof: orcr reports
+`failed` only when it knows nothing reached the terminal. Retrying is safe.
+
+**`possibly_delivered` means orcr does not know.** The keystrokes went out, Enter was
+re-sent, and the delivery record never appeared. The message can still arrive. Retrying is not
+safe, because a duplicate is possible. Look at the agent before doing anything.
+
+The middle value exists because from outside the agent there is no way to separate "written
+with no effect" from "written and working slowly". Both of the known silent-drop modes return
+success from the backend. Naming that state honestly is better than sorting it into either
+neighbor.
+
+```
+orcr: message to codex-1 could not be confirmed after 5s.
+      The keystrokes were sent. The agent may still act on them.
+      Do not resend without checking:
+        orcr agent read codex-1 --last 5
+```
+
+### Retrying
+
+orcr never re-sends the text. A second copy of the text is a duplicate message whenever the
+first one landed late.
+
+orcr does re-send the Enter key. Pressing Enter again cannot duplicate a message.
+
+- If the text is sitting unsubmitted in the composer, Enter submits it.
+- If the composer is empty, Enter does nothing.
+
+This recovers the case where the paste arrived and the submission did not, which is otherwise
+reported as a plain failure.
+
+Enter is re-sent at most twice, only while delivery is still unconfirmed, and never after the
+agent has been seen to leave `idle`.
+
+```json
+{
+  "name": "codex-1",
+  "state_before": "working",
+  "result": "delivered",
+  "confirmed_at": "2026-09-18T09:22:10Z",
+  "latency_ms": 496
+}
+```
+
+`possibly_delivered` returns the same object with `result` set and no `confirmed_at`, plus the
+timeout that elapsed. It is an error response, with code `timeout`, because a caller that
+ignores the distinction must not read it as success.
+
+`failed` returns an error with the code that proves it: `blocked`, `not_found`, `exited`, or
+`invalid_request`.
+
+---
+
+## 1.7 `orcr agent interrupt`
+
+Stop the current turn. Do not send anything.
+
+```
+orcr agent interrupt <name> [--timeout <duration>] [--json]
+```
+
+`--timeout` defaults to `10s`.
+
+orcr sends the interrupt for the kind and waits for the agent to leave `working`. If the
+agent is still `working` after 3 seconds, orcr sends the interrupt once more and waits
+again. orcr never sends it a third time.
+
+The interrupt itself is one key sequence per kind, held as data. Three kinds take one Escape.
+One kind ignores a single Escape and needs two, with the second inside 5 seconds of the first.
+On two kinds, two Escapes at rest open a destructive view. See `docs/design/agents/`.
+
+orcr sends the interrupt only while the agent is `working`. If the agent is not `working`,
+the command succeeds and does nothing. This is what keeps orcr from ever sending the
+sequence that opens the destructive view.
+
+---
+
+## 1.8 `orcr agent attach`
+
+Give your terminal to the agent.
+
+```
+orcr agent attach <name> [--takeover]
+```
+
+This replaces your shell with the agent's terminal until you detach. It is the only command
+that is not available over the socket API, because it hands over a terminal rather than
+returning data.
+
+`--takeover` detaches any other client that is attached.
+
+---
+
+## 1.9 `orcr agent stop`
+
+Stop an agent and remove its tab.
+
+```
+orcr agent stop <name> [--json]
+```
+
+orcr asks the agent to exit, waits, and then closes the pane. The agent's transcript stays
+on disk. The registry entry stays in the orcr registry with state `exited`.
+
+---
+
+## 1.10 `orcr models`
+
+List the models and effort values each kind accepts.
+
+```
+orcr models [--kind <kind>] [--json]
+```
+
+orcr queries each kind directly on every run. There is no cache. orcr probes the four kinds
+at the same time, so the command takes about as long as the slowest probe, which is about
+30 seconds. No probe starts a billed turn.
+
+orcr starts a short lived server process for one kind, and stops it before the command
+returns. See `docs/design/agents/opencode.md`.
+
+`--model` and `--effort` on `orcr agent new` are not checked against this list. The list
+tells you what to pass. It does not gate what you pass.
+
+### Output
+
+```json
+{
+  "kinds": [
+    {
+      "kind": "codex",
+      "version": "0.154.0",
+      "status": "ok",
+      "default_model": "gpt-5.6-sol",
+      "models": [
+        {
+          "id": "gpt-5.6-luna",
+          "display_name": "GPT-5.6-Luna",
+          "default_effort": "medium",
+          "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+        }
+      ]
+    },
+    {
+      "kind": "opencode",
+      "status": "error",
+      "error": {
+        "code": "internal",
+        "message": "model catalogue fetch failed"
+      },
+      "models": []
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `status` | `ok` when the probe worked, `error` when it did not. |
+| `efforts` | The effort values this model accepts, in the kind's own words. |
+| `efforts` is `[]` | This model accepts no effort value. |
+
+orcr does not translate effort words between kinds. `--effort` passes through as written.
+
+A kind whose probe fails reports `status: "error"` and an empty model list. The rest of the
+output is still valid. One failing kind does not fail the command.
+
+---
+
+## 1.11 Readiness and delivery
+
+orcr holds no screen patterns and maintains no screen matching code.
+
+The backend derives some of its state by reading the terminal, under per-kind rules that it
+maintains and updates. Readiness and delivery both come from files the agent writes, because
+the terminal cannot be trusted for either. See `limitations.md` for the measured failures.
+
+So orcr answers three questions from the agent's own files.
+
+### Remove what can stall, do not answer it
+
+An agent stops and waits for a person in three ways. orcr removes all three before launch
+rather than detecting them afterwards.
+
+1. A startup screen, below.
+2. A tool whose job is to ask the person something. Every kind can be told not to load these.
+   The exact names and syntax are in `docs/design/agents/`.
+3. A program the agent starts inside a shell command that waits for input of its own:
+   - an interactive rebase
+   - a pager
+   - a host key confirmation
+   - a login dialog
+
+The third is the same for every kind, so orcr sets it once in the environment it gives every
+agent.
+
+```
+EDITOR=true  VISUAL=true  GIT_EDITOR=true
+PAGER=cat    GIT_PAGER=cat
+GIT_TERMINAL_PROMPT=0  CI=1
+```
+
+Without this an agent can stall inside a shell command that orcr cannot see. That is worse
+than a dialog, because no state reports it.
+
+`VISUAL` is not optional. It takes precedence over `EDITOR` in most editor selection. Leaving
+it out was proven to hand a real editor the terminal on one kind despite `EDITOR=true`.
+`GIT_PAGER` is separate from `PAGER` for the same reason.
+
+Setting these in the environment is not always enough. One kind captures a shell snapshot at
+startup and applies it after orcr's environment, which silently defeats `EDITOR`. For that kind
+orcr also sets them through the agent's own configuration. See `docs/design/agents/codex.md`.
+
+### Remove the startup screens, do not answer them
+
+Every kind shows at least one screen before it accepts input. Permission bypass removes none
+of them. Each screen has a configuration key or a launch argument that stops it appearing.
+
+orcr sets those before it launches the agent. A screen that never appears needs no detection
+and no keystroke.
+
+Three of the four kinds carry every startup setting as a launch argument or as inline
+configuration, so orcr writes no file for them.
+
+Claude is the exception. Three of its keys have no launch form, so orcr writes them to the
+person's configuration: the folder trust record, and two keys that clear the theme picker and
+the security notes screen. orcr writes a key only when it is absent, and writes the trust key
+only for the working directory. The result is the state that answering the dialogs once
+produces. See `docs/design/agents/claude.md`.
+
+The write must follow a symbolic link, so orcr resolves the real path first and writes there.
+
+When orcr cannot set a key, `orcr agent new` fails before launching. It does not start an
+agent that will stop on a dialog.
+
+### Readiness
+
+Each kind has a signal that appears only after every startup screen is cleared. orcr waits for
+that signal. On three kinds it is a file the agent writes. On Pi it is the session reference
+that the herdr integration publishes.
+
+The test that makes a signal trustworthy is the negative one. A signal is only usable if it
+stays absent while a dialog is on screen. Several obvious candidates fail that test by more
+than a minute.
+
+Per-kind signals, with their measurements, are in `docs/design/agents/`.
+
+### Delivery
+
+orcr confirms a message by reading the delivery record the agent writes when it accepts the
+message.
+
+The method is the same for every kind:
+
+1. Take a watermark before submitting. A byte offset or a line count, depending on the file.
+   A missing file counts as zero.
+2. Submit the text.
+3. Poll from the watermark. Discard an incomplete final line.
+4. Accept the first new delivery record that matches the submitted text and belongs to this
+   agent's session.
+
+Two rules that the measurements forced:
+
+- Compare positions in the file, not timestamps inside records. One kind writes a delivery
+  record whose internal timestamp is earlier than the moment the record can be read.
+- A message sent mid turn can be recorded in a different shape from one sent at rest. On one
+  kind a mid turn message never produces the record type that a naive check looks for. A
+  check that matches only that type reports failure for every message sent mid turn.
+
+A kind can also write the message to more than one file, with very different timing. One
+kind records it in under half a second in one file, and not until the running tool returns,
+measured at 17.82 seconds and unbounded, in another. The per-kind file to poll is named in
+`docs/design/agents/`, and the choice is not interchangeable.
+
+### State
+
+The backend reports the state. That is the default for every kind.
+
+herdr maintains per-kind detection rules, updates them as the agents change, and already
+answers this question. orcr does not keep rules of its own and does not read the terminal to
+second-guess the answer.
+
+The backend's answer is good enough here because it is not load bearing. Correctness rests on
+delivery confirmation, which reads the delivery record. State is for reporting: it tells a
+caller what an agent is doing.
+
+orcr adds a per-kind signal in exactly two cases, both recorded in `docs/design/agents/`.
+
+1. **Readiness at start.** The backend reports an agent as ready while a startup screen is on
+   screen, and on one kind 25.4 seconds before its interface has drawn itself. Starting an
+   agent depends on knowing it is genuinely ready, so orcr uses the kind's own signal for this
+   one question. This is a must, not a preference.
+2. **Where the backend has no rule at all and the answer matters.** One kind has no idle rule,
+   so its idle answer is a default rather than an observation.
+
+Anything else falls back to the backend. If the backend is wrong about a state, the fix
+belongs in its detection rules, where every tool that uses it benefits, not in orcr.
+
+`state_source` in the output names where a state came from.
+
+| Value | Meaning |
+|---|---|
+| `backend` | The backend reported the state. The normal case. |
+| `pushed` | The kind's integration reported the state to the backend directly. |
+| `file` | A per-kind signal, used for the two cases above. |
+| `fallback` | The backend matched no rule and returned a default. |
+| `liveness` | The process ended. |
+
+---
+
+## 1.12 `orcr doctor`
+
+Report whether orcr can work.
+
+```
+orcr doctor [--json]
+```
+
+It checks, and prints one line for each:
+
+- herdr is installed, running, and speaks a supported protocol.
+- The herdr integration for each kind is installed and current.
+- Each kind's binary is present, and its version.
+- The orcr registry is readable and agrees with herdr.
+
+Exit code 0 when everything passes. Exit code 6 or 7 on the first failure that stops orcr
+from working.
+
+---
+
+## 1.13 `orcr serve`
+
+Run the socket API server.
+
+```
+orcr serve [--socket <path>]
+```
+
+The default socket path is `$XDG_RUNTIME_DIR/orcr/orcr.sock`, and
+`~/.local/state/orcr/orcr.sock` when `XDG_RUNTIME_DIR` is not set.
+
+Every other orcr command starts this server if it is not already running, and then connects
+to it. You do not have to run `orcr serve` yourself.
+
+---
+
+# Part 2 — Socket API
+
+## 2.1 Transport
+
+A UNIX domain stream socket. The framing is newline delimited JSON. One compact JSON object
+per line, UTF-8 encoded, terminated by `\n`. There is no length prefix and no header.
+
+A single connection carries many requests and their responses, in any order. A response
+carries the `id` of its request. A caller can have several requests in flight at once.
+
+The maximum frame size is 8 MiB. A larger frame closes the connection.
+
+The first frame a caller sends must be `hello`. The server rejects every other method
+before `hello` with `invalid_request`.
+
+## 2.2 Request
+
+```json
+{"protocol": 1, "id": "c1", "method": "agent.list", "params": {}}
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `protocol` | yes | The protocol version the client speaks. |
+| `id` | yes | Any string the client chooses. The server echoes it. |
+| `method` | yes | A method name from section 2.5. |
+| `params` | yes | An object. Send `{}` when a method takes no arguments. |
+
+## 2.3 Success response
+
+```json
+{"id": "c1", "ok": true, "result": {"type": "agent_list", "agents": []}}
+```
+
+`result` is a tagged union. `type` names the shape. A caller can route or log any response
+without knowing which method produced it.
+
+## 2.4 Error response
+
+```json
+{"id": "c1", "ok": false,
+ "error": {"code": "not_ready", "message": "agent codex-1 is not at its input prompt",
+           "details": {"name": "codex-1", "state": "idle", "state_source": "fallback"}}}
+```
+
+`id` is an empty string when the server could not parse a request far enough to find one.
+
+`code` is one of nine values. The set is closed.
+
+| Code | Meaning | Exit code |
+|---|---|---|
+| `invalid_request` | The frame or the arguments are wrong. | 2 |
+| `unsupported_protocol` | The client protocol is not supported. | 6 |
+| `not_found` | No agent has that name. | 3 |
+| `not_ready` | The agent cannot accept this action now. | 4 |
+| `blocked` | The agent waits for a person. | 4 |
+| `timeout` | The action did not finish in time. | 5 |
+| `backend_unavailable` | herdr is missing, stopped, or incompatible. | 6 |
+| `integration_missing` | The herdr integration for this kind is missing or stale. | 7 |
+| `internal` | Anything else. | 1 |
+
+`message` is prose for a person. It states what to do next when there is something to do.
+`details` carries machine readable context. A small closed code set works because `details`
+carries the specifics.
+
+## 2.5 Methods
+
+| Method | Result type | Command |
+|---|---|---|
+| `hello` | `hello` | none |
+| `agent.new` | `agent` | `orcr agent new` |
+| `agent.list` | `agent_list` | `orcr agent list` |
+| `agent.get` | `agent` | `orcr agent status` |
+| `agent.read` | `transcript` | `orcr agent read` |
+| `agent.message` | `message_sent` | `orcr agent message` |
+| `agent.interrupt` | `ok` | `orcr agent interrupt` |
+| `agent.stop` | `ok` | `orcr agent stop` |
+| `models.list` | `model_list` | `orcr models` |
+| `watch.open` | `watch_opened` | `--follow`, `--wait` |
+| `doctor` | `doctor` | `orcr doctor` |
+
+Eleven methods. `orcr agent attach` has no method, because it hands over a terminal.
+
+### `hello`
+
+```json
+{"protocol": 1, "id": "c0", "method": "hello",
+ "params": {"client": "orcr-cli", "client_version": "0.1.0"}}
+```
+
+```json
+{"id": "c0", "ok": true, "result": {
+  "type": "hello",
+  "version": "0.1.0",
+  "protocol": 1,
+  "capabilities": {"watch": true, "follow": true}
+}}
+```
+
+Three separate fields. `version` is for people. `protocol` is an integer for wire
+compatibility. `capabilities` is a named set for feature probing. A caller checks
+`protocol` once and refuses with one clear error, rather than failing method by method.
+
+### `agent.new`
+
+```json
+{"kind": "codex", "cwd": "/Users/me/code/p", "model": "gpt-5.6-sol",
+ "effort": "high", "name": null, "prompt": null, "timeout_ms": 120000}
+```
+
+`kind` is required. Every other field can be null.
+
+### `agent.list`
+
+```json
+{"kind": null, "state": null, "cwd_glob": null, "since": null}
+```
+
+### `agent.get`
+
+```json
+{"name": "codex-1", "wait": ["idle", "blocked"], "timeout_ms": 300000}
+```
+
+`wait` can be null or an empty array. The server then returns at once.
+
+### `agent.read`
+
+```json
+{"name": "codex-1", "last": 50}
+```
+
+`last: 0` returns the whole conversation. Use `watch.open` to follow a live transcript.
+
+### `agent.message`
+
+```json
+{"name": "codex-1", "text": "also check the tests", "immediate": false,
+ "timeout_ms": 30000}
+```
+
+### `models.list`
+
+```json
+{"kind": null}
+```
+
+### `watch.open`
+
+```json
+{"subjects": ["agent.state_changed", "agent.exited"],
+ "names": ["codex-1"], "since_seq": null}
+```
+
+The response carries a snapshot and a cursor under one number. A caller then never misses an
+event between reading the state and subscribing to changes.
+
+```json
+{"id": "c9", "ok": true, "result": {
+  "type": "watch_opened",
+  "watch": "w1",
+  "seq": 412,
+  "snapshot": {"agents": []}
+}}
+```
+
+Events then stream on the same connection.
+
+```json
+{"watch": "w1", "seq": 413, "event": {
+  "type": "agent.state_changed",
+  "name": "codex-1",
+  "state": "working",
+  "state_source": "rule:osc_title_working",
+  "at": "2026-09-18T09:22:10Z"
+}}
+```
+
+An event frame has no `id`, because it answers no request. It has `watch` and `seq`.
+
+`seq` increases by one for every event on a watch. A caller that reconnects passes
+`since_seq` and receives everything it missed. A stream without a cursor loses events on a
+dropped connection with no way to catch up.
+
+Event types:
+
+| Type | When |
+|---|---|
+| `agent.created` | An agent reached a ready state. |
+| `agent.state_changed` | The state changed. |
+| `agent.message` | A message was appended to a transcript. |
+| `agent.exited` | The agent process ended. |
+
+`watch.close` is not a method. Closing the connection closes the watch.
+
+## 2.6 Schema
+
+The server generates its JSON Schema from the same method registry it dispatches on, so the
+schema cannot drift from the implementation. Every `$ref` uses a standard JSON Pointer root
+of `#/$defs/`, so any conforming resolver can read it.
+
+`orcr serve --schema` writes the schema to standard output and exits.

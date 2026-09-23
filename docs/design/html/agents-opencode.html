@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>orcr — OpenCode</title>
+<link rel="icon" href="data:image/svg+xml,
+  %3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E
+  %3Crect width='32' height='32' rx='7' fill='%233b5bdb'/%3E
+  %3Ctext x='16' y='23' font-family='monospace' font-size='19' font-weight='700'
+  fill='white' text-anchor='middle'%3Eo%3C/text%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#fbfbfa; --panel:#fff; --fg:#1b1b1a; --dim:#6b6b66; --line:#e6e5e1;
+  --accent:#3b5bdb; --code-bg:#f4f4f1; --full:#2f8a55; --part:#b8860b; --none:#a8a8a2;
+  --mark-v:#2f8a55; --mark-u:#b0562a;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#16161a; --panel:#1c1c21; --fg:#e6e6e3; --dim:#9a9a94; --line:#2c2c33;
+    --accent:#8aa2ff; --code-bg:#22222a; --full:#5fbd84; --part:#d6a63a; --none:#6b6b73;
+    --mark-v:#5fbd84; --mark-u:#e08a5a;
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:16px/1.65 ui-sans-serif,-apple-system,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{display:grid; grid-template-columns:270px minmax(0,1fr); gap:0; max-width:1400px; margin:0 auto}
+nav{
+  position:sticky; top:0; height:100vh; overflow-y:auto; padding:28px 20px 60px;
+  border-right:1px solid var(--line); font-size:13.5px;
+}
+nav .brand{font-weight:650; font-size:17px; letter-spacing:-.01em; margin-bottom:2px}
+nav .sub{color:var(--dim); font-size:12.5px; margin-bottom:22px}
+nav .back{
+  display:block; font-size:12.5px; color:var(--dim); text-decoration:none;
+  margin:0 0 18px; padding:5px 10px; border:1px solid var(--line); border-radius:6px;
+}
+nav .back:hover{color:var(--fg); background:var(--code-bg)}
+nav .group{
+  font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.07em;
+  margin:18px 0 6px; font-weight:600;
+}
+nav .group:first-of-type{margin-top:0}
+nav .doc{
+  display:block; padding:6px 10px; margin:1px 0; border-radius:6px; color:var(--fg);
+  text-decoration:none; border:1px solid transparent;
+}
+nav .doc .t{display:block; font-weight:550; font-size:13.5px}
+nav .doc .b{display:block; font-size:11.5px; opacity:.65; margin-top:1px}
+nav .doc:hover{background:var(--code-bg)}
+nav .doc.on{background:var(--accent); border-color:var(--accent); color:#fff}
+nav .doc.on .f,nav .doc.on .b{opacity:.85}
+nav .hint{font-size:11.5px; color:var(--dim); margin:14px 0 4px;
+  text-transform:uppercase; letter-spacing:.06em}
+nav .toc{margin:6px 0 20px; padding:0 0 0 2px; list-style:none}
+nav .toc li{margin:0}
+nav .toc a{
+  display:block; padding:4px 10px; color:var(--dim); text-decoration:none;
+  border-left:2px solid transparent; line-height:1.4;
+}
+nav .toc a:hover{color:var(--fg)}
+nav .toc a.active{color:var(--accent); border-left-color:var(--accent); background:var(--code-bg)}
+nav .toc .l3 a{padding-left:24px; font-size:12.5px}
+main{padding:44px 52px 140px; min-width:0}
+section.doc{display:none}
+section.doc.on{display:block}
+h1{font-size:30px; letter-spacing:-.02em; margin:0 0 6px}
+h2{font-size:21px; letter-spacing:-.015em; margin:56px 0 14px; padding-bottom:8px; border-bottom:1px solid var(--line)}
+h3{font-size:16.5px; margin:32px 0 10px; letter-spacing:-.01em}
+h4{font-size:15px; margin:22px 0 8px; color:var(--dim)}
+p,li{max-width:74ch}
+p{margin:0 0 14px}
+ul,ol{margin:0 0 16px; padding-left:22px}
+li{margin:5px 0}
+hr{border:0; border-top:1px solid var(--line); margin:40px 0}
+a{color:var(--accent)}
+code{
+  background:var(--code-bg); padding:1.5px 5px; border-radius:4px; font-size:13px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+pre{
+  background:var(--code-bg); border:1px solid var(--line); border-radius:8px;
+  padding:14px 16px; overflow-x:auto; margin:0 0 18px;
+}
+pre code{background:none; padding:0; font-size:12.5px; line-height:1.55}
+.tw{overflow-x:auto; margin:0 0 20px; border:1px solid var(--line); border-radius:8px}
+table{border-collapse:collapse; width:100%; font-size:13.5px}
+th,td{text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top}
+th{font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--dim);
+   background:var(--code-bg); white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--code-bg)}
+td code{font-size:12px; white-space:nowrap}
+table.wide{font-size:12.5px}
+table.wide th,table.wide td{padding:7px 10px}
+table.wide th:first-child,table.wide td:first-child{
+  position:sticky; left:0; z-index:1; background:var(--bg);
+  border-right:1px solid var(--line); font-weight:560;
+}
+table.wide thead th:first-child{background:var(--code-bg); z-index:2}
+table.wide tbody tr:hover td:first-child{background:var(--code-bg)}
+h2[id],h3[id]{scroll-margin-top:24px}
+.g{font-size:14px; margin-right:3px}
+.g.full{color:var(--full)} .g.part{color:var(--part)} .g.none{color:var(--none)}
+.mark{
+  display:inline-block; min-width:16px; text-align:center; font-size:10.5px; font-weight:700;
+  padding:1px 5px; border-radius:4px; vertical-align:2px; letter-spacing:.03em;
+}
+.mark.v{background:color-mix(in srgb,var(--mark-v) 16%,transparent); color:var(--mark-v)}
+.mark.u{background:color-mix(in srgb,var(--mark-u) 16%,transparent); color:var(--mark-u)}
+.st{font-weight:560}
+.st.working{color:var(--accent)} .st.blocked{color:var(--mark-u)} .st.error{color:#c0392b}
+.st.idle,.st.exited,.st.unknown{color:var(--dim)}
+.anchor{
+  margin-left:8px; color:var(--line); text-decoration:none; font-weight:400;
+  opacity:0; transition:opacity .12s;
+}
+h2:hover .anchor,h3:hover .anchor{opacity:1}
+.meta{color:var(--dim); font-size:13.5px; margin-bottom:34px}
+
+/* comments */
+mark.cm{
+  background:color-mix(in srgb,#f5c542 34%,transparent); color:inherit;
+  border-bottom:1.5px solid #d8a318; border-radius:2px; cursor:pointer;
+}
+mark.cm:hover{background:color-mix(in srgb,#f5c542 55%,transparent)}
+#ctip{
+  position:absolute; display:none; z-index:60; padding:5px 11px; border:0;
+  border-radius:6px; background:var(--accent); color:#fff; font:inherit;
+  font-size:12.5px; font-weight:560; cursor:pointer; box-shadow:0 2px 10px rgba(0,0,0,.22);
+}
+#ctoggle{
+  position:fixed; right:18px; bottom:18px; z-index:50; display:flex; align-items:center;
+  gap:6px; padding:9px 13px; border:1px solid var(--line); border-radius:22px;
+  background:var(--panel); color:var(--fg); cursor:pointer; font:inherit; font-size:13px;
+  box-shadow:0 2px 12px rgba(0,0,0,.14);
+}
+#ctoggle:hover{border-color:var(--accent); color:var(--accent)}
+#ccount:empty{display:none}
+#ccount{
+  min-width:17px; padding:0 5px; border-radius:9px; background:var(--accent);
+  color:#fff; font-size:11px; font-weight:700; line-height:17px; text-align:center;
+}
+#cpanel{
+  position:fixed; top:0; right:0; width:360px; height:100vh; z-index:55;
+  display:flex; flex-direction:column; background:var(--panel);
+  border-left:1px solid var(--line); transform:translateX(100%);
+  transition:transform .16s ease; box-shadow:-2px 0 18px rgba(0,0,0,.10);
+}
+body.cpanel-on #cpanel{transform:none}
+body.cpanel-on #ctoggle{display:none}
+@media(min-width:1500px){ body.cpanel-on .wrap{margin-right:360px} }
+#cpanel header{
+  display:flex; align-items:center; gap:7px; padding:13px 14px;
+  border-bottom:1px solid var(--line); font-size:14px;
+}
+#cpanel header .sp{flex:1}
+#cpanel header button{
+  border:1px solid var(--line); background:none; color:var(--dim); cursor:pointer;
+  font:inherit; font-size:11.5px; padding:3px 9px; border-radius:5px;
+}
+#cpanel header button:hover{color:var(--fg); border-color:var(--fg)}
+#cclose{font-size:15px !important; line-height:1; padding:2px 8px !important}
+#clist{flex:1; overflow-y:auto; padding:10px 12px 30px}
+#clist .empty{color:var(--dim); font-size:13px; padding:14px 2px; max-width:none}
+.citem{
+  border:1px solid var(--line); border-radius:8px; padding:10px 11px; margin-bottom:10px;
+  background:var(--bg);
+}
+.citem.on{border-color:var(--accent)}
+.citem.orphan{opacity:.72}
+.csec{font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.04em;
+      margin-bottom:6px}
+.citem blockquote{
+  margin:0 0 7px; padding:5px 9px; border-left:2px solid #d8a318; font-size:12.5px;
+  color:var(--dim); background:var(--code-bg); border-radius:0 4px 4px 0;
+  max-height:88px; overflow:hidden;
+}
+.cbody{font-size:13.5px; white-space:pre-wrap; margin-bottom:8px}
+.cact{display:flex; gap:6px}
+.cact button{
+  border:1px solid var(--line); background:none; color:var(--dim); cursor:pointer;
+  font:inherit; font-size:11.5px; padding:2px 8px; border-radius:5px;
+}
+.cact button:hover{color:var(--fg); border-color:var(--fg)}
+#cpanel footer{
+  padding:9px 14px; border-top:1px solid var(--line); color:var(--dim); font-size:11.5px;
+}
+@media(max-width:900px){ #cpanel{width:100%} }
+#cpop{
+  position:fixed; display:none; z-index:70; width:340px; padding:11px;
+  background:var(--panel); border:1px solid var(--line); border-radius:9px;
+  box-shadow:0 6px 26px rgba(0,0,0,.20);
+}
+#cpop.on{display:block}
+#cpop .q{
+  font-size:12px; color:var(--dim); background:var(--code-bg);
+  border-left:2px solid #d8a318; border-radius:0 4px 4px 0; padding:5px 8px;
+  margin-bottom:8px; max-height:60px; overflow:hidden;
+}
+#cpop textarea{
+  width:100%; resize:vertical; font:inherit; font-size:13.5px; padding:7px 9px;
+  border:1px solid var(--line); border-radius:6px; background:var(--bg);
+  color:var(--fg);
+}
+#cpop textarea:focus{outline:none; border-color:var(--accent)}
+#cpop .row{display:flex; align-items:center; gap:7px; margin-top:8px}
+#cpop .row .sp{flex:1}
+#cpop .k{font-size:11px; color:var(--dim)}
+#cpop button{
+  border:1px solid var(--line); background:none; color:var(--dim); cursor:pointer;
+  font:inherit; font-size:12px; padding:4px 11px; border-radius:6px;
+}
+#cpop button:hover{color:var(--fg); border-color:var(--fg)}
+#cpop button.pri{background:var(--accent); border-color:var(--accent); color:#fff}
+#cpop button.pri:hover{opacity:.9; color:#fff}
+#cclear.armed{color:#c0392b; border-color:#c0392b}
+.legend{display:flex; gap:18px; flex-wrap:wrap; font-size:12.5px; color:var(--dim); margin:-6px 0 22px}
+@media(max-width:900px){
+  .wrap{grid-template-columns:1fr}
+  nav{position:static; height:auto; border-right:0; border-bottom:1px solid var(--line)}
+  main{padding:28px 20px 80px}
+}
+</style>
+</head><body>
+<div class="wrap">
+  <nav>
+    <div class="brand">orcr</div>
+    <div class="sub">one CLI for coding agent sessions</div>
+    <a class="back" href="index.html">&#8592; all documents</a><a class="doc" data-doc="opencode" href="#opencode" title="agents/opencode.md"><span class="t">OpenCode</span><span class="b">--kind opencode</span></a><ul class="toc" data-doc="opencode"><li class="l2"><a href="#version-requirement">Version requirement</a></li><li class="l2"><a href="#launch">Launch</a></li><li class="l3"><a href="#interactive-tools">Interactive tools</a></li><li class="l2"><a href="#startup">Startup</a></li><li class="l2"><a href="#readiness">Readiness</a></li><li class="l2"><a href="#message-delivery">Message delivery</a></li><li class="l3"><a href="#reading-the-database-safely">Reading the database safely</a></li><li class="l2"><a href="#session-identity">Session identity</a></li><li class="l2"><a href="#state">State</a></li><li class="l2"><a href="#interrupt">Interrupt</a></li><li class="l2"><a href="#transcript">Transcript</a></li><li class="l2"><a href="#model-catalogue">Model catalogue</a></li><li class="l2"><a href="#steering">Steering</a></li><li class="l2"><a href="#not-verified">Not verified</a></li></ul>
+  </nav>
+  <main><section class="doc" id="doc-opencode"><h1 id="opencode">OpenCode<a class="anchor" href="#opencode" aria-hidden="true">#</a></h1>
+<p><code>--kind opencode</code></p>
+<h2 id="version-requirement">Version requirement<a class="anchor" href="#version-requirement" aria-hidden="true">#</a></h2>
+<p>OpenCode must be 1.18.29 or newer. The herdr integration for <code>opencode</code> exports an entry point that older builds never call, so on an older build the integration loads, reports nothing, and everything it supplies is silently absent.</p>
+<p><code>orcr doctor</code> checks the version and refuses below the floor.</p>
+<p>A binary named <code>opencode</code> is not always OpenCode. During this design work the binary with that name was a redirect stub for an older fork, and every conclusion drawn from it was wrong. Set <code>kind.opencode.binary</code> in the configuration to point at a specific build.</p>
+<h2 id="launch">Launch<a class="anchor" href="#launch" aria-hidden="true">#</a></h2>
+<pre><code>opencode --yolo -m &lt;provider&gt;/&lt;model&gt; --hostname 127.0.0.1 --port &lt;port&gt;</code></pre>
+<p><code>--yolo</code>, <code>--auto</code> and <code>--dangerously-skip-permissions</code> are three spellings of one boolean, combined into a single value. OpenCode has no setting between asking and not asking, so there is no safer intermediate mode to prefer here.</p>
+<p><strong>Effort cannot be set on the command line for an interactive session.</strong> A third path segment on <code>-m</code> does not select a variant. It is appended to the model identifier and breaks the run. The <code>--variant</code> flag that does select one exists on the non-interactive <code>run</code> subcommand only, and is absent from the interactive option list.</p>
+<p>Effort comes from configuration, passed inline so that nothing the person owns is modified:</p>
+<pre><code>OPENCODE_CONFIG_CONTENT={"agent":{"build":{"model":"&lt;provider&gt;/&lt;model&gt;","variant":"&lt;effort&gt;"}}}</code></pre>
+<p>This is merged as the last configuration layer, so it overrides the person's own settings for this process and changes no file. Confirmed in source: the loader calls <code>merge</code> for that layer rather than replacing.</p>
+<p><code>build</code> is the name of a mode. OpenCode calls its modes agents, and a mode is not a model. The <code>-m</code> flag never accepts one. orcr uses the word agent for a session it starts, so the two meanings collide in this kind only.</p>
+<p>Proven on the wire rather than on screen. With the key set, the outgoing request carries <code>"reasoning": {"effort": "high", "summary": "auto"}</code>. Without it the field is absent. The database and the HTTP API both report the same resolved variant.</p>
+<p>Three rules, each of which fails quietly if broken.</p>
+<p><strong><code>variant</code> without <code>model</code> does nothing.</strong> The variant applies only to the agent's configured model, so both keys must be present together. With <code>variant</code> alone the API reports the variant while the request goes out with no reasoning field at all. This is the trap: every observable except the wire says it worked.</p>
+<p><strong>The model must publish variants.</strong> A variant name that the model does not offer resolves to nothing. <code>orcr models</code> reports the set per model.</p>
+<p><strong>It is fixed for the life of the process.</strong> The value is read at startup, and editing configuration under a running agent changes nothing until restart. Only <code>orcr agent new</code> sets it.</p>
+<p>A person using the in-session model picker outranks all of this. That explains an agent whose effort is not what orcr set.</p>
+<p><strong>orcr pins an HTTP port.</strong> The interactive program serves its own API on that port. orcr uses it for readiness and for detecting a blocked agent. orcr chooses a free port and records it in the registry.</p>
+<h3 id="interactive-tools">Interactive tools<a class="anchor" href="#interactive-tools" aria-hidden="true">#</a></h3>
+<p>Two layers, and orcr uses both.</p>
+<pre><code>OPENCODE_CLIENT=orcr
+OPENCODE_PERMISSION={"question":"deny","plan_enter":"deny","plan_exit":"deny"}</code></pre>
+<p>The first keeps <code>question</code> out of the registered tool list. The gate is on the client name: any value outside <code>app</code>, <code>cli</code> and <code>desktop</code> works, and <code>orcr</code> is one such value. Do not set <code>OPENCODE_ENABLE_QUESTION_TOOL</code>, which overrides the gate and puts the tool back.</p>
+<p><code>plan_exit</code> is a real tool id but is registered only when an experimental plan mode is enabled and the client is <code>cli</code>. Under orcr's client name it is absent already. <code>plan_enter</code> is not a tool at all, only a permission name, so denying it is harmless and removes nothing.</p>
+<p>The second denies them even if registration changes. The variable is merged after the configuration file, so it wins.</p>
+<p>The configuration form works too, and has one trap that silently undoes the whole thing:</p>
+<pre><code>{"permission": {"*": "allow", "question": "deny",
+                "plan_enter": "deny", "plan_exit": "deny"}}</code></pre>
+<p>Rules are a flat list resolved by last match. <code>"*": "allow"</code> must come first. Put it last and it re-enables everything that precedes it. Keys accept wildcards, so <code>"quest*": "deny"</code> works.</p>
+<p>The older <code>{"tools": {"question": false}}</code> form also works, and loses to any later <code>permission</code> block.</p>
+<p>There is no command line flag for this on any subcommand.</p>
+<h2 id="startup">Startup<a class="anchor" href="#startup" aria-hidden="true">#</a></h2>
+<p>OpenCode shows no startup screen when at least one model provider resolves. A provider resolves from the generated configuration, from stored credentials, or from a recognized API key variable.</p>
+<p>With no provider at all it opens a "Connect a provider" dialog at startup regardless of how fresh the configuration is. orcr asserts a provider in the configuration it generates, and treats that dialog as a launch failure rather than something to answer.</p>
+<p>Given a provider, there is nothing to suppress and nothing to answer.</p>
+<p>The full screen notice reported on a fork is fork behavior, not OpenCode behavior.</p>
+<h2 id="readiness">Readiness<a class="anchor" href="#readiness" aria-hidden="true">#</a></h2>
+<p>Send a nonce through the agent's own composer and wait for it to come back.</p>
+<pre><code>POST /tui/append-prompt   with a nonce
+POST /tui/clear-prompt</code></pre>
+<p>Repeat until the nonce appears in <code>$XDG_STATE_HOME/opencode/prompt-history.jsonl</code>.</p>
+<p>Three details make this work, and getting any of them wrong breaks it silently.</p>
+<p><strong>The nonce must be at least 20 characters.</strong> That file is appended when the composer is submitted, and when it is cleared while holding a draft of 20 or more trimmed characters. orcr never submits, so the clear is what records the nonce, and a short nonce records nothing.</p>
+<p><strong>The return values prove nothing.</strong> Both endpoints publish an internal event and return true immediately, before the interface has processed anything. Waiting for the nonce to come back out is the proof, not the response.</p>
+<p><strong>These endpoints reach the interface even when a dialog is open</strong>, and <code>clear-prompt</code> closes that dialog. So the readiness check must run before orcr considers the agent usable and never as a health check on a live agent, or it can dismiss something a person was answering.</p>
+<p>For the same reasons orcr does not use these endpoints to deliver a message.</p>
+<p>This round trip is the only signal that is not optimistic. Everything cheaper fires early:</p>
+<div class="tw"><table><thead><tr><th>Signal</th><th>How early</th></tr></thead><tbody><tr><td>The backend's own readiness answer</td><td>25.4 seconds</td></tr><tr><td>Log file appears</td><td>15 seconds</td></tr><tr><td>Database file appears, port opens</td><td>11 seconds</td></tr><tr><td>Lock directory appears</td><td>10 seconds</td></tr><tr><td><code>/tui/*</code> returns HTTP 200</td><td>still starting</td></tr></tbody></table></div>
+<p>The HTTP server answers before the terminal interface can accept input, so a bare health check is not readiness. Only the round trip through the composer proves the interface is live.</p>
+<p>The terminal title becomes correct about 0.63 seconds early and is a usable cheap fallback, but orcr uses the round trip, because the port is already pinned for the blocked check and the round trip costs one more request.</p>
+<h2 id="message-delivery">Message delivery<a class="anchor" href="#message-delivery" aria-hidden="true">#</a></h2>
+<p>The delivery record is in the SQLite database.</p>
+<pre><code>$XDG_DATA_HOME/opencode/opencode.db          release build
+$XDG_DATA_HOME/opencode/opencode-local.db    development build</code></pre>
+<p>The file name carries the release channel. Set <code>OPENCODE_DB</code> at launch to pin it, so orcr polls the file the agent writes.</p>
+<p>Take the watermark as the current time in milliseconds. After submitting, poll every 200 milliseconds, joining <code>part</code> to <code>message</code>:</p>
+<pre><code>part.time_created &gt;= &lt;watermark&gt;
+  and message.data -&gt;&gt; '$.role' = 'user'
+  and part.data   -&gt;&gt; '$.type' = 'text'
+  and part.data   -&gt;&gt; '$.text' matches the submitted text</code></pre>
+<p>Measured latency:</p>
+<div class="tw"><table><thead><tr><th>Case</th><th>Delay</th></tr></thead><tbody><tr><td>From rest</td><td>0.34 seconds</td></tr><tr><td>Mid turn</td><td>0.38 seconds</td></tr><tr><td>First message of a new agent</td><td>0.43 seconds</td></tr></tbody></table></div>
+<p>Timeout 5 seconds.</p>
+<p>A message sent in the middle of a turn was readable 50.8 seconds before the running 60 second tool returned. OpenCode records a message when it accepts it, not when it acts on it.</p>
+<h3 id="reading-the-database-safely">Reading the database safely<a class="anchor" href="#reading-the-database-safely" aria-hidden="true">#</a></h3>
+<p>The database uses write ahead logging. Open it read only with <code>mode=ro</code>. Never open it with <code>immutable=1</code>: that tells SQLite to ignore the write ahead log, and recent writes live there. One observed run had a 757 kilobyte main file and a 609 kilobyte log.</p>
+<p>Do not poll the <code>session_input</code> table. It is always empty.</p>
+<h2 id="session-identity">Session identity<a class="anchor" href="#session-identity" aria-hidden="true">#</a></h2>
+<p>The backend never binds a session for this kind, so orcr finds it itself.</p>
+<p>Take <code>part.session_id</code> from the row that confirms the first delivery. No session row exists before the first submission.</p>
+<p>The fallback is <code>session.directory</code>, matched against the resolved real path of the working directory. On macOS that is the <code>/private</code> form.</p>
+<h2 id="state">State<a class="anchor" href="#state" aria-hidden="true">#</a></h2>
+<div class="tw"><table><thead><tr><th>Question</th><th>Source</th></tr></thead><tbody><tr><td>Is the agent <span class="st working">working</span></td><td>The backend, from its own screen rules</td></tr><tr><td>Is the agent waiting for a person</td><td><code>GET /permission</code> on the pinned port</td></tr></tbody></table></div>
+<p>Blocked is available over HTTP only. The <code>permission</code> table stays empty both while a request is pending and after it is answered, and the event table carries only message and session events.</p>
+<p>The backend has no idle rule for this kind, so its idle answer is a default rather than an observation. orcr does not depend on it. Readiness comes from the round trip and delivery comes from the database, and neither consults the backend's idle answer.</p>
+<h2 id="interrupt">Interrupt<a class="anchor" href="#interrupt" aria-hidden="true">#</a></h2>
+<p>Two Escapes, with the second within 5 seconds of the first.</p>
+<p>One Escape is ignored. A counter resets after 5 seconds, so two Escapes further apart than that do nothing: 2 seconds apart interrupted in 0.45 seconds, 6 seconds apart did nothing. orcr sends them as one burst, which is the safe end of that window rather than a requirement.</p>
+<p>The Escape is dropped entirely when the agent is idle, when a permission or auto overlay is visible, or when the composer does not have focus.</p>
+<p>An Escape at rest does nothing here, but Escape is also the dismiss key for the command palette, the model picker and the permission dialog, so orcr sends it only while the agent is working.</p>
+<h2 id="transcript">Transcript<a class="anchor" href="#transcript" aria-hidden="true">#</a></h2>
+<p>The conversation is in the same database as the delivery record. This kind writes no transcript file.</p>
+<p><code>orcr agent read</code> selects the parts of one session and joins <code>part</code> to <code>message</code> for the role.</p>
+<pre><code>select p.time_created, m.data -&gt;&gt; '$.role', p.data
+  from part p
+  join message m on m.id = p.message_id
+ where p.session_id = &lt;session id&gt;
+ order by p.time_created, p.id</code></pre>
+<p>Order by <code>time_created</code> and then by <code>id</code>. Time alone is not enough. In one database 1122 of 6654 parts shared a millisecond with another part of the same session, and one millisecond held 18 parts.</p>
+<p>The tie-break works because parts written in the same millisecond share an id prefix and end in a counter that increases in write order.</p>
+<p>Never order by <code>id</code> alone. The prefix is not ordered across sessions. In the same database no row held the same position under id order and under time order.</p>
+<p><code>part.data</code> carries the type: <code>text</code>, <code>reasoning</code>, <code>tool</code>, <code>step-start</code>, <code>step-finish</code> and <code>file</code>. Only <code>message</code> carries the role.</p>
+<h2 id="model-catalogue">Model catalogue<a class="anchor" href="#model-catalogue" aria-hidden="true">#</a></h2>
+<p>Start <code>opencode serve</code> on a free port, read <code>GET /config/providers</code>, and stop the process.</p>
+<p>This is the only kind whose catalogue needs a server, and the only source that carries the per model variants where effort lives. orcr stops the server before the command returns.</p>
+<p><code>opencode models --verbose</code> also lists variants and needs no server, but it has no structured output mode. Its lines interleave with pretty printed blocks that a reader must brace match, and it omits the provider metadata and the default model map.</p>
+<p>Variants are not in the model cache on disk. The cache format has no variant field. They are produced at runtime.</p>
+<h2 id="steering">Steering<a class="anchor" href="#steering" aria-hidden="true">#</a></h2>
+<p>A message sent while the agent is working reaches the model at the next tool call. If the turn makes no further tool call, it runs as a separate turn afterwards, 53 milliseconds after the first one ends. OpenCode's screen calls this a queued message.</p>
+<h2 id="not-verified">Not verified<a class="anchor" href="#not-verified" aria-hidden="true">#</a></h2>
+<ul><li>Whether the HTTP event stream and the database agree on ordering under load.</li><li>Whether the round trip readiness check is safe when a person is attached and typing.</li></ul></section></main>
+</div>
+
+<button id="ctoggle" title="Comments">
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.1A8.4 8.4 0 0 1 4 11.5a8.4 8.4 0 0 1 9-8.4 8.4 8.4 0 0 1 8 8.4z"/>
+  </svg>
+  <span id="ccount"></span>
+</button>
+
+<aside id="cpanel">
+  <header>
+    <strong>Comments</strong>
+    <div class="sp"></div>
+    <button id="ccopy">copy all</button>
+    <button id="cclear">clear</button>
+    <button id="cclose" title="Close">&#215;</button>
+  </header>
+  <div id="clist"></div>
+  <footer>Stored in this browser only. Use copy all to paste them back.</footer>
+</aside>
+
+<button id="ctip">Comment</button>
+
+<div id="cpop">
+  <div class="q"></div>
+  <textarea rows="4" placeholder="Your comment"></textarea>
+  <div class="row">
+    <span class="k">&#8984;&#9166; to save &#183; esc to cancel</span>
+    <div class="sp"></div>
+    <button data-a="cancel">cancel</button>
+    <button data-a="save" class="pri">save</button>
+  </div>
+</div>
+
+<script>
+const docs=[...document.querySelectorAll('section.doc')];
+const tabs=[...document.querySelectorAll('nav .doc')];
+function show(id,keepScroll){
+  docs.forEach(d=>d.classList.toggle('on',d.id==='doc-'+id));
+  tabs.forEach(t=>t.classList.toggle('on',t.dataset.doc===id));
+  document.querySelectorAll('nav .toc').forEach(u=>u.style.display=u.dataset.doc===id?'':'none');
+  if(!keepScroll){history.replaceState(null,'','#'+id); window.scrollTo(0,0);}
+}
+tabs.forEach(t=>t.addEventListener('click',e=>{e.preventDefault();show(t.dataset.doc)}));
+// A section anchor must also switch to the document that contains it.
+function docOf(el){const s=el.closest('section.doc'); return s?s.id.slice(4):null;}
+document.querySelectorAll('nav .toc a').forEach(a=>a.addEventListener('click',e=>{
+  const t=document.getElementById(a.getAttribute('href').slice(1));
+  if(t){const d=docOf(t); if(d) show(d,true);}
+}));
+const links=[...document.querySelectorAll('nav .toc a')];
+const spy=new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    if(!e.isIntersecting) return;
+    links.forEach(a=>a.classList.toggle('active',a.getAttribute('href')==='#'+e.target.id));
+  });
+},{rootMargin:'-80px 0px -75% 0px'});
+document.querySelectorAll('h2[id],h3[id]').forEach(h=>spy.observe(h));
+const start=location.hash.replace('#','');
+const first=docs.length?docs[0].id.slice(4):'';
+if(docs.some(d=>d.id==='doc-'+start)){show(start);}
+else{
+  const t=start&&document.getElementById(start);
+  if(t){show(docOf(t)||first,true); t.scrollIntoView();}
+  else show(first);
+}
+
+/* ---------------- comments ---------------- */
+
+const KEY='orcr-comments-v1';
+const main=document.querySelector('main');
+const panel=document.getElementById('cpanel');
+const listEl=document.getElementById('clist');
+const countEl=document.getElementById('ccount');
+const tip=document.getElementById('ctip');
+let items=[];
+
+const load=()=>{try{items=JSON.parse(localStorage.getItem(KEY))||[]}catch{items=[]}};
+const save=()=>localStorage.setItem(KEY,JSON.stringify(items));
+const esc=t=>t.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// The section a node sits under, for grouping and re-anchoring.
+function sectionOf(node){
+  let el=node.nodeType===3?node.parentElement:node;
+  const doc=el?(docOf(el)||''):'';
+  while(el&&el!==main){
+    let p=el.previousElementSibling;
+    while(p){ if(/^H[23]$/.test(p.tagName)) return {id:p.id,title:p.textContent.replace(/#$/,'').trim(),doc}; p=p.previousElementSibling; }
+    el=el.parentElement;
+  }
+  return {id:'',title:'(top)',doc};
+}
+
+// Nine documents share one page, so a comment must name the one it came from.
+function docLabel(key){
+  const a=key&&document.querySelector(`nav a.doc[data-doc="${key}"] .t`);
+  return a?a.textContent:(key||'');
+}
+function whereLabel(c){
+  const d=docLabel(c.doc), s=c.section||'(top)';
+  return d?`${d} · ${s}`:s;
+}
+
+// Re-anchor by searching for the quote. Simpler than serialising ranges, and
+// it survives a rebuild of the document.
+function highlight(c){
+  const walk=document.createTreeWalker(main,NodeFilter.SHOW_TEXT);
+  let n;
+  while((n=walk.nextNode())){
+    if(n.parentElement.closest('mark.cm')) continue;
+    const i=n.nodeValue.indexOf(c.quote);
+    if(i<0) continue;
+    const r=document.createRange();
+    r.setStart(n,i); r.setEnd(n,i+c.quote.length);
+    const m=document.createElement('mark');
+    m.className='cm'; m.dataset.id=c.id;
+    try{ r.surroundContents(m); }catch{ return false; }
+    m.addEventListener('click',()=>focusComment(c.id));
+    return true;
+  }
+  return false;
+}
+
+function applyAll(){
+  main.querySelectorAll('mark.cm').forEach(m=>{
+    const p=m.parentNode; while(m.firstChild) p.insertBefore(m.firstChild,m);
+    p.removeChild(m); p.normalize();
+  });
+  items.forEach(c=>{ c.anchored=highlight(c); });
+}
+
+function render(){
+  countEl.textContent=items.length||'';
+  document.body.classList.toggle('has-comments',items.length>0);
+  if(!items.length){ listEl.innerHTML='<p class="empty">Select any text in the document to comment on it.</p>'; return; }
+  listEl.innerHTML=items.map(c=>`
+    <div class="citem${c.anchored?'':' orphan'}" data-id="${c.id}">
+      <div class="csec">${esc(whereLabel(c))}${c.anchored?'':' · text moved'}</div>
+      <blockquote>${esc(c.quote)}</blockquote>
+      <div class="cbody">${esc(c.text)}</div>
+      <div class="cact">
+        <button data-act="goto">go to</button>
+        <button data-act="edit">edit</button>
+        <button data-act="del">delete</button>
+      </div>
+    </div>`).join('');
+}
+
+function focusComment(id){
+  openPanel();
+  const el=listEl.querySelector(`.citem[data-id="${id}"]`);
+  if(!el) return;
+  listEl.querySelectorAll('.citem').forEach(x=>x.classList.remove('on'));
+  el.classList.add('on');
+  el.scrollIntoView({block:'nearest'});
+}
+
+listEl.addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  const id=b.closest('.citem').dataset.id;
+  const c=items.find(x=>x.id===id); if(!c) return;
+  if(b.dataset.act==='del'){ items=items.filter(x=>x.id!==id); save(); applyAll(); render(); }
+  if(b.dataset.act==='edit'){
+    openPop({quote:c.quote, text:c.text, rect:b.getBoundingClientRect(),
+             onSave:t=>{ c.text=t; save(); render(); }});
+  }
+  if(b.dataset.act==='goto'){
+    const c=items.find(x=>x.id===id);
+    if(c&&c.doc&&document.getElementById('doc-'+c.doc)) show(c.doc);
+    const m=main.querySelector(`mark.cm[data-id="${id}"]`); if(m) m.scrollIntoView({block:'center'});
+  }
+});
+
+/* one popover, used for both new and edit */
+const pop=document.getElementById('cpop');
+const popQ=pop.querySelector('.q'), popT=pop.querySelector('textarea');
+let onSaveFn=null;
+
+function openPop({quote,text,rect,onSave}){
+  onSaveFn=onSave;
+  popQ.textContent=quote;
+  popT.value=text||'';
+  pop.classList.add('on');
+  const w=pop.offsetWidth, h=pop.offsetHeight, pad=10;
+  let left=Math.min(rect.left, window.innerWidth-w-pad);
+  let top=rect.bottom+8;
+  if(top+h>window.innerHeight-pad) top=Math.max(pad, rect.top-h-8);
+  pop.style.left=Math.max(pad,left)+'px';
+  pop.style.top=top+'px';
+  popT.focus();
+}
+function closePop(){ pop.classList.remove('on'); onSaveFn=null; }
+
+pop.addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  if(b.dataset.a==='cancel') return closePop();
+  const t=popT.value.trim(); if(!t) return closePop();
+  const fn=onSaveFn; closePop(); if(fn) fn(t);
+});
+popT.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){ e.preventDefault(); closePop(); }
+  if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){ e.preventDefault(); pop.querySelector('[data-a=save]').click(); }
+});
+document.addEventListener('mousedown',e=>{
+  if(pop.classList.contains('on')&&!e.target.closest('#cpop')&&!e.target.closest('#ctip')) closePop();
+});
+
+/* selection -> floating add button */
+let pending=null;
+document.addEventListener('mouseup',e=>{
+  const t=e.target instanceof Element?e.target:null;
+  if(t&&(t.closest('#cpanel')||t.closest('#ctip'))) return;
+  setTimeout(()=>{
+    const sel=window.getSelection();
+    const txt=sel&&sel.toString().trim();
+    if(!txt||!sel.rangeCount){ tip.style.display='none'; pending=null; return; }
+    const r=sel.getRangeAt(0);
+    if(!main.contains(r.commonAncestorContainer)){ tip.style.display='none'; return; }
+    pending={quote:txt,...sectionOf(r.startContainer)};
+    const b=r.getBoundingClientRect();
+    tip.style.display='block';
+    tip.style.top=(window.scrollY+b.bottom+8)+'px';
+    tip.style.left=(window.scrollX+b.left)+'px';
+  },0);
+});
+
+tip.addEventListener('click',()=>{
+  if(!pending) return;
+  const p=pending, r=tip.getBoundingClientRect();
+  tip.style.display='none';
+  openPop({quote:p.quote, text:'', rect:r, onSave:t=>{
+    items.push({id:String(Object.keys(items).length+1)+'-'+p.quote.length+'-'+p.quote.slice(0,8),
+                quote:p.quote, section:p.title, sectionId:p.id, doc:p.doc, text:t});
+    save(); applyAll(); render();
+    const sel=window.getSelection(); if(sel) sel.removeAllRanges();
+  }});
+  pending=null;
+});
+
+/* panel + copy */
+function openPanel(){ document.body.classList.add('cpanel-on'); }
+document.getElementById('ctoggle').addEventListener('click',()=>document.body.classList.toggle('cpanel-on'));
+document.getElementById('cclose').addEventListener('click',()=>document.body.classList.remove('cpanel-on'));
+
+document.getElementById('ccopy').addEventListener('click',async()=>{
+  if(!items.length) return;
+  const out=items.map((c,i)=>
+    `### ${i+1}. ${whereLabel(c)}\n\n> ${c.quote.replace(/\n/g,'\n> ')}\n\n${c.text}`
+  ).join('\n\n');
+  const body=`# orcr design comments (${items.length})\n\n${out}\n`;
+  try{ await navigator.clipboard.writeText(body); flash('copied'); }
+  catch{ const t=document.createElement('textarea'); t.value=body; document.body.appendChild(t);
+         t.select(); document.execCommand('copy'); t.remove(); flash('copied'); }
+});
+
+const clearBtn=document.getElementById('cclear');
+let armed=false, armTimer=null;
+clearBtn.addEventListener('click',()=>{
+  if(!items.length) return;
+  if(!armed){
+    armed=true; clearBtn.textContent='sure?'; clearBtn.classList.add('armed');
+    armTimer=setTimeout(()=>{armed=false; clearBtn.textContent='clear';
+                             clearBtn.classList.remove('armed');},3000);
+    return;
+  }
+  clearTimeout(armTimer); armed=false;
+  clearBtn.textContent='clear'; clearBtn.classList.remove('armed');
+  items=[]; save(); applyAll(); render();
+});
+
+function flash(msg){
+  const b=document.getElementById('ccopy'), old=b.textContent;
+  b.textContent=msg; setTimeout(()=>b.textContent=old,1200);
+}
+
+load(); applyAll(); render();
+</script>
+</body></html>

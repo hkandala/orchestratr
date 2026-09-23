@@ -1,0 +1,212 @@
+# Codex
+
+`--kind codex`
+
+## Launch
+
+```
+codex --yolo [-m <model>] [-c model_reasoning_effort=<effort>]
+```
+
+Codex has no dedicated effort flag. Effort is a configuration override on the command line.
+
+## Startup
+
+Codex shows a directory trust dialog in a directory it has not seen. `--yolo` does not
+remove it, and neither does `--dangerously-bypass-approvals-and-sandbox`. No environment
+variable removes it. A sweep of the binary's strings found none.
+
+orcr passes trust as a launch argument. It writes no configuration file for this kind.
+
+```
+-c projects.<canonical absolute working directory>.trust_level=trusted
+```
+
+**The spelling matters and the wrong one fails silently.** The dotted path must be unquoted.
+The TOML-quoted form, `-c 'projects."<path>".trust_level="trusted"'`, exits 0 and the dialog
+still appears. An earlier round of testing used the quoted form, concluded the override did not
+work, and had orcr writing a configuration file it does not need.
+
+Rules the tests established:
+
+- The path must be the resolved real path. On macOS `/tmp/x` must be written as
+  `/private/tmp/x`. Any other form of the path is silently ignored.
+- Trust granted this way applies to the invocation. Nothing is persisted, and project-local
+  configuration still loads.
+- A git repository root entry covers every directory under it. A deep subdirectory key also
+  works. There is no inheritance from an arbitrary parent that is not a repository root.
+
+The file form below is equivalent and orcr does not use it, since a launch argument is
+reversible and a file is not.
+
+```toml
+[projects."<fully resolved absolute working directory>"]
+trust_level = "trusted"
+```
+
+### Interactive tools
+
+```
+-c tools.experimental_request_user_input.enabled=false
+-c tools.update_plan.enabled=false
+--disable tool_call_mcp_elicitation
+```
+
+Or the same in `config.toml`:
+
+```toml
+[tools.experimental_request_user_input]
+enabled = false
+```
+
+A bare boolean is rejected. `tools.experimental_request_user_input = false` produces
+`invalid type: boolean, expected struct`. The key must be a table with an `enabled` field.
+
+`update_plan` is already off by default on the build tested, and is never available in the
+non-interactive mode at all. orcr sets it anyway, because "off by default" is a property of one
+build.
+
+### Editors and pagers
+
+The shared environment that stops a shell command waiting for input is not enough here. Codex
+captures a shell snapshot at startup and applies it after orcr's environment, which silently
+defeats `EDITOR`. This was demonstrated: an editor opened and held the terminal until it was
+killed.
+
+orcr therefore also sets the editor and pager values through Codex's own configuration, which
+is applied after the snapshot.
+
+`request_permissions` is a second interactive tool. It is off unless explicitly enabled, and
+orcr does not enable it. Its own schema says it waits for the client to grant permissions.
+
+For tools that come from an MCP server, the keys are `mcp_servers.<name>.disabled_tools` and
+`mcp_servers.<name>.enabled_tools`. They combine, and deny wins. Names must match exactly and
+patterns are not accepted.
+
+### The second dialog
+
+If a `hooks.json` file exists in the Codex home, Codex shows a second screen asking for hook
+review. Hooks load untrusted and never run until they are trusted.
+
+This matters because the herdr integration for `codex` is a hook. Anyone who has installed
+it has already answered that screen. orcr does not install hooks and does not write hook
+trust. `orcr doctor` reports when the integration is present but untrusted, because in that
+state the integration silently never runs and the agent never binds its session id.
+
+## Readiness
+
+```
+$CODEX_HOME/thread-writer-locks/<thread uuid>.lock
+```
+
+Poll every 100 milliseconds. Ignore the sibling coordination lock file.
+
+The file appears 0.71 to 0.92 seconds after the composer is usable, measured across three
+runs. It never appears while the trust dialog or the hook review screen is on screen: six
+runs that were abandoned at a dialog produced no `thread-writer-locks` directory at all.
+
+The file name is the thread identifier, which is also the session identifier. orcr therefore
+learns the session id at readiness, before any transcript exists, and can derive the rollout
+path immediately.
+
+Two signals that must not be used for readiness:
+
+- The backend's own start response returns between 2.6 and 5.1 seconds too early, and
+  reports the agent as idle while the trust dialog is on screen.
+- The session start hook fires at the first message, not when the terminal is ready.
+
+## Message delivery
+
+Use the history file. Do not use the rollout transcript.
+
+```
+$CODEX_HOME/history.jsonl
+```
+
+Before submitting, note `H0`, the length of the file in bytes, treating a missing file as
+zero. Note `SID`, the thread identifier from the lock file name. After submitting, poll
+every 100 milliseconds, read from offset `H0`, split on newlines, and discard an incomplete
+final line. Delivery is confirmed when a new line parses and its `session_id` equals `SID`
+and its `text` equals the submitted string exactly.
+
+Measured latency:
+
+| Case | Delay |
+|---|---|
+| From rest, warm | 0.378 seconds |
+| First message of a new session | 0.436 seconds |
+| Mid turn, behind a 32 second tool call | 0.496 seconds |
+
+Timeout 5 seconds, ten times the worst measurement.
+
+### Why not the rollout file
+
+A message sent mid turn does not reach the rollout file until the running tool call returns.
+One measurement was 17.82 seconds, and the delay is bounded only by the tool's own runtime.
+A delivery check built on the rollout file reports failure for a message that was
+delivered.
+
+## State
+
+Codex reports state through the backend, from the terminal title rather than from body text.
+That mechanism is correct during a turn.
+
+Screen reading of the terminal body alone is not enough for Codex. During a turn that streams
+text and calls no tool, the terminal body is identical to the body at rest.
+
+## Interrupt
+
+One Escape.
+
+Two Escapes at rest open the backtrack view. orcr sends an interrupt only while the agent is
+working.
+
+An interrupt does not stop a Codex background terminal. That needs the agent's own stop
+command, typed by a person.
+
+## Transcript
+
+```
+~/.codex/sessions/<year>/<month>/<day>/rollout-<timestamp>-<uuid>.jsonl
+```
+
+The uuid is the thread identifier, known from the lock file at readiness.
+
+This file holds the conversation and `orcr agent read` uses it. It is not used for delivery
+confirmation, for the reason above.
+
+## Session identity
+
+The backend binds the Codex session id after the first completed turn. orcr does not wait for
+that, because the lock file gives the same identifier at readiness.
+
+Codex writes no rollout before the first turn, so nothing earlier is possible from the
+transcript side.
+
+## Model catalogue
+
+```
+codex debug models
+```
+
+Prints the full catalogue as JSON and exits in about half a second. No server, no socket, no
+handshake.
+
+Filter on `visibility == "list"` to match what the agent itself offers. This reproduces the
+app server's model list exactly. Both read the same source.
+
+Do not use `--bundled`, which is the compiled in catalogue and is out of date. Do not read
+the model route files in the Codex home, which are a small overlay and are missing most
+effort values.
+
+## Steering
+
+A message sent while the agent is working reaches the model at the next tool call. If the
+turn makes no further tool call, it runs as a separate turn afterwards. Codex's screen states
+this directly.
+
+## Not verified
+
+- Whether the model list needs pagination. It returns a cursor and today one page holds
+  every model.
+- Whether the lock file is removed when the process is killed rather than exiting.

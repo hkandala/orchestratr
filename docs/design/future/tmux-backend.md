@@ -1,0 +1,58 @@
+# A tmux backend
+
+## What orcr uses now
+
+herdr is the terminal backend, and orcr requires it. herdr does four things:
+
+- It supplies sessions, workspaces, tabs and panes.
+- It starts agents.
+- It delivers keystrokes.
+- It reports agent state from per-kind detection rules that it maintains and updates.
+
+## Why someone would want tmux
+
+tmux is installed everywhere and people already run it. A tmux backend lets orcr work without
+asking a person to adopt a second tool.
+
+## What orcr would have to replace
+
+Only part of orcr is backend specific. The split decides how large this work is.
+
+Backend independent, unchanged by a tmux backend:
+
+- Reading transcripts. Transcripts come from each agent's own files, not from the terminal.
+- The socket API, the command surface, and the state vocabulary.
+- Launch arguments, model and effort handling, and the model catalogue.
+
+Backend specific, and all of it must be rebuilt:
+
+- Creating and addressing panes.
+- Delivering text and keys safely, including bracketed paste.
+- Knowing when an agent is ready, and when a message landed.
+- Knowing which agent occupies which pane after a restart.
+
+## The part that is not a port
+
+herdr maintains 22 versioned per-kind detection manifests with region scoping, rule
+priorities and negative conditions. They are updated as the agents change their interfaces.
+A tmux backend does not inherit them.
+
+Replacing that is not a matter of writing regular expressions once. The agents change their
+terminal output regularly, and a rule that was correct last month silently reports the wrong
+state this month. Whoever builds the tmux backend takes on that maintenance permanently.
+
+Two backends means two sources of state, and any place where they disagree needs an arbiter.
+Do not build a second backend without deciding, first, which one is authoritative.
+
+## A cheaper option
+
+If the goal is only to avoid asking people to install herdr, consider whether orcr can
+install and manage a private herdr instance itself. That keeps one backend and one set of
+detection rules.
+
+## What must be decided first
+
+- Whether both backends can be active at once, or whether the choice is made once per
+  installation.
+- Whether agent names stay unique across backends.
+- What replaces the per-kind detection manifests, and who maintains it.

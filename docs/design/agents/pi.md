@@ -1,0 +1,211 @@
+# Pi
+
+`--kind pi`
+
+Pi is the weakest instrumented of the four kinds. It has no record of an accepted message
+and no signal that it is waiting for a person. Both limits are stated below and neither is
+worked around.
+
+## Launch
+
+```
+pi --approve [--model <provider>/<model>] [--thinking <level>]
+```
+
+Pi's effort argument is `--thinking`. Its values are per model, and one model accepts only the
+lowest value. `orcr models` reports the accepted values.
+
+## Startup
+
+Pi shows no trust dialog in an empty new directory.
+
+It shows a dialog only when the working directory, or an ancestor of it, holds one of these:
+
+- a `.pi/settings.json`
+- a `.pi` subdirectory for extensions, skills, prompts or themes
+- a `.pi` system prompt file
+- an `.agents/skills` directory
+
+`--approve` suppresses the dialog. It is a launch argument, so orcr writes no configuration
+file for this kind.
+
+Read the two flags carefully, because the names invite the wrong choice.
+
+| Flag | What it does |
+|---|---|
+| `--approve` | Trust the project's own files for this run |
+| `--no-approve` | Ignore the project's own files for this run |
+
+Both remove the dialog, and they are not interchangeable. `--no-approve` removes it by
+discarding the project's configuration: its settings, its extensions, its skills and its system
+prompt are all skipped. That is a silent loss of the setup a person built.
+
+orcr uses `--approve`, which answers the trust question instead of avoiding it. This matches
+the rest of orcr: permissions are already bypassed, so trusting the directory a person asked us
+to run an agent in is the same decision, not a new one.
+
+### Interactive tools
+
+There is nothing to disable, and orcr disables nothing.
+
+Pi's built-in tools are read, bash, edit, write, grep, find, ls, and powershell on Windows.
+Only read, bash, edit and write are enabled by default. grep, find and ls are off.
+
+Not one of them waits for a person. Pi is the only kind that needs no tool denial, because it
+ships nothing to deny.
+
+An extension can register a tool under the same name as a built-in and shadow it, and such a
+tool survives `--no-extensions`. So the tool list an agent reports is not by itself evidence
+about Pi.
+
+orcr also leaves Pi's extensions alone. It passes no `--no-extensions` and no tool exclusion
+list. Both were considered and dropped:
+
+- Disabling extensions breaks a person's own setup, and does not even work completely, because
+  bundled extensions stay loaded regardless.
+- Excluding tool names means guessing the tool names in a person's extensions. The exclusion
+  list is exact-match with no patterns, and it silently ignores a name that does not exist. A
+  guessed list protects against nothing.
+
+### What can still block a Pi agent
+
+An extension, and only an extension.
+
+Pi's extension interface lets an extension open a dialog from a lifecycle hook rather than from
+a tool, and Pi's own documentation offers this as a use case, with a confirm before a
+destructive command as its example. Reproduced live: an extension that confirms on each shell
+call opens a dialog, waits forever, and Pi reports `idle` throughout.
+
+No launch argument prevents this. It is not a tool, so a tool flag cannot reach it, and a
+bundled extension cannot be unloaded at all.
+
+orcr accepts this rather than working around it. A person running Pi with a confirming
+extension has to clear the dialog with `orcr agent attach`.
+
+Two configuration keys have the same effect and orcr does not use them, because a launch
+argument is reversible and a file is not:
+
+```
+$PI_CODING_AGENT_DIR/settings.json   defaultProjectTrust = "always"
+$PI_CODING_AGENT_DIR/trust.json      {"<canonical absolute cwd>": true}
+```
+
+The path in `trust.json` must be the resolved real path. Any other form of the path is
+silently ignored. No environment variable controls trust.
+
+## Readiness
+
+```
+the backend's bound agent session for the pane, once it is not empty
+```
+
+The herdr integration for `pi` publishes this at its session start event. The negative test
+passes cleanly: the value stayed absent for 45 seconds with a trust dialog on screen, and
+appeared 1.2 seconds after the dialog was answered. Over that same period the backend's start
+response, its status and its interactive flag all reported the agent as ready.
+
+The published value is the transcript path itself, not an identifier. Pi is the only kind
+where orcr knows the transcript location at readiness, before the file exists.
+
+## Message delivery
+
+Pi has no separate record of an accepted message. The transcript is the only source, and it
+is the one place where orcr must wait rather than poll for a fixed time.
+
+Take a byte watermark on the transcript. After submitting, poll every 200 milliseconds and
+accept the first new entry whose source is `interactive` and whose text equals the submitted
+text.
+
+| Case | Delay |
+|---|---|
+| From rest | 0.44 to 0.54 seconds |
+| Mid turn | Until the running tool call returns |
+
+The mid turn number is not a constant. Measured at 39.6 seconds behind a 60 second command,
+it is bounded by the tool's own runtime and nothing else. Pi records the message when it acts
+on it, not when it accepts it.
+
+Two consequences, both carried into the shared send procedure rather than hidden here:
+
+- A message sent to a working Pi agent is confirmed late. Use a `--timeout` that allows for
+  the work in progress, or send after the agent is `idle`.
+- orcr stops waiting as soon as the agent becomes `idle` without the record appearing, and
+  reports `possibly_delivered`. Waiting for the full timeout would tell it nothing more.
+
+Two identical messages are distinguishable, by the watermark and by the unique identifier on
+each entry.
+
+## State
+
+| State | Source |
+|---|---|
+| `working`, `idle` | The kind's own integration, pushed with full lifecycle authority |
+| `blocked` | Not available |
+
+Pi is the only kind whose working state is pushed rather than inferred. Its backend detection
+skips the screen entirely and records that it is doing so.
+
+Pi is also the only kind that can never report `blocked`. It has no blocked screen rules, and
+the blocked event that the herdr integration for `pi` listens for is emitted by nothing in Pi:
+the name does not appear anywhere in the binary.
+
+orcr therefore cannot report that a Pi agent is waiting for a person. A Pi agent stuck on a
+dialog reports `idle`. Two things limit the damage. orcr suppresses the only dialog it knows
+how to provoke, with `--approve`. orcr also confirms every message against the transcript, so
+a message that went nowhere is reported as a failure rather than as a success.
+
+## Interrupt
+
+One Escape.
+
+An Escape at rest is harmless here.
+
+One behavior matters for the send procedure: after an interrupt, Pi returns the unsent text to
+the composer. orcr clears the composer before every send, which makes this harmless. Without
+that clear, the next message is submitted joined to the restored text as a single message.
+
+## Transcript
+
+```
+$PI_CODING_AGENT_DIR/sessions/<mangled working directory>/<timestamp>_<uuid>.jsonl
+```
+
+The path is published at readiness, and the file does not exist until the first assistant
+message is written, measured between 1.65 and 3.83 seconds after the first submission.
+
+Never derive a working directory from this path. The directory name is mangled and lossy.
+
+## Model catalogue
+
+```
+pi --list-models
+```
+
+About two seconds, no server, no billed turn.
+
+It is not free of side effects. It performs a full startup: it populates the configuration
+directory, refreshes the catalogue over the network unless `--offline` is passed, and runs every
+extension it discovers. orcr runs it with the same isolated configuration directory it uses to
+start an agent, so those side effects land where the rest of orcr's state lives.
+
+The effort values are per model, and the complete answer needs one short lived process per
+model. With 30 models that is 30 processes. `orcr models` therefore reports the model list and
+whether each model supports reasoning at all, and runs the single targeted probe only when a
+specific model is named.
+
+The model record carries a thinking level map. It is not the list of allowed values. It is an
+override map onto provider names, and a null entry suppresses a value. Do not reimplement that
+resolution. Ask Pi.
+
+## Steering
+
+A message sent while the agent is working reaches the model at the next tool call. If the turn
+makes no further tool call, it runs as a separate turn afterwards. Pi's screen calls this
+steering, and its input event reports which of the two happened.
+
+## Not verified
+
+- Whether the published transcript path changes when a session is resumed.
+- What a Pi approval dialog looks like. One could not be reached during testing, so the
+  claim that Pi never reports `blocked` is proved for the trust dialog and inferred for
+  everything else.
