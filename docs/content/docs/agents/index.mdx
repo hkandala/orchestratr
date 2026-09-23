@@ -1,0 +1,70 @@
+---
+title: "agent kinds"
+description: "the four kinds orchestratr drives, and how they differ"
+---
+
+orchestratr drives four kinds of agent. each page below holds everything specific to one kind:
+its launch arguments, how its startup screens are removed, its readiness signal, its delivery
+record, and what it cannot do. nothing on these pages changes the contract in the
+[CLI](/docs/cli) or the [socket API](/docs/socket-api). the shared method they plug
+into is in [readiness, delivery, and state](/docs/readiness-and-delivery).
+
+<Cards>
+  <Card title="Claude Code" href="/docs/agents/claude">
+    `--kind claude`
+  </Card>
+  <Card title="Codex" href="/docs/agents/codex">
+    `--kind codex`
+  </Card>
+  <Card title="Pi" href="/docs/agents/pi">
+    `--kind pi`
+  </Card>
+  <Card title="OpenCode" href="/docs/agents/opencode">
+    `--kind opencode`
+  </Card>
+</Cards>
+
+## at a glance
+
+every cell below summarizes a fact stated on the kind's own page. the kind page is the
+authority, and holds the evidence.
+
+### launch and startup
+
+| | [Claude Code](/docs/agents/claude) | [Codex](/docs/agents/codex) | [Pi](/docs/agents/pi) | [OpenCode](/docs/agents/opencode) |
+|---|---|---|---|---|
+| launch | `claude --dangerously-skip-permissions` | `codex --yolo` | `pi --approve` | `opencode --yolo --hostname 127.0.0.1 --port <port>` |
+| model | `--model <model>` | `-m <model>` | `--model <provider>/<model>` | `-m <provider>/<model>` |
+| effort | `--effort <effort>` | `-c model_reasoning_effort=<effort>` | `--thinking <level>` | inline configuration: `model` and `variant` in `OPENCODE_CONFIG_CONTENT` |
+| startup screens | theme picker, security notes, folder trust, bypass permissions warning | directory trust; hook review when `hooks.json` exists | trust dialog, only when the working directory or an ancestor holds specific `.pi` or `.agents/skills` entries | none when a provider resolves |
+| how they are removed | three keys in `~/.claude.json`, plus `--settings` | `-c projects.<path>.trust_level=trusted`; hook review is not removed; [`orcr doctor`](/docs/cli#orcr-doctor) reports an untrusted herdr integration for Codex | `--approve` | orchestratr asserts a provider; `Connect a provider` is a launch failure |
+| configuration file writes | three keys in `~/.claude.json` | none | none | none |
+| interactive tools disabled | `--disallowedTools AskUserQuestion,ExitPlanMode,EnterPlanMode,Workflow` | `tools.experimental_request_user_input`, `tools.update_plan`, `tool_call_mcp_elicitation` | none, Pi ships none | `question` and `plan_exit` tools, and the `plan_enter` permission, via `OPENCODE_CLIENT` and `OPENCODE_PERMISSION` |
+
+### readiness, delivery, and state
+
+| | [Claude Code](/docs/agents/claude) | [Codex](/docs/agents/codex) | [Pi](/docs/agents/pi) | [OpenCode](/docs/agents/opencode) |
+|---|---|---|---|---|
+| readiness signal | `sessions/<pid>.json` with `status` `idle` | `thread-writer-locks/<thread uuid>.lock` | the backend's bound agent session is not empty | nonce round trip through the composer |
+| delivery record | transcript: a `user` or `queue-operation` `enqueue` record | `history.jsonl` | transcript entry with source `interactive` | `part` and `message` rows in the SQLite database |
+| watermark | line count | byte offset | byte offset | current time in milliseconds |
+| delivery timeout | 10 seconds | 5 seconds | no fixed number: waits for the turn to end, then `possibly_delivered` if there is no record | 5 seconds |
+| state source | status file (`idle`, `busy`, `waiting`); the backend also reports `blocked` | the backend, from the terminal title | pushed by the herdr integration for Pi | the backend for working; `GET /permission` for blocked |
+| `blocked` reporting | yes, with the reason from `waitingFor` | not stated; the backend's default | never | over HTTP only |
+| interrupt | one escape | one escape | one escape | two escapes, the second within 5 seconds |
+| escape at rest | two escapes open the rewind view | two escapes open the backtrack view | harmless | does nothing, but escape also dismisses the command palette, the model picker and the permission dialog |
+
+### transcript, identity, and catalogue
+
+| | [Claude Code](/docs/agents/claude) | [Codex](/docs/agents/codex) | [Pi](/docs/agents/pi) | [OpenCode](/docs/agents/opencode) |
+|---|---|---|---|---|
+| transcript | `$CLAUDE_CONFIG_DIR/projects/<mangled cwd>/<session uuid>.jsonl` | `~/.codex/sessions/<year>/<month>/<day>/rollout-<timestamp>-<uuid>.jsonl` | `$PI_CODING_AGENT_DIR/sessions/<mangled cwd>/<timestamp>_<uuid>.jsonl` | no file; the SQLite database |
+| transcript exists | early in the first turn | not before the first turn | after the first assistant message | not applicable |
+| session id source | bound by the backend at session start | the lock file name, at readiness | the transcript path, published by the backend at readiness | `part.session_id` from the first delivery |
+| model catalogue | not specified; see [not verified](/docs/agents/claude#not-verified) | `codex debug models` | `pi --list-models` | `opencode serve`, then `GET /config/providers` |
+
+the kinds share one behavior for a message sent mid turn: it reaches the model at the next tool
+call, or runs as the next turn if the turn makes no further tool call. see
+[`orcr agent message`](/docs/cli#orcr-agent-message).
+
+known limits per kind are collected in [limitations](/docs/limitations#per-kind).

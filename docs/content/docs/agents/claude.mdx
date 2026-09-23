@@ -1,267 +1,280 @@
 ---
 title: "Claude Code"
-description: "--kind claude"
+description: "how orchestratr launches, drives and reads Claude Code"
 ---
 
-`--kind claude`
+**kind value:** `--kind claude`
 
-## Launch
+## launch
 
-```
+```sh
 claude --dangerously-skip-permissions [--model <model>] [--effort <effort>]
 ```
 
-`--effort` accepts the values that `orcr models` reports for the chosen model. One model
-reports no effort values at all. Pass no effort for that model.
+`--effort` accepts the values that [`orcr models`](/docs/cli#orcr-models) reports for the chosen
+model. one model reports no effort values at all. pass no effort for that model.
 
-### Environment
+### environment
 
-orcr removes every `CLAUDE_CODE_*` variable from the environment it gives the agent.
+orchestratr removes every `CLAUDE_CODE_*` variable from the environment it gives the agent.
 
-An inherited `CLAUDE_CODE_CHILD_SESSION` disables **session persistence** for an interactive
-session, not only the transcript. It removes the transcript file, the prompt history, the
-status file at `sessions/<pid>.json`, and the ability to resume.
+an inherited `CLAUDE_CODE_CHILD_SESSION` disables **session persistence** for an interactive
+session, not only the transcript. it removes:
 
-The status file is orcr's readiness signal and its state source for this kind. Losing it
-disables readiness, state and delivery confirmation together.
+- the transcript file
+- the prompt history
+- the status file at `sessions/<pid>.json`
+- the ability to resume
 
-It happens whenever the herdr server was started from inside another Claude session. That is
-the normal case when orcr itself is run by an agent. `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE`
-overrides it, and the condition applies only to interactive sessions, but orcr scrubs the
-variable rather than relying on either.
+the status file is orchestratr's readiness signal and its state source for this kind, so losing
+it disables readiness, state and delivery confirmation together.
 
-## Startup
+this happens whenever the herdr server was started from inside another Claude Code session. that is
+the normal case when orchestratr itself is run by an agent. `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE`
+overrides it, and the condition applies only to interactive sessions, but orchestratr scrubs the
+variable rather than relying on either. see also
+[configuration: environment](/docs/configuration#environment).
 
-Claude shows up to four screens before it accepts input. Permission bypass removes none of
-them.
+## startup
 
-| Screen | Removed by |
+Claude Code shows up to four screens before it accepts input. permission bypass removes none of them.
+
+| screen | removed by |
 |---|---|
-| Theme picker | `hasCompletedOnboarding` |
-| Security notes | `lastOnboardingVersion` |
-| Folder trust | `hasTrustDialogAccepted` for that directory |
-| Bypass permissions warning | `skipDangerousModePermissionPrompt` in settings |
+| theme picker | `hasCompletedOnboarding` |
+| security notes | `lastOnboardingVersion` |
+| folder trust | `hasTrustDialogAccepted` for that directory |
+| bypass permissions warning | `skipDangerousModePermissionPrompt` in settings |
 
-The first two are separate keys and both are needed. `hasCompletedOnboarding` alone suppresses
-only the theme picker. The security notes screen then blocks on "Press Enter to continue", and
-nothing in an orcr agent will answer it. Pressing Enter there writes exactly one key:
+orchestratr sets all four. three are keys it writes to `~/.claude.json`. the fourth is a setting
+it passes in the launch arguments. the general approach is in
+[startup screens](/docs/readiness-and-delivery#startup-screens).
+
+the first two are separate keys, and both are needed. `hasCompletedOnboarding` alone suppresses
+only the theme picker. the security notes screen then blocks on `Press Enter to continue`, and
+nothing in an orchestratr agent will answer it. pressing enter there writes exactly one key:
 `lastOnboardingVersion`.
 
-The value of `lastOnboardingVersion` does not have to match the running version. A stale value
+the value of `lastOnboardingVersion` does not have to match the running version. a stale value
 works, so a constant is safe.
 
-orcr sets all four. Three are keys it writes to `~/.claude.json`, and the fourth is a setting
-it passes in the launch arguments.
+for anyone who has already run Claude Code, the first two keys are usually present and orchestratr
+changes nothing. the trust key is per directory, so every new working directory needs it.
 
-For anyone who has already run Claude, the first two keys are usually present and orcr changes
-nothing. The trust key is per directory, so a new working directory needs it every time.
+### the bypass warning
 
-### The bypass warning
+orchestratr passes the setting in the launch arguments. it writes no file.
 
-orcr passes the setting in the launch arguments. It writes no file.
-
-```
+```sh
 --settings '{"skipDangerousModePermissionPrompt": true}'
 ```
 
-The binary's own schema describes this key as whether the user has accepted the bypass
+the binary's own schema describes this key as whether the user has accepted the bypass
 permissions mode dialog.
 
-Do not use the older `bypassPermissionsModeAccepted` key. It is a one time migration into
-the key above, gated on a migration version, and it does nothing on a configuration whose
-migration has already run. Setting it globally and per project, five times, did not suppress
-the dialog.
+<Callout type="warn" title="do not use bypassPermissionsModeAccepted">
+the older `bypassPermissionsModeAccepted` key is a one time migration into the key above, gated
+on a migration version. it does nothing on a configuration whose migration has already run.
+setting it globally and per project, five times, did not suppress the dialog.
+</Callout>
 
-### Interactive tools
+### interactive tools
 
-```
+```sh
 --disallowedTools AskUserQuestion,ExitPlanMode,EnterPlanMode,Workflow
 ```
 
-Verified live: with these disabled, a request that normally opens a question dialog is
-answered in prose instead, and the turn completes.
+verified live: with these disabled, a request that normally opens a question dialog is answered
+in prose instead, and the turn completes.
 
-The flag is variadic. It must be last, or it swallows anything that follows. orcr never passes
-a positional prompt, so this is a constraint on argument order rather than a hazard.
+the flag is variadic. it must come last, or it swallows anything that follows. orchestratr never
+passes a positional prompt, so this is a constraint on argument order rather than a hazard.
 
-The deny list can also be written in settings, and is the same mechanism:
+the deny list can also be written in settings. it is the same mechanism:
 
 ```json
 {"permissions": {"deny": ["AskUserQuestion", "ExitPlanMode", "EnterPlanMode", "Workflow"]}}
 ```
 
-Do not write `permissions.defaultMode: "bypassPermissions"` and expect it to replace the launch
-flag. It is not equivalent. That key is honored only from the highest priority settings source
-present. A managed or policy settings file that sets `defaultMode` silently outranks it, and
-several hosts ignore it outright. Tested on a machine with a managed settings file: the agent
-did not enter bypass and the footer showed a different mode.
+<Callout type="warn" title="permissions.defaultMode is not equivalent to the launch flag">
+do not write `permissions.defaultMode: "bypassPermissions"` and expect it to replace
+`--dangerously-skip-permissions`. that key is honored only from the highest priority settings
+source present. a managed or policy settings file that sets `defaultMode` silently outranks it,
+and several hosts ignore it outright. tested on a machine with a managed settings file: the agent
+did not enter bypass, and the footer showed a different mode.
 
-orcr passes the flag. A setting that can be outranked without saying so is not a way to
-guarantee anything.
+orchestratr passes the flag. a setting that can be outranked without saying so guarantees
+nothing.
+</Callout>
 
-`askUserQuestionTimeout` accepts `60s`, `5m`, `10m` or `never`, and defaults to `never`. It
-bounds the stall rather than removing it, so orcr removes the tool instead.
+other settings look relevant and are not used:
 
-`dialogExpiry` and `CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS` look relevant and are not. Their own
-description says local prompts with no remote client are unaffected, which is every dialog
-orcr will ever see.
+- `askUserQuestionTimeout` accepts `60s`, `5m`, `10m` or `never`, and defaults to `never`. it
+  bounds the stall rather than removing it, so orchestratr removes the tool instead.
+- `dialogExpiry` and `CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS`. their own description says local
+  prompts with no remote client are unaffected, which is every dialog orchestratr will ever see.
 
-### The three written keys
+### the three written keys
 
-Claude is the only kind for which orcr writes to a configuration file.
+Claude Code is the only kind for which orchestratr writes to a configuration file.
 
-```
+```text
 ~/.claude.json
   projects["<resolved real path of the working directory>"].hasTrustDialogAccepted = true
   hasCompletedOnboarding = true
   lastOnboardingVersion  = "<any non-empty string>"
 ```
 
-orcr writes each key only when it is absent, and writes the trust key only for the working
-directory of the agent. It writes a temporary file and renames it, so a concurrent Claude
-cannot lose the update. The result is the same state that answering the dialogs once produces.
+orchestratr writes each key only when it is absent, and writes the trust key only for the
+working directory of the agent. it writes a temporary file and renames it, so a concurrent Claude Code
+cannot lose the update. the result is the same state that answering the dialogs once produces.
+the write rules are in
+[writing a person's configuration](/docs/implementation#writing-a-persons-configuration).
 
-The trust path must be the resolved real path. On macOS, `/tmp/x` must be written as
-`/private/tmp/x`. Any other form of the path is silently ignored. There is no inheritance from a
-parent directory.
+<Callout type="warn" title="the trust path must be the resolved real path">
+on macOS, `/tmp/x` must be written as `/private/tmp/x`. any other form of the path is silently
+ignored. there is no inheritance from a parent directory.
+</Callout>
 
-No flag and no environment variable clears the folder trust dialog. Claude itself prints
-the instruction to set this key.
+no flag and no environment variable clears the folder trust dialog. Claude Code itself prints the
+instruction to set this key.
 
-When orcr cannot write a key, `orcr agent new` fails before the agent starts. It does not
-start an agent that will stop on a dialog whose default answer is to exit.
+when orchestratr cannot write a key, [`orcr agent new`](/docs/cli#orcr-agent-new) fails before
+the agent starts. it does not start an agent that will stop on a dialog whose default answer is
+to exit.
 
-## Readiness
+## readiness
 
-```
+```text
 $CLAUDE_CONFIG_DIR/sessions/<pid>.json    exists, and its "status" field is "idle"
 ```
 
-Claude writes this file only after every startup screen is cleared.
+Claude Code writes this file only after every startup screen is cleared.
 
-| Signal | When it appears |
+| signal | when it appears |
 |---|---|
-| `sessions/<pid>.<hash>.key` | About 70 seconds too early. Present while a dialog is up. |
-| `cc-socks/<pid>.sock` | About 70 seconds too early. Present while a dialog is up. |
+| `sessions/<pid>.<hash>.key` | about 70 seconds too early. present while a dialog is up. |
+| `cc-socks/<pid>.sock` | about 70 seconds too early. present while a dialog is up. |
 | `sessions/<pid>.json` | 0.35 seconds after the last dialog is cleared. |
-| Session start hook | About 1 second after the status file. |
-| Transcript file | Not until the first turn. |
+| session start hook | about 1 second after the status file. |
+| transcript file | not until the first turn. |
 
-The negative test is what makes the status file trustworthy. During a 71 second run with the
-bypass dialog on screen, the key file and the socket both existed and the status file did
-not.
+the negative test is what makes the status file trustworthy (see
+[readiness](/docs/readiness-and-delivery#readiness)). during a 71 second run with the bypass
+dialog on screen, the key file and the socket both existed and the status file did not.
 
-A message sent 0.69 seconds after the status file appeared was accepted and answered.
+a message sent 0.69 seconds after the status file appeared was accepted and answered.
 
-Claude opens no TCP port.
+Claude Code opens no TCP port.
 
-## State
+## delivery
 
-The status file is a live state machine, and orcr reads its state from there.
+before submitting, note the transcript line count as a watermark. treat a missing file as zero.
+after submitting, poll the transcript every 200 milliseconds and accept either record:
 
-| File value | orcr state |
+| case | record |
+|---|---|
+| agent at rest | `type` is `user`, and the message content holds the submitted text |
+| agent working | `type` is `queue-operation`, `operation` is `enqueue`, and `content` equals the submitted text |
+
+a message sent while the agent is working always produces the `queue-operation` record first.
+what happens next depends on the turn:
+
+- if the turn absorbs it, a second `queue-operation` follows with operation `remove` and reason
+  `absorbed_mid_turn`, plus an attachment row of type `queued_command`.
+- if the turn ends first, the message is then delivered as an ordinary `user` record.
+
+so a mid turn message can produce both records, and a check that matches only `user` records
+misses the first case entirely. orchestratr matches either and accepts the earliest. anything
+that counts messages must treat the pair as one message, not two.
+
+| case | delay |
+|---|---|
+| from rest | 0.59 to 2.51 seconds |
+| mid turn | 0.51 to 0.59 seconds |
+
+timeout: 10 seconds. the worst measured case was 3.07 seconds.
+
+the timestamp inside the record is earlier than the moment the record can be read. compare
+positions in the file, not times inside it. the shared method is in
+[delivery](/docs/readiness-and-delivery#delivery).
+
+## state
+
+the status file is a live state machine, and orchestratr reads its state from there.
+
+| file value | orchestratr state |
 |---|---|
 | `idle` | `idle` |
 | `busy` | `working` |
 | `waiting`, with `waitingFor` | `blocked` |
 
-Measured latency from submitting a message to `busy` is 0.37 seconds.
+measured latency from submitting a message to `busy`: 0.37 seconds.
 
-The backend also reports `blocked` correctly for these dialogs, and it is the default source.
-The status file adds one thing the backend does not give: the reason. `waitingFor` reads
-`permission prompt` for a permission dialog and `input needed` for a question the model asked.
-orcr reports that reason because the two need different responses from a person.
+the backend also reports `blocked` correctly for these dialogs, and it is the default source (see
+[state](/docs/readiness-and-delivery#state)). the status file adds one thing the backend does not
+give: the reason. `waitingFor` reads `permission prompt` for a permission dialog and
+`input needed` for a question the model asked. orchestratr reports that reason, because the two
+need different responses from a person.
 
-When a question dialog opened, the status file showed `waiting` 6.7 seconds before the
+when a question dialog opened, the status file showed `waiting` 6.7 seconds before the
 notification hook fired.
 
-Claude stops and asks even with permissions bypassed. Bypass removes the permission prompt. It
-does not remove the model's own question tool, which opens a dialog and waits indefinitely.
-This was reproduced under bypass. A blocked Claude agent is normal, and orcr cannot clear it.
+Claude Code stops and asks even with permissions bypassed. bypass removes the permission prompt. it
+does not remove the model's own question tool, which opens a dialog and waits indefinitely. this
+was reproduced under bypass. a blocked Claude Code agent is normal, and orchestratr cannot clear it.
 
-## Message delivery
+## interrupt
 
-Before submitting, note the transcript line count as a watermark. Treat a missing file as
-zero. After submitting, poll the transcript every 200 milliseconds and accept either record.
+one escape key press.
 
-| Case | Record |
-|---|---|
-| Agent at rest | `type` is `user`, and the message content holds the submitted text |
-| Agent working | `type` is `queue-operation`, `operation` is `enqueue`, `content` equals the submitted text |
+two escapes at rest open the rewind view, which offers to restore code and conversation to an
+earlier point. orchestratr sends an interrupt only while the agent is working, which keeps it
+away from that view. see [`orcr agent interrupt`](/docs/cli#orcr-agent-interrupt).
 
-A message sent while the agent is working always produces the `queue-operation` record first.
-What happens next depends on the turn.
+## transcript
 
-- If the turn absorbs it, a second `queue-operation` follows with operation `remove` and reason
-  `absorbed_mid_turn`, plus an attachment row of type `queued_command`.
-- If the turn ends first, the message is then delivered as an ordinary `user` record.
-
-So a mid turn message can produce both records, and a check matching only `user` records misses
-the first case entirely. orcr matches either and accepts the earliest. Anything that counts
-messages must treat the pair as one message, not two.
-
-Measured latency:
-
-| Case | Delay |
-|---|---|
-| From rest | 0.59 to 2.51 seconds |
-| Mid turn | 0.51 to 0.59 seconds |
-
-Timeout 10 seconds. The worst measured case was 3.07 seconds.
-
-The timestamp inside the record is earlier than the moment the record can be read. Compare
-positions in the file, not times inside it.
-
-## Interrupt
-
-One Escape.
-
-Two Escapes at rest open the rewind view, which offers to restore code and conversation to
-an earlier point. orcr sends an interrupt only while the agent is working, which is what
-keeps it away from that view.
-
-## Transcript
-
-```
+```text
 $CLAUDE_CONFIG_DIR/projects/<resolved cwd, every / replaced by ->/<session uuid>.jsonl
 ```
 
-The root is the configuration directory, not the home directory, so it moves with
-`CLAUDE_CONFIG_DIR`. The directory name is the resolved real working directory with every
-slash replaced by a hyphen, including the leading one: `/private/tmp/work` becomes
-`-private-tmp-work`. The file name is the session uuid, which is the same value the status file
+the root is the configuration directory, not the home directory, so it moves with
+`CLAUDE_CONFIG_DIR`. the directory name is the resolved real working directory with every slash
+replaced by a hyphen, including the leading one: `/private/tmp/work` becomes
+`-private-tmp-work`. the file name is the session uuid, which is the same value the status file
 reports.
 
-The file is absent while the agent is idle before its first message, and is created early in
-the first turn, measured 4 to 8 seconds after submission with the turn still running. It is
-not created when the turn completes.
+the file is absent while the agent is idle before its first message. it is created early in the
+first turn, measured 4 to 8 seconds after submission with the turn still running. it is not
+created when the turn completes.
 
-So orcr can start tailing as soon as it submits, and must never read "the file exists" as "the
-turn finished".
+so orchestratr can start tailing as soon as it submits, and must never read "the file exists" as
+"the turn finished".
 
-The session start hook reports a transcript path for a file that does not yet exist. orcr
-tolerates a known path with no file.
+the session start hook reports a transcript path for a file that does not yet exist.
+orchestratr tolerates a known path with no file.
 
-Never derive a working directory from this path. The directory name is mangled and the
-mangling is lossy.
+never derive a working directory from this path. the directory name is mangled, and the mangling
+is lossy.
 
-## Session identity
+subagent transcripts are not read. see [limitations: Claude Code](/docs/limitations#claude-code).
 
-The backend binds the Claude session id at session start, and reports it as an id. orcr
+## session identity
+
+the backend binds the Claude Code session id at session start, and reports it as an id. orchestratr
 derives the transcript path from that id and the working directory.
 
-The integration hands the backend both the id and the transcript path, and the backend keeps
-only the id. Claude is the one kind where a ready made transcript path exists and is
-discarded.
+the integration hands the backend both the id and the transcript path, and the backend keeps
+only the id. Claude Code is the one kind where a ready made transcript path exists and is discarded.
 
-## Steering
+## steering
 
-A message sent while the agent is working reaches the model at the next tool call. If the
-turn makes no further tool call, it runs as a separate turn afterwards. Claude's screen calls
-this a queued message.
+a message sent while the agent is working reaches the model at the next tool call. if the turn
+makes no further tool call, it runs as a separate turn afterwards. Claude Code's screen calls this a
+queued message.
 
-## Not verified
+## not verified
 
-- Whether `--bare` shortens the model catalogue probe, which spends most of its 20 seconds in
+- whether `--bare` shortens the model catalogue probe, which spends most of its 20 seconds in
   session start hooks.
-- Whether a status file is left behind when the process is killed rather than exiting.
+- whether a status file is left behind when the process is killed rather than exiting.

@@ -1,26 +1,34 @@
 ---
-title: "Future work"
-description: "what is left out"
+title: "future work"
+description: "what orchestratr leaves out of its first version, and why"
 ---
 
-This folder holds work that orcr does not do. Nothing here is part of the specification in
-these documents. Each file states what was left out, why, and the cost to add it.
+this section covers work that orchestratr does not do. none of it is part of the specification.
+each page says what was left out, why, and what it would cost to add.
 
-| File | Subject |
-|---|---|
-| [Permissions](/docs/future/permissions) | Moving off permission bypass onto each kind's auto mode |
-| [Sending without typing](/docs/future/api-send) | Delivering a message without typing it |
-| [Headless](/docs/future/headless) | Running agents without a terminal |
-| [Claude](/docs/future/headless/claude) | The Claude control protocol |
-| [Codex](/docs/future/headless/codex) | The Codex app server |
-| [Pi](/docs/future/headless/pi) | The Pi RPC mode |
-| [OpenCode](/docs/future/headless/opencode) | The OpenCode server and ACP |
-| [tmux backend](/docs/future/tmux-backend) | Running on tmux instead of herdr |
-| [External agents](/docs/future/external-agents) | Reading and driving agents orcr did not start |
-| [Dropped items](/docs/future/dropped) | Smaller items cut from the first version |
+<Cards>
+  <Card title="permissions" href="/docs/future/permissions">
+    moving off permission bypass onto each kind's own auto mode
+  </Card>
+  <Card title="sending without typing" href="/docs/future/api-send">
+    handing a message to an agent directly instead of typing it
+  </Card>
+  <Card title="headless" href="/docs/future/headless">
+    running agents without a terminal, with one page per kind
+  </Card>
+  <Card title="tmux backend" href="/docs/future/tmux-backend">
+    running on tmux instead of herdr
+  </Card>
+  <Card title="external agents" href="/docs/future/external-agents">
+    reading and driving agents that orchestratr did not start
+  </Card>
+  <Card title="dropped items" href="/docs/future/dropped">
+    smaller items cut from the first version
+  </Card>
+</Cards>
 
-## Why these are separate
+## why these are separate
 
-The first version answers one question: can orcr start agents of four kinds, drive them the
-same way, and report what happened. Everything in this folder widens that question before it
-has been answered once.
+the first version answers one question: can orchestratr start agents of four kinds, drive them
+the same way, and report what happened. everything in this section widens that question before
+it has been answered once.

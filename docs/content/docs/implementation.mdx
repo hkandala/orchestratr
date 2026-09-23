@@ -1,14 +1,14 @@
 ---
-title: "Implementation"
-description: "layers and the kind adapter"
+title: "implementation"
+description: "layers, the kind adapter, and the procedures shared by every kind"
 ---
 
-This document defines the internal structure. It names no agent. Everything specific to one
-kind lives in [the agent pages](/docs/agents/claude).
+this page defines the internal structure. it names no agent: everything specific to one kind
+lives on the [agent pages](/docs/agents).
 
-## Layers
+## layers
 
-```
+```text
 orcr command line
       |  socket, newline JSON
 orcr server
@@ -20,77 +20,80 @@ orcr server
     herdr               agent processes and their files
 ```
 
-The command line holds no logic beyond parsing arguments, formatting output, and mapping an
-error code to an exit code. Every decision happens in the server. Adding a command means
-adding a method, then a thin wrapper.
+the command line holds no logic beyond parsing arguments, formatting output, and mapping an
+error code to an exit code. every decision happens in the server. adding a command means
+adding a [socket API method](/docs/socket-api#methods), then a thin wrapper.
 
-## The registry
+## registry
 
-orcr keeps its own registry entry for every agent it started. The registry is the source of
-truth for which agents exist and what they are. The backend is a cache of that, and orcr
-reconciles against it.
+orchestratr keeps a registry entry for every agent it started. the registry is the source of
+truth for which agents exist and what they are. the backend holds a derived copy, and
+orchestratr reconciles against it.
 
-Run state is the other way round. The backend reports whether an agent is working, idle or
-blocked, and orcr does not second-guess it. See section "State" in the CLI reference.
+run state is the other way round. the backend reports whether an agent is working, idle or
+blocked, and orchestratr does not second-guess it. see
+[state](/docs/readiness-and-delivery#state).
 
-```
+```text
 ~/.local/state/orcr/registry.json
 ```
 
-One registry entry per agent: name, kind, working directory, model, effort, backend pane, agent
-session id, transcript path, creation time, last known state.
+each entry holds: name, kind, working directory, model, effort, backend pane, agent session
+id, transcript path, creation time, and last known state.
 
-Rules:
+rules:
 
-- Write by writing a temporary file and renaming it. Never write in place.
-- Resolve a symbolic link before writing any file orcr does not own. See "Writing a person's
-  configuration" below.
-- Reconcile against the backend at startup and on every list. An agent the backend no longer
+- write by writing a temporary file and renaming it. never write in place.
+- resolve a symbolic link before writing any file orchestratr does not own. see
+  [writing a person's configuration](#writing-a-persons-configuration).
+- reconcile against the backend at startup and on every list. an agent the backend no longer
   reports is `exited`.
-- Key state on the agent session id first and the backend pane second.
-- Never store a terminal identifier. It looks like a stable key and it changes on every
+- key state on the agent session id first, and on the backend pane second.
+- never store a terminal identifier. it looks like a stable key, and it changes on every
   restart of the backend.
 
-The backend restores its own agents across a restart, relaunching each with its own resume
-argument. Treat that as a useful optimization, never as a guarantee. It did not restore every
+the backend restores its own agents across a restart, relaunching each with its own resume
+argument. treat that as a useful optimization, never as a guarantee. it did not restore every
 kind in testing, and a pane with no bound session is not restored at all.
 
-## The kind adapter
+## kind adapter
 
-One adapter per kind. The interface is small on purpose. Most members are data.
+there is one adapter per kind. the interface is small on purpose, and most members are data.
 
-| Member | Kind | Purpose |
+| member | type | purpose |
 |---|---|---|
-| `launch_argv(model, effort)` | data | The argument list, including the permission bypass argument. |
-| `prepare(cwd)` | action | Set every configuration key that stops a startup screen. Fails loudly. |
-| `ready(pid, cwd)` | predicate | True when the kind's readiness file says the agent accepts input. |
-| `state(pid, cwd)` | function | The state from the kind's own file, or nothing if it has none. |
-| `watermark(session)` | function | The position to resume reading the delivery record from. |
-| `confirm(session, watermark, text)` | function | True when the delivery record for this text exists. |
-| `session_id(pid, cwd)` | function | The agent's own session identifier. |
-| `transcript_path(session_id, cwd)` | function | Where the conversation is written. |
-| `parse(line)` | function | One transcript line to one normalized message. |
-| `interrupt_keys()` | data | The key sequence that stops a turn. |
-| `catalogue()` | action | The model and effort list. |
+| `launch_argv(model, effort)` | data | the argument list, including the permission bypass argument. |
+| `prepare(cwd)` | action | set every configuration key that stops a startup screen. fails loudly. |
+| `ready(pid, cwd)` | predicate | true when the kind's readiness signal says the agent accepts input. |
+| `state(pid, cwd)` | function | the state from the kind's own file, or nothing if it has none. |
+| `watermark(session)` | function | the position to resume reading the delivery record from. |
+| `confirm(session, watermark, text)` | function | true when the delivery record for this text exists. |
+| `session_id(pid, cwd)` | function | the agent's own session identifier. |
+| `transcript_path(session_id, cwd)` | function | where the conversation is written. |
+| `parse(line)` | function | one transcript line to one normalized message. |
+| `interrupt_keys()` | data | the key sequence that stops a turn. |
+| `catalogue()` | action | the model and effort list. |
 
-### What the interface deliberately excludes
+### what the interface excludes
 
-There is no screen reading member, no per-kind message sending member, and no per-kind
-interrupt procedure. Only the key sequence differs, and that is data.
+the interface deliberately has no screen reading member, no per-kind message sending member,
+and no per-kind interrupt procedure. only the interrupt key sequence differs between kinds, and
+that is data.
 
-There is no classification of why an agent is blocked. orcr passes through whatever text the
-source provides.
+there is no classification of why an agent is blocked. orchestratr passes through whatever
+text the source provides. see [dropped items](/docs/future/dropped#classifying-why-an-agent-is-blocked).
 
-### Where a member may be absent
+### members that may be absent
 
-`state` and `session_id` can return nothing for a kind whose files do not carry them. The core
-falls back to the backend and records `state_source` accordingly.
+`state` and `session_id` can return nothing for a kind whose files do not carry them. the core
+then falls back to the backend and records `state_source` accordingly.
 
-## Sending a message
+## sending a message
 
-One procedure, every kind.
+one procedure serves every kind. [`orcr agent message`](/docs/cli#orcr-agent-message) defines
+its contract.
 
-```
+```text
 send(name, text, immediate):
     a = registry.get(name)                  -> not_found
     if not backend.alive(a)                 -> exited
@@ -110,54 +113,59 @@ send(name, text, immediate):
     -> possibly_delivered
 ```
 
-### The three outcomes
+### the three outcomes
 
-The dividing line is proof, and it comes from one flag: `write_attempted`, set immediately
-before the socket write. Every backend failure sorts by which side of that flag it occurred on.
+the dividing line is proof, and it comes from one flag: `write_attempted`, set immediately
+before the socket write. every backend failure sorts by which side of that flag it occurred on.
 
-| Backend outcome | Side | Reported |
+| backend outcome | side | reported |
 |---|---|---|
-| The delivery record appeared | after | `delivered` |
+| the delivery record appeared | after | `delivered` |
 | `agent_blocked` | before, proven: pane unchanged, text never appears | `failed` |
-| Invalid key. The backend validates every key before writing any byte. | before | `failed` |
-| Agent not found, not running, or gone | before | `failed` |
-| `invalid_request`, `unsupported_method` | before, and a defect in orcr | `failed` |
-| Connect failure, oversized request | before | `failed` |
+| invalid key. the backend validates every key before writing any byte. | before | `failed` |
+| agent not found, not running, or gone | before | `failed` |
+| `invalid_request`, `unsupported_method` | before, and a defect in orchestratr | `failed` |
+| connect failure, oversized request | before | `failed` |
 | `agent_prompt_stalled` | after | `possibly_delivered` |
 | `timeout` | after | `possibly_delivered` |
-| Internal error, connection closed, malformed reply | after | `possibly_delivered` |
-| Wrote fine, no record inside the deadline | after | `possibly_delivered` |
+| internal error, connection closed, malformed reply | after | `possibly_delivered` |
+| wrote fine, no record within the deadline | after | `possibly_delivered` |
 
-Two mechanical rules keep that table decidable.
+two mechanical rules keep that table decidable:
 
-**Declare the mutation class per request.** A request known to change nothing can be reported
-as a proven failure. A request that can change something cannot.
+- **declare the mutation class per request.** a request known to change nothing can be
+  reported as a proven failure. a request that can change something cannot.
+- **send one key per request.** a batch of keys that fails part way is ambiguous about which
+  key landed, and that ambiguity would push otherwise provable cases into
+  `possibly_delivered`.
 
-**Send one key per request.** A batch of keys that fails part way is ambiguous about which key
-landed, and that ambiguity would push otherwise provable cases into
-`possibly_delivered`.
+retry rules follow from the side, not from the code. anything on the "before" side can be
+retried once, except a blocked agent, which is a refusal. nothing on the "after" side can be
+retried, because a duplicate is possible. the enter key alone is exempt, since re-sending it
+cannot duplicate a message.
 
-Retry rules follow from the side, not from the code. Anything on the "before" side can be
-retried once, except a blocked agent, which is a refusal. Nothing on the "after" side can be
-retried, because a duplicate is possible. Enter alone is exempt, since re-sending it cannot
-duplicate a message.
+### clearing the composer
 
-The composer is cleared before every send. orcr does not detect that the composer is empty.
-It makes it empty. One kind restores unsent text into the composer after an interrupt, and
-without the clear the next message is submitted joined to that text as one message.
+the composer is cleared before every send. orchestratr does not detect that the composer is
+empty; it makes it empty. one kind restores unsent text into the composer after an interrupt,
+and without the clear, the next message would be submitted joined to that text as one message.
 
-Polling interval is 100 to 200 milliseconds. The deadline is per kind, set well above
-the worst measured latency.
+### polling and deadlines
 
-Stopping early on an idle agent with no delivery record matters for one kind. On that kind the
-delivery record for a mid turn message does not appear until the running tool call returns.
-There the deadline is the end of the turn rather than a number. orcr waits for the work and
-reports `possibly_delivered` the moment the turn ends without the record. The rule is written
+the polling interval is 100 to 200 milliseconds. the deadline is per kind, set well above the
+worst measured latency.
+
+stopping early on an idle agent with no delivery record matters for one kind. on that kind, the
+delivery record for a mid turn message does not appear until the running tool call returns, so
+the deadline is the end of the turn rather than a number. orchestratr waits for the work, and
+reports `possibly_delivered` the moment the turn ends without the record. the rule is written
 once and applies to every kind, because it is never wrong for the others.
 
-## Starting an agent
+## starting an agent
 
-```
+[`orcr agent new`](/docs/cli#orcr-agent-new) defines the contract.
+
+```text
 new(kind, cwd, model, effort, name):
     backend.check()                         -> backend_unavailable
     backend.check_integration(kind)         -> integration_missing
@@ -169,103 +177,109 @@ new(kind, cwd, model, effort, name):
     registry.put(...)
 ```
 
-`prepare` runs before anything is launched, so a configuration failure costs nothing. A
-failure after launch removes the tab. orcr never leaves a half started agent.
+`prepare` runs before anything is launched, so a configuration failure costs nothing. a failure
+after launch removes the tab. orchestratr never leaves a half started agent.
 
-The backend's own readiness answer is not used. See [Limitations](/docs/limitations) for the evidence. It
-returned true while a startup screen was displayed on three kinds, and on one kind it returned
-true 25.4 seconds before the terminal had drawn itself.
+the backend's own readiness answer is not used. it returned true while a startup screen was
+displayed on three kinds, and on one kind it returned true 25.4 seconds before the terminal had
+drawn itself. see [limitations](/docs/limitations#backend-readiness) for the evidence.
 
-## Writing a person's configuration
+## writing a person's configuration
 
-`prepare` writes nothing for three of the four kinds. For Claude it writes three keys to the
-person's configuration file. Three rules.
+`prepare` writes nothing for three of the four kinds. for Claude Code, it writes three keys to
+the person's configuration file (listed in [Claude Code startup](/docs/agents/claude#startup)).
+three rules apply.
 
-**Resolve the link before writing.** A configuration path is often a symbolic link into a
-repository that the person manages. Writing a temporary file and renaming it over that path
-replaces the link with a plain file. Every later edit in the repository then silently stops
-taking effect. Resolve the real path first, then write a temporary file beside the real file
+**resolve the link before writing.** a configuration path is often a symbolic link into a
+repository that the person manages. writing a temporary file and renaming it over that path
+replaces the link with a plain file, and every later edit in the repository silently stops
+taking effect. resolve the real path first, then write a temporary file beside the real file
 and rename it there.
 
-**Write only when the key is absent.** Never overwrite a value the person set.
+**write only when the key is absent.** never overwrite a value the person set.
 
-**Preserve everything else.** For a structured format, parse, add the one key, and serialize.
-For a format that allows the same table twice, check for a duplicate before adding, because
+**preserve everything else.** for a structured format, parse, add the one key, and serialize.
+for a format that allows the same table twice, check for a duplicate before adding, because
 appending a second table changes which value wins.
 
-Report what was done: written, already present, or skipped. `orcr doctor` shows it.
+report what was done: written, already present, or skipped. [`orcr doctor`](/docs/cli#orcr-doctor)
+shows it.
 
-## Placement
+## placement
 
-One backend session, named `orcr`. One workspace per distinct working directory. One tab per
-agent, and the agent runs in that tab's pane. orcr records the pane identifier, because that is
-what the backend's own methods take.
+there is one backend session, named `orcr`, with one workspace per distinct working directory
+and one tab per agent. the agent runs in that tab's pane. orchestratr records the pane
+identifier, because that is what the backend's own methods take.
 
-orcr creates and manages only that session. It never stops or deletes a session it did not
-create.
+orchestratr creates and manages only that session. it never stops or deletes a session it did
+not create.
 
-## Transcripts
+## transcripts
 
-Every kind writes a different format. `parse` converts one line into the normalized message
-defined in the CLI reference: sequence, role, time, text, tool names.
+every kind writes a different format. `parse` converts one line into the normalized message
+defined in [`orcr agent read`](/docs/cli#orcr-agent-read): sequence, role, time, text, and tool
+names.
 
-Two rules:
+two rules:
 
-- Never derive a working directory from a transcript path. Every kind mangles the directory
+- **never derive a working directory from a transcript path.** every kind mangles the directory
   into the path, and the mangling is lossy.
-- Tolerate a known path with no file. Some kinds report a transcript path before the file
+- **tolerate a known path with no file.** some kinds report a transcript path before the file
   exists.
 
-Following a transcript is a file watch with a poll fallback. Reading must handle a partial
+following a transcript is a file watch with a poll fallback. reading must handle a partial
 final line, because a reader can see a line mid write.
 
-## Backend interaction
+## backend interaction
 
-orcr speaks the backend's socket directly. It shells out for exactly two things: creating the
-backend session, which has no socket method, and attaching a terminal, which cannot be an
-API call.
+orchestratr speaks the backend's socket directly. it shells out for exactly two things:
+creating the backend session, which has no socket method, and attaching a terminal, which
+cannot be an API call.
 
-Handshake on every connection. Compare the protocol number and refuse with one clear error
-rather than failing method by method.
+every connection starts with a handshake. orchestratr compares the protocol number and refuses
+with one clear error, rather than failing method by method.
 
-The backend takes its timeouts in milliseconds. orcr accepts a human duration and converts.
-This has already cost one round of false failures.
+the backend takes its timeouts in milliseconds. orchestratr accepts a human duration and
+converts it. getting this wrong has already cost one round of false failures.
 
-orcr scrubs known child session markers from the environment it gives the herdr server. See
-[the Claude Code page](/docs/agents/claude) for the marker that disables transcript writing.
+orchestratr scrubs known child session markers from the environment it gives the herdr server.
+see [Claude Code environment](/docs/agents/claude#environment) for the marker that disables transcript
+writing.
 
-## Errors
+## errors
 
-Nine codes, closed, defined in the CLI reference. Each maps to one exit code.
+there are nine error codes, closed, defined in [error response](/docs/socket-api#error-response).
+each maps to one exit code.
 
-Specifics go in `details`, not in new codes. A small code set stays usable only if it is not
+specifics go in `details`, not in new codes. a small code set stays usable only if it is not
 allowed to grow.
 
-Every message states what orcr looked for. A failure to confirm delivery reports the text and
-the timeout, so a caller can look for themselves.
+every message states what orchestratr looked for. a failure to confirm delivery reports the text
+and the timeout, so a caller can look for themselves.
 
-## Concurrency
+## concurrency
 
-The server handles requests concurrently. Per agent, serialize anything that types: sending,
-interrupting, and clearing. Two concurrent sends to one agent would interleave keystrokes.
+the server handles requests concurrently. per agent, it serializes anything that types:
+sending, interrupting, and clearing. two concurrent sends to one agent would interleave
+keystrokes.
 
-Reads, listing and transcript following need no lock.
+reads, listing and transcript following need no lock.
 
-## Testing
+## testing
 
-Three levels:
+there are three levels:
 
-1. Adapter unit tests over captured files. Every measurement in [the agent pages](/docs/agents/claude) came
-   from a captured file, and those files are the fixtures.
-2. Backend tests against a throwaway backend session. Never against a session orcr did not
-   create.
-3. A live test per kind that starts an agent, sends one message, confirms delivery, and
+1. **adapter unit tests over captured files.** every measurement on the
+   [agent pages](/docs/agents) came from a captured file, and those files are the fixtures.
+2. **backend tests against a throwaway backend session.** never against a session orchestratr
+   did not create.
+3. **a live test per kind** that starts an agent, sends one message, confirms delivery, and
    stops it.
 
-The second and third levels must run in an isolated configuration directory, and must never
+the second and third levels must run in an isolated configuration directory, and must never
 write to a person's real configuration file.
 
-For the first level, bb is useful prior art. It records the traffic of each agent as newline
-delimited JSON, keeps a manifest that pins the agent version beside each recording, and
-replays the recording in its tests. See `packages/provider-bridge-protocol/recordings/` in
-https://github.com/get-bb/bb.
+for the first level, [bb](https://github.com/get-bb/bb) is useful prior art. it records the
+traffic of each agent as newline-delimited JSON, keeps a manifest that pins the agent version
+beside each recording, and replays the recording in its tests. see
+`packages/provider-bridge-protocol/recordings/` in that repository.

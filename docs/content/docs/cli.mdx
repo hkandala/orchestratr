@@ -1,0 +1,545 @@
+---
+title: "CLI"
+description: "every command, its flags, its output and its exit codes"
+---
+
+this page defines the `orcr` command line tool. it is a caller of the
+[socket API](/docs/socket-api): every command maps to one API method, listed in
+[methods](/docs/socket-api#methods).
+
+## conventions
+
+### names
+
+every agent has one identifier, its name. orchestratr generates a name when you do not supply
+one: the kind, a hyphen, and the lowest free number for that kind.
+
+```text
+claude-1  codex-1  codex-2  pi-1  opencode-1
+```
+
+a name is unique across orchestratr. every command that acts on an agent takes a name.
+
+### output
+
+text output is the default. it is for a person to read, and its exact layout can change
+between releases.
+
+`--json` output is stable, and programs must use it. each command documents its JSON shape
+below. all JSON output is a single object, never a bare array.
+
+times in JSON are RFC 3339 strings in UTC. time arguments accept an RFC 3339 string, a UNIX
+timestamp in seconds, or a relative duration such as `30m` or `2h`.
+
+durations accept a unit suffix of `s`, `m` or `h`. a bare number means seconds.
+
+### exit codes
+
+| code | meaning | error code |
+|---|---|---|
+| 0 | success | none |
+| 1 | internal failure | `internal` |
+| 2 | the command was used wrongly | `invalid_request` |
+| 3 | the agent does not exist | `not_found` |
+| 4 | the agent cannot accept this action now | `not_ready`, `blocked` |
+| 5 | the action did not finish in time | `timeout` |
+| 6 | herdr is missing, stopped, or speaks a different protocol | `backend_unavailable` |
+| 7 | the herdr integration for this kind is missing or stale | `integration_missing` |
+
+the set is closed. every failure maps to one of these seven codes. the error codes are defined
+in [error response](/docs/socket-api#error-response).
+
+### states
+
+an agent is always in exactly one state.
+
+| state | meaning |
+|---|---|
+| `working` | the agent is running a turn. |
+| `blocked` | the agent waits for a person to answer something on screen. |
+| `idle` | the agent is ready for a message. |
+| `exited` | the agent process ended. |
+| `unknown` | orchestratr cannot determine the state. |
+
+liveness is evaluated first. a dead process is `exited` even when the last known screen said
+`working`. where each state comes from is described in
+[state](/docs/readiness-and-delivery#state).
+
+## `orcr agent new`
+
+start a new agent.
+
+```sh
+orcr agent new --kind <kind> [--model <model>] [--effort <effort>]
+               [--cwd <dir>] [--name <name>] [--prompt <text>]
+               [--timeout <duration>] [--json]
+```
+
+| flag | default | meaning |
+|---|---|---|
+| `--kind` | required | `claude`, `codex`, `pi` or `opencode`. |
+| `--model` | the kind's own default | passed to the agent unchanged. |
+| `--effort` | the kind's own default | passed to the agent unchanged. |
+| `--cwd` | the current directory | the working directory of the agent. |
+| `--name` | generated | the name of the agent. must be unique. |
+| `--prompt` | none | a first message, sent once the agent is ready. |
+| `--timeout` | `120s` | how long to wait for the agent to become ready. |
+
+`--model` and `--effort` are not validated against a catalogue. run
+[`orcr models`](#orcr-models) to see what a kind accepts.
+
+### what it does
+
+<Steps>
+<Step>
+
+check that herdr is running and speaks a supported protocol, and that the herdr integration for
+this kind is installed and current.
+
+</Step>
+<Step>
+
+find or create the workspace for `--cwd`. agents that share a working directory share a
+workspace.
+
+</Step>
+<Step>
+
+create a tab, and start the agent in the tab's pane with permission prompts turned off.
+
+</Step>
+<Step>
+
+run the startup steps for the kind. a kind can open a startup screen that permission bypass
+does not remove, and the startup steps clear those screens. see
+[startup screens](/docs/readiness-and-delivery#startup-screens).
+
+</Step>
+<Step>
+
+wait until the agent reports a ready state that orchestratr can confirm. see
+[readiness](/docs/readiness-and-delivery#readiness).
+
+</Step>
+<Step>
+
+record the agent in the orchestratr registry.
+
+</Step>
+<Step>
+
+if `--prompt` was given, send it as a message.
+
+</Step>
+</Steps>
+
+the command fails if the agent does not reach a confirmed ready state within `--timeout`. it
+never leaves a half started agent behind: it stops the agent and removes the tab.
+
+### output
+
+```json
+{
+  "name": "codex-1",
+  "kind": "codex",
+  "cwd": "/Users/me/code/project",
+  "model": "gpt-5.6-sol",
+  "effort": "high",
+  "state": "idle",
+  "created_at": "2026-09-18T09:14:02Z"
+}
+```
+
+## `orcr agent list`
+
+list the agents that orchestratr started.
+
+```sh
+orcr agent list [--kind <kind>] [--state <state>] [--cwd <glob>]
+                [--since <time>] [--json]
+```
+
+| flag | meaning |
+|---|---|
+| `--kind` | show only this kind. |
+| `--state` | show only agents in this state. |
+| `--cwd` | show only agents whose working directory matches this glob. |
+| `--since` | show only agents created at or after this time. |
+
+filters combine with a logical and.
+
+orchestratr reconciles its registry against herdr on every call. an agent that herdr no longer
+reports is `exited`.
+
+### output
+
+```json
+{
+  "agents": [
+    {
+      "name": "codex-1",
+      "kind": "codex",
+      "cwd": "/Users/me/code/project",
+      "model": "gpt-5.6-sol",
+      "effort": "high",
+      "state": "working",
+      "state_source": "rule:osc_title_working",
+      "created_at": "2026-09-18T09:14:02Z",
+      "agent_session": "01a0b2fe-c554-7ae0-92ab-5e9213d77517",
+      "transcript": "/Users/me/.codex/sessions/2026/09/18/rollout-....jsonl"
+    }
+  ]
+}
+```
+
+`state_source` names where the state came from. see
+[state sources](/docs/readiness-and-delivery#state-sources).
+
+`agent_session` and `transcript` are null until the kind binds them. when that happens differs
+by kind; see the [agent pages](/docs/agents).
+
+## `orcr agent status`
+
+show one agent, and optionally wait for it to change.
+
+```sh
+orcr agent status <name> [--wait <state>] [--timeout <duration>] [--json]
+```
+
+| flag | default | meaning |
+|---|---|---|
+| `--wait` | none | return when the agent reaches this state. |
+| `--timeout` | `300s` | give up after this long, with exit code 5. |
+
+`--wait` accepts one state or several, separated by commas. `--wait idle,blocked` returns on
+whichever comes first.
+
+without `--wait`, the command returns at once. the output is one agent object, as in
+[`orcr agent list`](#orcr-agent-list).
+
+## `orcr agent read`
+
+read the conversation of an agent.
+
+```sh
+orcr agent read <name> [--last <n>] [--format text|jsonl] [--follow] [--json]
+```
+
+| flag | default | meaning |
+|---|---|---|
+| `--last` | `50` | show the last `n` messages. `--last 0` shows all of them. |
+| `--format` | `text` | `text` for people, `jsonl` for programs. |
+| `--follow` | off | keep the output open and print new messages as they arrive. |
+
+orchestratr reads the transcript that the agent itself writes, never the terminal. every kind
+stores its transcript differently, and orchestratr converts all of them into one shape.
+
+`text` renders one block per message: the role, the time and the content. a tool call renders
+as a one line summary, not as full arguments and results.
+
+`jsonl` prints one JSON object per line:
+
+```jsonl
+{"seq":12,"role":"assistant","at":"2026-09-18T09:20:31Z","text":"...","tools":["Bash","Read"]}
+```
+
+| field | meaning |
+|---|---|
+| `seq` | position in the conversation, starting at 1. |
+| `role` | `user`, `assistant` or `system`. |
+| `at` | when the message was recorded. |
+| `text` | the message text. |
+| `tools` | names of the tools this message called. empty when there are none. |
+
+a transcript can be absent while the agent runs, because some kinds do not write the file
+until the first turn finishes. in that case the command reports an empty conversation. it does not fail.
+
+## `orcr agent message`
+
+send a message to an agent.
+
+```sh
+orcr agent message <name> <text> [--immediate] [--timeout <duration>] [--json]
+```
+
+| flag | default | meaning |
+|---|---|---|
+| `--immediate` | off | interrupt the current turn first. |
+| `--timeout` | the kind's own deadline | how long to wait for delivery confirmation. |
+
+pass `-` as the text to read it from standard input.
+
+### what it does
+
+<Steps>
+<Step>
+
+read the state. refuse when the agent is `blocked`, `exited` or `unknown`.
+
+</Step>
+<Step>
+
+with `--immediate`, interrupt the agent and wait for it to become `idle`. this is the same as
+running [`orcr agent interrupt`](#orcr-agent-interrupt) and then `orcr agent message`.
+
+</Step>
+<Step>
+
+clear the composer.
+
+</Step>
+<Step>
+
+paste the text.
+
+</Step>
+<Step>
+
+press enter.
+
+</Step>
+<Step>
+
+confirm that the message was delivered.
+
+</Step>
+</Steps>
+
+these steps are the same for every kind. the full procedure, including every failure branch,
+is in [sending a message](/docs/implementation#sending-a-message).
+
+a message sent while the agent is `working` reaches the model at the next tool call the agent
+makes. if the turn makes no further tool call, the message runs as the next turn. all four
+kinds behave this way, though each uses a different word for it on screen (see steering on each
+[agent page](/docs/agents)).
+
+### a blocked agent
+
+when the agent is `blocked`, orchestratr refuses before it sends anything. it does not clear
+the dialog, and it does not type past it.
+
+```text
+orcr: agent codex-1 is blocked and is waiting for a person.
+      orcr cannot answer it. Attach and clear it first:
+        orcr agent attach codex-1
+```
+
+the exit code is 4, with error code `blocked`.
+
+this is the one case where orchestratr knows the message was never sent, because the backend
+proved it: a send to a blocked agent leaves the pane unchanged, and the text never appears.
+
+### confirmation
+
+a send has three possible outcomes.
+
+| outcome | meaning | exit |
+|---|---|---|
+| `delivered` | orchestratr read the agent's own record of this message. | 0 |
+| `possibly_delivered` | orchestratr wrote the keystrokes and saw no record within the timeout. | 5 |
+| `failed` | nothing was sent, and orchestratr can prove it. | 4 |
+
+orchestratr confirms delivery by reading the delivery record that the agent itself writes when
+it accepts a message. it does not read the terminal, and it does not treat a keystroke as
+proof. every kind has a delivery record, defined in [delivery](/docs/readiness-and-delivery#delivery).
+on three kinds it is a file written for this purpose. on Pi it is the transcript, which costs a
+longer wait mid turn.
+
+**`failed` means nothing happened.** the agent was blocked, the agent is gone, or the backend
+refused the request before writing any bytes. the dividing line is proof: orchestratr reports
+`failed` only when it knows nothing reached the terminal. retrying is safe.
+
+**`possibly_delivered` means orchestratr does not know.** the keystrokes went out, the enter
+key was re-sent, and the delivery record never appeared. the message can still arrive.
+retrying is not safe, because it can produce a duplicate. look at the agent before doing
+anything.
+
+this middle outcome exists because, from outside the agent, there is no way to tell "written
+with no effect" from "written and working slowly". both known silent-drop modes return success
+from the backend. naming that state honestly is better than sorting it into either neighbor.
+
+```text
+orcr: message to codex-1 could not be confirmed after 5s.
+      The keystrokes were sent. The agent may still act on them.
+      Do not resend without checking:
+        orcr agent read codex-1 --last 5
+```
+
+### retrying
+
+orchestratr never re-sends the text. if the first copy landed late, a second copy is a
+duplicate message.
+
+orchestratr does re-send the enter key, because pressing enter again cannot duplicate a
+message:
+
+- if the text is sitting unsubmitted in the composer, enter submits it.
+- if the composer is empty, enter does nothing.
+
+this recovers the case where the paste arrived and the submission did not, which would
+otherwise be reported as a plain failure.
+
+the enter key is re-sent at most twice, only while delivery is still unconfirmed, and never
+after the agent has been seen to leave `idle`.
+
+### output
+
+```json
+{
+  "name": "codex-1",
+  "state_before": "working",
+  "result": "delivered",
+  "confirmed_at": "2026-09-18T09:22:10Z",
+  "latency_ms": 496
+}
+```
+
+`possibly_delivered` returns the same object with `result` set, no `confirmed_at`, and the
+timeout that elapsed. it is an error response with code `timeout`, because a caller that
+ignores the distinction must not read it as success.
+
+`failed` returns an error with the code that proves it: `blocked`, `not_found`, `exited` or
+`invalid_request`.
+
+## `orcr agent interrupt`
+
+stop the current turn without sending anything.
+
+```sh
+orcr agent interrupt <name> [--timeout <duration>] [--json]
+```
+
+`--timeout` defaults to `10s`.
+
+orchestratr sends the kind's interrupt and waits for the agent to leave `working`. if the agent
+is still `working` after 3 seconds, orchestratr sends the interrupt once more and waits again.
+it never sends a third.
+
+the interrupt is one key sequence per kind, held as data. three kinds take one escape. one kind
+ignores a single escape and needs two, the second within 5 seconds of the first. on two kinds,
+two escapes at rest open a destructive view. the sequence for each kind is under interrupt on
+its [agent page](/docs/agents).
+
+orchestratr sends the interrupt only while the agent is `working`. if the agent is not
+`working`, the command succeeds and does nothing. this is what keeps orchestratr from ever
+sending the sequence that opens the destructive view.
+
+## `orcr agent attach`
+
+give your terminal to the agent.
+
+```sh
+orcr agent attach <name> [--takeover]
+```
+
+this replaces your shell with the agent's terminal until you detach. it is the only command
+that is not available over the socket API, because it hands over a terminal instead of returning data.
+
+`--takeover` detaches any other attached client.
+
+## `orcr agent stop`
+
+stop an agent and remove its tab.
+
+```sh
+orcr agent stop <name> [--json]
+```
+
+orchestratr asks the agent to exit, waits, and then closes the pane. the agent's transcript
+stays on disk, and its registry entry stays in the registry with state `exited`.
+
+## `orcr models`
+
+list the models and effort values each kind accepts.
+
+```sh
+orcr models [--kind <kind>] [--json]
+```
+
+orchestratr queries each kind directly on every run. there is no cache. the four kinds are
+probed at the same time, so the command takes about as long as the slowest probe, about 30
+seconds. no probe starts a billed turn.
+
+for one kind, OpenCode, orchestratr starts a short lived server process and stops it before the
+command returns. see [model catalogue](/docs/agents/opencode#model-catalogue).
+
+`--model` and `--effort` on [`orcr agent new`](#orcr-agent-new) are not checked against this
+list. the list tells you what to pass. it does not gate what you pass.
+
+### output
+
+```json
+{
+  "kinds": [
+    {
+      "kind": "codex",
+      "version": "0.154.0",
+      "status": "ok",
+      "default_model": "gpt-5.6-sol",
+      "models": [
+        {
+          "id": "gpt-5.6-luna",
+          "display_name": "GPT-5.6-Luna",
+          "default_effort": "medium",
+          "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+        }
+      ]
+    },
+    {
+      "kind": "opencode",
+      "status": "error",
+      "error": {
+        "code": "internal",
+        "message": "model catalogue fetch failed"
+      },
+      "models": []
+    }
+  ]
+}
+```
+
+| field | meaning |
+|---|---|
+| `status` | `ok` when the probe worked, `error` when it did not. |
+| `efforts` | the effort values this model accepts, in the kind's own words. an empty array means the model accepts no effort value. |
+
+orchestratr does not translate effort words between kinds. `--effort` passes through as
+written.
+
+a kind whose probe fails reports `status: "error"` and an empty model list. the rest of the
+output is still valid: one failing kind does not fail the command.
+
+## `orcr doctor`
+
+report whether orchestratr can work.
+
+```sh
+orcr doctor [--json]
+```
+
+it checks the following, and prints one line for each:
+
+- herdr is installed, running, and speaks a supported protocol.
+- the herdr integration for each kind is installed and current.
+- each kind's binary is present, and its version.
+- the orchestratr registry is readable and agrees with herdr.
+
+the exit code is 0 when everything passes, and 6 or 7 on the first failure that stops
+orchestratr from working.
+
+## `orcr serve`
+
+run the socket API server.
+
+```sh
+orcr serve [--socket <path>]
+```
+
+the default socket path is `$XDG_RUNTIME_DIR/orcr/orcr.sock`, or
+`~/.local/state/orcr/orcr.sock` when `XDG_RUNTIME_DIR` is not set.
+
+every other command starts this server if it is not already running, and then connects to it.
+you do not have to run `orcr serve` yourself.
+
+`orcr serve --schema` writes the JSON Schema of the API to standard output and exits. see
+[schema](/docs/socket-api#schema).

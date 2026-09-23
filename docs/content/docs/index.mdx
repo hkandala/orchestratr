@@ -1,34 +1,79 @@
 ---
-title: "orcr"
-description: "one CLI for coding agent sessions"
+title: "overview"
+description: "one interface for running and controlling coding agents"
 ---
 
-orcr runs and controls AI coding agents of four kinds through one interface.
+orchestratr runs AI coding agents and controls them through one interface. it supports four
+kinds of agent: Claude Code, Codex, Pi and OpenCode.
 
-Read in this order.
+each agent runs as an interactive terminal program in a pane that [herdr](https://herdr.dev)
+manages. orchestratr gives each agent an identity, tracks its state, and offers one set of
+commands that behaves the same way for all four kinds.
 
-| Page | Subject |
+<Callout title="orchestratr and orcr">
+  orchestratr is the product. `orcr` is its command line tool, and the name it uses for its
+  own files, socket and herdr session. these documents say orchestratr when they mean the
+  product and `orcr` only in commands and literal names.
+</Callout>
+
+## read in this order
+
+<Cards>
+  <Card title="purpose" href="/docs/purpose">
+    what orchestratr is for, why it drives interactive sessions, and the rules that settle
+    design arguments
+  </Card>
+  <Card title="CLI" href="/docs/cli">
+    every `orcr` command, its flags, output and exit codes
+  </Card>
+  <Card title="socket API" href="/docs/socket-api">
+    the wire protocol every command is built on
+  </Card>
+  <Card title="configuration" href="/docs/configuration">
+    `config.toml`, and what is deliberately fixed
+  </Card>
+  <Card title="readiness, delivery, and state" href="/docs/readiness-and-delivery">
+    how orchestratr knows an agent is ready, that a message landed, and where state comes from
+  </Card>
+  <Card title="implementation" href="/docs/implementation">
+    layers, the kind adapter, and the shared procedures
+  </Card>
+  <Card title="agent kinds" href="/docs/agents">
+    everything specific to Claude Code, Codex, Pi and OpenCode
+  </Card>
+  <Card title="limitations" href="/docs/limitations">
+    what does not work, and why
+  </Card>
+  <Card title="future work" href="/docs/future">
+    what the first version leaves out, and why
+  </Card>
+</Cards>
+
+the [CLI](/docs/cli), the [socket API](/docs/socket-api), and
+[readiness, delivery, and state](/docs/readiness-and-delivery) are the contract. the
+[agent pages](/docs/agents) hold everything specific to one kind, and nothing in them changes
+the contract.
+
+work that orchestratr does not do is collected under [future work](/docs/future).
+
+## terms
+
+| term | meaning |
 |---|---|
-| [Purpose](/docs/purpose) | What orcr is, why it works this way, and the rules that decide arguments |
-| [CLI and socket API](/docs/cli-reference) | Every command, and the socket API with its schema |
-| [Implementation](/docs/implementation) | Layers, the kind adapter, and the shared procedures |
-| [Claude Code](/docs/agents/claude) | Claude Code |
-| [Codex](/docs/agents/codex) | Codex |
-| [Pi](/docs/agents/pi) | Pi |
-| [OpenCode](/docs/agents/opencode) | OpenCode |
-| [Configuration](/docs/configuration) | `config.toml`, and what is deliberately fixed |
-| [Limitations](/docs/limitations) | What does not work, with the evidence |
+| kind | one of the four agent programs: `claude`, `codex`, `pi` or `opencode`. |
+| agent | one running session of a kind, started by orchestratr. |
+| backend | herdr, the terminal backend that hosts every agent in a pane. |
+| integration | the herdr integration for a kind. it reports to herdr, and herdr binds the agent's session from those reports. |
+| composer | the agent's input box, where a message is typed before it is submitted. |
+| turn | the work an agent does in response to a message. a message sent while a turn runs is sent mid turn. |
+| delivery record | the entry an agent writes for a message it received. orchestratr reads it to confirm delivery. |
+| readiness signal | a per-kind signal that appears only after every startup screen is cleared. |
 
-The CLI and socket API page is the contract. The agent pages hold everything specific to one
-kind. Nothing in them changes the contract.
+## measurements
 
-Work that orcr does not do is in [Future work](/docs/future).
-
-## Measurements
-
-Every latency, path and key in these documents came from a live run on macOS against Claude
-Code 2.1.276, Codex 0.154.0, Pi 0.85.1, and OpenCode 1.18.31 built from source. The run drove
+every latency, path and key in these documents comes from a live run on macOS against Claude
+Code 2.1.276, Codex 0.154.0, Pi 0.85.1, and OpenCode 1.18.31 built from source. the run drove
 all four through herdr 0.9.1 at protocol 22.
 
-Where something was not tested, the document says so in a section named "Not verified". Those
-sections are part of the specification. Do not implement around them silently.
+where something was not tested, the page says so in a section named "not verified". those
+sections are part of the specification. do not implement around them silently.

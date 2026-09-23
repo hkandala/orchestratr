@@ -1,17 +1,17 @@
 ---
-title: "Configuration"
-description: "config.toml and what is fixed"
+title: "configuration"
+description: "config.toml, and what is deliberately fixed"
 ---
 
-## File
+## file
 
-```
+```text
 ~/.config/orcr/config.toml
 ```
 
-The file is optional. orcr works with no configuration at all.
+the file is optional. orchestratr works with no configuration at all.
 
-## Contents
+## keys
 
 ```toml
 [orcr]
@@ -38,62 +38,71 @@ binary = "opencode"
 home   = "~/.config/opencode"
 ```
 
-| Key | Default | Purpose |
+| key | default | purpose |
 |---|---|---|
-| `orcr.socket` | see below | Where the server listens. |
-| `kind.<k>.binary` | the kind's own name | Which program to run. Use this to test a build. |
-| `kind.<k>.home` | the kind's own default | The configuration directory orcr reads and writes for that kind. |
-| `kind.<k>.model` | the kind's own default | Used when `--model` is not given. |
-| `kind.<k>.effort` | the kind's own default | Used when `--effort` is not given. |
-| `kind.<k>.args` | empty | Extra arguments, appended after the arguments orcr builds. |
+| `orcr.socket` | see below | where the server listens. |
+| `kind.<k>.binary` | the kind's own name | which program to run. use this to test a build. see [`binary`](#binary). |
+| `kind.<k>.home` | the kind's own default | the configuration directory orchestratr reads and writes for that kind. see [`home`](#home). |
+| `kind.<k>.model` | the kind's own default | used when `--model` is not given. |
+| `kind.<k>.effort` | the kind's own default | used when `--effort` is not given. |
+| `kind.<k>.args` | empty | extra arguments, appended after the arguments orchestratr builds. |
 
-The default socket path is `$XDG_RUNTIME_DIR/orcr/orcr.sock`, and
+the default socket path is `$XDG_RUNTIME_DIR/orcr/orcr.sock`, or
 `~/.local/state/orcr/orcr.sock` when `XDG_RUNTIME_DIR` is not set.
 
-## Precedence
+## precedence
 
-A command line flag beats the configuration file. The configuration file beats the kind's own
-default.
+a command line flag beats the configuration file, and the configuration file beats the kind's
+own default.
 
-`args` is the exception. It is always appended. It does not replace what orcr builds, because
-orcr must control the permission bypass argument and the startup arguments.
+`args` is the exception: it is always appended. it does not replace what orchestratr builds,
+because orchestratr must control the permission bypass argument and the startup arguments.
 
 ## `binary`
 
-This key exists because the name of a program does not always identify the program.
+this key exists because the name of a program does not always identify the program.
 
-`orcr doctor` reports the resolved path and the reported version of each kind's binary.
+[`orcr doctor`](/docs/cli#orcr-doctor) reports the resolved path and the reported version of
+each kind's binary.
 
 ## `home`
 
-orcr reads each kind's configuration directory. It writes to only one of them: three keys in
-Claude's, for the folder trust record, the theme picker and the security notes screen. Codex,
-Pi and OpenCode carry their startup settings as launch arguments or inline configuration, so
-orcr writes nothing for them. See [the agent pages](/docs/agents/claude).
+orchestratr reads each kind's configuration directory, and writes to only one of them: three
+keys in Claude Code's, for the folder trust record, the theme picker and the security notes
+screen. Codex, Pi and OpenCode carry their startup settings as launch arguments or inline
+configuration, so orchestratr writes nothing for them. see
+[startup screens](/docs/readiness-and-delivery#startup-screens) and
+[configuration writes](/docs/limitations#configuration-writes).
 
-Point `home` at a directory under a temporary path to run agents with a configuration
-separate from the person's own. If the directory is fresh, some kinds show every startup
-screen. orcr must then suppress each screen key by key.
+point `home` at a directory under a temporary path to run agents with a configuration separate
+from the person's own.
 
-## What is deliberately not configurable
+<Callout type="warn" title="a fresh directory shows every startup screen">
+  if the directory is fresh, some kinds show every startup screen, and orchestratr must then
+  suppress each screen, key by key.
+</Callout>
 
-| Not configurable | Why |
+## not configurable
+
+these are deliberately fixed.
+
+| not configurable | why |
 |---|---|
-| Permission bypass | orcr bypasses permissions on every agent it starts. A setting would create a mode that nothing else in orcr accounts for. |
-| The backend | herdr is required. |
-| The backend session name | It is always `orcr`. A name that varies makes reconciliation ambiguous for no gain. |
-| Delivery timeouts | They are derived from measurements per kind and recorded in [the agent pages](/docs/agents/claude). A value someone guesses is worse than a value that was measured. |
-| Polling intervals | Same reason. |
-| The readiness signal per kind | It is a property of the agent, not a preference. |
-| State names | A shared vocabulary that can be renamed is not shared. |
+| permission bypass | orchestratr bypasses permissions on every agent it starts. a setting would create a mode that nothing else in orchestratr accounts for. |
+| the backend | herdr is required. |
+| the backend session name | it is always `orcr`. a name that varies makes reconciliation ambiguous for no gain. |
+| delivery timeouts | they are derived from measurements per kind, recorded on the [agent pages](/docs/agents). a guessed value is worse than a measured one. |
+| polling intervals | same reason. |
+| the readiness signal per kind | it is a property of the agent, not a preference. |
+| state names | a shared vocabulary that can be renamed is not shared. |
 
-## Environment
+## environment
 
-orcr reads no environment variable for its own settings.
+orchestratr reads no environment variable for its own settings.
 
-orcr removes known child session markers from the environment it passes to the herdr server.
-One of them silently disables transcript writing for a kind, and orcr confirms message
-delivery by reading transcripts.
+orchestratr removes known child session markers from the environment it passes to the herdr
+server. one of them silently disables transcript writing for a kind, and orchestratr confirms
+message delivery by reading transcripts. see [Claude Code environment](/docs/agents/claude#environment).
 
-orcr preserves every variable the herdr integrations require. Removing them stops the
-integrations reporting, which stops session binding.
+orchestratr preserves every variable the herdr integrations require. removing them stops the
+integrations from reporting, which stops session binding.

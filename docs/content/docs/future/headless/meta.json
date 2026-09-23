@@ -1,7 +1,6 @@
 {
-  "title": "Headless",
+  "title": "headless",
   "pages": [
-    "index",
     "claude",
     "codex",
     "pi",

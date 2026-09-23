@@ -1,12 +1,11 @@
 {
-  "title": "Future work",
+  "title": "future work",
   "pages": [
-    "index",
     "permissions",
     "api-send",
-    "dropped",
     "headless",
     "tmux-backend",
-    "external-agents"
+    "external-agents",
+    "dropped"
   ]
 }

@@ -1,13 +1,18 @@
 {
-  "title": "orcr",
+  "title": "orchestratr",
   "pages": [
     "index",
     "purpose",
-    "cli-reference",
-    "implementation",
+    "---reference---",
+    "cli",
+    "socket-api",
     "configuration",
-    "limitations",
+    "---design---",
+    "readiness-and-delivery",
+    "implementation",
     "agents",
+    "limitations",
+    "---beyond the first version---",
     "future"
   ]
 }

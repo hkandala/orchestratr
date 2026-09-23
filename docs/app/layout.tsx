@@ -9,7 +9,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: appName,
+  metadataBase: new URL('https://orchestratr.dev'),
+  title: { template: `%s | ${appName}`, default: appName },
 };
 
 export default function Layout({ children }: LayoutProps<'/'>) {

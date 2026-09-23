@@ -1,60 +1,64 @@
 ---
-title: "Claude"
-description: "headless Claude Code"
+title: "headless Claude Code"
+description: "the Claude Code control protocol"
 ---
 
-## The interface
+## the interface
 
 Claude Code exposes a control protocol on standard input and output.
 
-```
+```sh
 claude -p --input-format stream-json --output-format stream-json --verbose
 ```
 
-The framing is newline delimited JSON. The controlling program writes `control_request`
-objects and reads `control_response` objects, interleaved with the message stream.
+the framing is newline-delimited JSON. the controlling program writes `control_request` objects
+and reads `control_response` objects, interleaved with the message stream.
 
 ```json
 {"type":"control_request","request_id":"r1","request":{"subtype":"initialize"}}
 ```
 
-The published Agent SDK starts this exact command. Using the protocol directly and using the
+the published Agent SDK starts this exact command, so using the protocol directly and using the
 SDK are the same thing at the wire level.
 
-## What initialize returns
+## what `initialize` returns
 
-The `initialize` response carries the model catalogue, and two fields that matter for state:
+the `initialize` response carries the model catalogue, plus two fields that matter for state:
 
 - `pending_permission_requests`
 - `pending_user_dialog_requests`
 
-Those two fields report whether the agent waits for a person. A headless Claude reports that
-state as data.
+these two fields report whether the agent is waiting for a person. a headless Claude Code agent
+reports that state as data.
 
-Verified: an `initialize` request emits one `control_response` and exits, with no assistant
-frames and no result frames. It starts no turn and costs no tokens.
+verified: an `initialize` request emits one `control_response` and exits, with no assistant
+frames and no result frames. it starts no turn and costs no tokens.
 
-## Sending a message
+## sending a message
 
-Write a user message object to standard input. There is no composer, no Enter key, and no
-question about whether the text landed. The protocol answers that.
+write a user message object to standard input. there is no composer, no enter key, and no
+question about whether the text landed. the protocol answers that.
 
-## State
+## state
 
-Turn state comes from the message stream rather than from a screen. There is no fallback
-case and no rule engine.
+turn state comes from the message stream rather than from a screen. there is no fallback case
+and no rule engine.
 
-## Transcript
+## transcript
 
-Claude writes the same transcript file in both modes, at
-`$CLAUDE_CONFIG_DIR/projects/<resolved cwd, every / replaced by ->/<session-uuid>.jsonl`.
+Claude Code writes the same transcript file in both modes:
 
-One warning carries over from interactive mode. Any supervisor must scrub `CLAUDE_CODE_*`
-from the environment it passes down, for the reason [the Claude Code page](/docs/agents/claude) gives.
+```text
+$CLAUDE_CONFIG_DIR/projects/<resolved cwd, every / replaced by ->/<session-uuid>.jsonl
+```
 
-## Not verified
+one warning carries over from interactive mode. any supervisor must scrub `CLAUDE_CODE_*` from
+the environment it passes down, for the reason given in
+[Claude Code environment](/docs/agents/claude#environment).
 
-- Whether `--bare` skips session start hooks, which dominate the startup time of the
-  initialize probe.
-- Whether the interactive transcript and the headless transcript are byte identical for the
-  same conversation.
+## not verified
+
+- whether `--bare` skips session start hooks, which dominate the startup time of the
+  `initialize` probe.
+- whether the interactive transcript and the headless transcript are byte identical for the same
+  conversation.

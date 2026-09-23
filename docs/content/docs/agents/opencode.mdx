@@ -1,261 +1,267 @@
 ---
 title: "OpenCode"
-description: "--kind opencode"
+description: "how orchestratr launches, drives and reads OpenCode"
 ---
 
-`--kind opencode`
+**kind value:** `--kind opencode`
 
-## Version requirement
+## launch
 
-OpenCode must be 1.18.29 or newer. The herdr integration for `opencode` exports an entry
-point that older builds never call, so on an older build the integration loads, reports
-nothing, and everything it supplies is silently absent.
-
-`orcr doctor` checks the version and refuses below the floor.
-
-A binary named `opencode` is not always OpenCode. During this design work the binary with
-that name was a redirect stub for an older fork, and every conclusion drawn from it was
-wrong. Set `kind.opencode.binary` in the configuration to point at a specific build.
-
-## Launch
-
-```
+```sh
 opencode --yolo -m <provider>/<model> --hostname 127.0.0.1 --port <port>
 ```
 
+### version requirement
+
+OpenCode must be 1.18.29 or newer. the herdr integration for OpenCode exports an entry point
+that older builds never call, so on an older build the integration loads, reports nothing, and
+everything it supplies is silently absent.
+
+[`orcr doctor`](/docs/cli#orcr-doctor) checks the version and refuses below the floor.
+
+<Callout type="warn" title="a binary named opencode is not always OpenCode">
+during this design work the binary with that name was a redirect stub for an older fork, and
+every conclusion drawn from it was wrong. set `kind.opencode.binary` in the
+[configuration](/docs/configuration#binary) to point at a specific build.
+</Callout>
+
+### permissions
+
 `--yolo`, `--auto` and `--dangerously-skip-permissions` are three spellings of one boolean,
-combined into a single value. OpenCode has no setting between asking and not asking, so there
-is no safer intermediate mode to prefer here.
+combined into a single value. OpenCode has no setting between asking and not asking, so there is
+no safer intermediate mode to prefer here.
 
-**Effort cannot be set on the command line for an interactive session.** A third path segment
-on `-m` does not select a variant. It is appended to the model identifier and breaks the run.
-The `--variant` flag that does select one exists on the non-interactive `run` subcommand only,
-and is absent from the interactive option list.
+### effort
 
-Effort comes from configuration, passed inline so that nothing the person owns is modified:
+**effort cannot be set on the command line for an interactive session.** a third path segment on
+`-m` does not select a variant. it is appended to the model identifier and breaks the run. the
+`--variant` flag that does select one exists on the non-interactive `run` subcommand only, and
+is absent from the interactive option list.
 
-```
+effort comes from configuration, passed inline so that nothing the person owns is modified:
+
+```sh
 OPENCODE_CONFIG_CONTENT={"agent":{"build":{"model":"<provider>/<model>","variant":"<effort>"}}}
 ```
 
-This is merged as the last configuration layer, so it overrides the person's own settings for
-this process and changes no file. Confirmed in source: the loader calls `merge` for that layer
+this is merged as the last configuration layer, so it overrides the person's own settings for
+this process and changes no file. confirmed in source: the loader calls `merge` for that layer
 rather than replacing.
 
-`build` is the name of a mode. OpenCode calls its modes agents, and a mode is not a model.
-The `-m` flag never accepts one. orcr uses the word agent for a session it starts, so the two
+`build` is the name of a mode. OpenCode calls its modes agents, and a mode is not a model. the
+`-m` flag never accepts one. orchestratr uses the word agent for a session it starts, so the two
 meanings collide in this kind only.
 
-Proven on the wire rather than on screen. With the key set, the outgoing request carries
-`"reasoning": {"effort": "high", "summary": "auto"}`. Without it the field is absent. The
+proven on the wire rather than on screen. with the key set, the outgoing request carries
+`"reasoning": {"effort": "high", "summary": "auto"}`. without it the field is absent. the
 database and the HTTP API both report the same resolved variant.
 
-Three rules, each of which fails quietly if broken.
+three rules, each of which fails quietly if broken:
 
-**`variant` without `model` does nothing.** The variant applies only to the agent's configured
-model, so both keys must be present together. With `variant` alone the API reports the variant
-while the request goes out with no reasoning field at all. This is the trap: every observable
-except the wire says it worked.
+1. **`variant` needs `model`.** the variant applies only to the agent's configured model, so
+   both keys must be present together. with `variant` alone the API reports the variant while
+   the request goes out with no reasoning field at all. this is the trap: every observable
+   except the wire says it worked.
+2. **the model must publish variants.** a variant name that the model does not offer resolves
+   to nothing. [`orcr models`](/docs/cli#orcr-models) reports the set per model.
+3. **it is fixed for the life of the process.** the value is read at startup, and editing
+   configuration under a running agent changes nothing until restart. only
+   [`orcr agent new`](/docs/cli#orcr-agent-new) sets it.
 
-**The model must publish variants.** A variant name that the model does not offer resolves to
-nothing. `orcr models` reports the set per model.
+a person using the in-session model picker outranks all of this. that explains an agent whose
+effort is not what orchestratr set.
 
-**It is fixed for the life of the process.** The value is read at startup, and editing
-configuration under a running agent changes nothing until restart. Only `orcr agent new` sets
-it.
+### the pinned port
 
-A person using the in-session model picker outranks all of this. That explains an agent whose
-effort is not what orcr set.
+**orchestratr pins an HTTP port.** the interactive program serves its own API on that port.
+orchestratr uses it for readiness and for detecting a blocked agent. orchestratr chooses a free
+port and records it in the registry.
 
-**orcr pins an HTTP port.** The interactive program serves its own API on that port. orcr
-uses it for readiness and for detecting a blocked agent. orcr chooses a free port and records
-it in the registry.
+## startup
 
-### Interactive tools
+OpenCode shows no startup screen when at least one model provider resolves. a provider resolves
+from the generated configuration, from stored credentials, or from a recognized API key
+variable.
 
-Two layers, and orcr uses both.
+with no provider at all it opens a `Connect a provider` dialog at startup, regardless of how
+fresh the configuration is. orchestratr asserts a provider in the configuration it generates, and
+treats that dialog as a launch failure rather than something to answer.
 
-```
+given a provider, there is nothing to suppress and nothing to answer.
+
+the full screen notice reported on a fork is fork behavior, not OpenCode behavior.
+
+### interactive tools
+
+two layers, and orchestratr uses both.
+
+```sh
 OPENCODE_CLIENT=orcr
 OPENCODE_PERMISSION={"question":"deny","plan_enter":"deny","plan_exit":"deny"}
 ```
 
-The first keeps `question` out of the registered tool list. The gate is on the client name:
-any value outside `app`, `cli` and `desktop` works, and `orcr` is one such value. Do not
-set `OPENCODE_ENABLE_QUESTION_TOOL`, which overrides the gate and puts the tool back.
+the first keeps `question` out of the registered tool list. the gate is on the client name: any
+value outside `app`, `cli` and `desktop` works, and `orcr` is one such value.
 
-`plan_exit` is a real tool id but is registered only when an experimental plan mode is enabled
-and the client is `cli`. Under orcr's client name it is absent already. `plan_enter` is not
-a tool at all, only a permission name, so denying it is harmless and removes nothing.
+<Callout type="warn" title="do not set OPENCODE_ENABLE_QUESTION_TOOL">
+it overrides the client name gate and puts the `question` tool back.
+</Callout>
 
-The second denies them even if registration changes. The variable is merged after the
+`plan_exit` is a real tool id, but it is registered only when an experimental plan mode is
+enabled and the client is `cli`. under orchestratr's client name it is absent already.
+`plan_enter` is not a tool at all, only a permission name, so denying it is harmless and removes
+nothing.
+
+the second layer denies them even if registration changes. the variable is merged after the
 configuration file, so it wins.
 
-The configuration form works too, and has one trap that silently undoes the whole thing:
+the configuration form works too:
 
 ```json
 {"permission": {"*": "allow", "question": "deny",
                 "plan_enter": "deny", "plan_exit": "deny"}}
 ```
 
-Rules are a flat list resolved by last match. `"*": "allow"` must come first. Put it last
-and it re-enables everything that precedes it. Keys accept wildcards, so `"quest*": "deny"`
-works.
+<Callout type="warn" title="the order of permission rules matters">
+rules are a flat list resolved by last match. `"*": "allow"` must come first. put it last and it
+re-enables everything that precedes it, which silently undoes the whole thing.
+</Callout>
 
-The older `{"tools": {"question": false}}` form also works, and loses to any later `permission`
+keys accept wildcards, so `"quest*": "deny"` works.
+
+the older `{"tools": {"question": false}}` form also works, and loses to any later `permission`
 block.
 
-There is no command line flag for this on any subcommand.
+there is no command line flag for this on any subcommand.
 
-## Startup
+## readiness
 
-OpenCode shows no startup screen when at least one model provider resolves. A provider
-resolves from the generated configuration, from stored credentials, or from a recognized API
-key variable.
+send a nonce through the agent's own composer and wait for it to come back.
 
-With no provider at all it opens a "Connect a provider" dialog at startup regardless of how
-fresh the configuration is. orcr asserts a provider in the configuration it generates, and
-treats that dialog as a launch failure rather than something to answer.
-
-Given a provider, there is nothing to suppress and nothing to answer.
-
-The full screen notice reported on a fork is fork behavior, not OpenCode behavior.
-
-## Readiness
-
-Send a nonce through the agent's own composer and wait for it to come back.
-
-```
+```text
 POST /tui/append-prompt   with a nonce
 POST /tui/clear-prompt
 ```
 
-Repeat until the nonce appears in `$XDG_STATE_HOME/opencode/prompt-history.jsonl`.
+repeat until the nonce appears in `$XDG_STATE_HOME/opencode/prompt-history.jsonl`.
 
-Three details make this work, and getting any of them wrong breaks it silently.
+three details make this work. getting any of them wrong breaks it silently.
 
-**The nonce must be at least 20 characters.** That file is appended when the composer is
-submitted, and when it is cleared while holding a draft of 20 or more trimmed characters.
-orcr never submits, so the clear is what records the nonce, and a short nonce records nothing.
+1. **the nonce must be at least 20 characters.** that file is appended when the composer is
+   submitted, and when it is cleared while holding a draft of 20 or more trimmed characters.
+   orchestratr never submits, so the clear is what records the nonce, and a short nonce records
+   nothing.
+2. **the return values prove nothing.** both endpoints publish an internal event and return true
+   immediately, before the interface has processed anything. waiting for the nonce to come back
+   out is the proof, not the response.
+3. **these endpoints reach the interface even when a dialog is open**, and `clear-prompt` closes
+   that dialog. so the readiness check must run before orchestratr considers the agent usable,
+   and never as a health check on a live agent, or it can dismiss something a person was
+   answering.
 
-**The return values prove nothing.** Both endpoints publish an internal event and return true
-immediately, before the interface has processed anything. Waiting for the nonce to come back
-out is the proof, not the response.
+for the same reasons, orchestratr does not use these endpoints to deliver a message.
 
-**These endpoints reach the interface even when a dialog is open**, and `clear-prompt` closes
-that dialog. So the readiness check must run before orcr considers the agent usable and never
-as a health check on a live agent, or it can dismiss something a person was answering.
+this round trip is the only signal that is not optimistic. everything cheaper fires early:
 
-For the same reasons orcr does not use these endpoints to deliver a message.
-
-This round trip is the only signal that is not optimistic. Everything cheaper fires early:
-
-| Signal | How early |
+| signal | how early |
 |---|---|
-| The backend's own readiness answer | 25.4 seconds |
-| Log file appears | 15 seconds |
-| Database file appears, port opens | 11 seconds |
-| Lock directory appears | 10 seconds |
+| the backend's own readiness answer | 25.4 seconds |
+| log file appears | 15 seconds |
+| database file appears, port opens | 11 seconds |
+| lock directory appears | 10 seconds |
 | `/tui/*` returns HTTP 200 | still starting |
 
-The HTTP server answers before the terminal interface can accept input, so a bare health check
-is not readiness. Only the round trip through the composer proves the interface is live.
+the HTTP server answers before the terminal interface can accept input, so a bare health check
+is not readiness. only the round trip through the composer proves the interface is live.
 
-The terminal title becomes correct about 0.63 seconds early and is a usable cheap fallback,
-but orcr uses the round trip, because the port is already pinned for the blocked check and
+the terminal title becomes correct about 0.63 seconds early and is a usable cheap fallback.
+orchestratr uses the round trip, because the port is already pinned for the blocked check and
 the round trip costs one more request.
 
-## Message delivery
+## delivery
 
-The delivery record is in the SQLite database.
+the delivery record is in the SQLite database.
 
-```
+```text
 $XDG_DATA_HOME/opencode/opencode.db          release build
 $XDG_DATA_HOME/opencode/opencode-local.db    development build
 ```
 
-The file name carries the release channel. Set `OPENCODE_DB` at launch to pin it, so orcr
-polls the file the agent writes.
+the file name carries the release channel. set `OPENCODE_DB` at launch to pin it, so
+orchestratr polls the file the agent writes.
 
-Take the watermark as the current time in milliseconds. After submitting, poll every 200
+take the watermark as the current time in milliseconds. after submitting, poll every 200
 milliseconds, joining `part` to `message`:
 
-```
+```text
 part.time_created >= <watermark>
   and message.data ->> '$.role' = 'user'
   and part.data   ->> '$.type' = 'text'
   and part.data   ->> '$.text' matches the submitted text
 ```
 
-Measured latency:
-
-| Case | Delay |
+| case | delay |
 |---|---|
-| From rest | 0.34 seconds |
-| Mid turn | 0.38 seconds |
-| First message of a new agent | 0.43 seconds |
+| from rest | 0.34 seconds |
+| mid turn | 0.38 seconds |
+| first message of a new agent | 0.43 seconds |
 
-Timeout 5 seconds.
+timeout: 5 seconds.
 
-A message sent in the middle of a turn was readable 50.8 seconds before the running 60 second
+a message sent in the middle of a turn was readable 50.8 seconds before the running 60 second
 tool returned. OpenCode records a message when it accepts it, not when it acts on it.
 
-### Reading the database safely
+### reading the database safely
 
-The database uses write ahead logging. Open it read only with `mode=ro`. Never open it with
-`immutable=1`: that tells SQLite to ignore the write ahead log, and recent writes live there.
-One observed run had a 757 kilobyte main file and a 609 kilobyte log.
+the database uses write ahead logging. open it read only, with `mode=ro`.
 
-Do not poll the `session_input` table. It is always empty.
+<Callout type="warn" title="never open the database with immutable=1">
+`immutable=1` tells SQLite to ignore the write ahead log, and recent writes live there. one
+observed run had a 757 kilobyte main file and a 609 kilobyte log.
+</Callout>
 
-## Session identity
+do not poll the `session_input` table. it is always empty.
 
-The backend never binds a session for this kind, so orcr finds it itself.
+## state
 
-Take `part.session_id` from the row that confirms the first delivery. No session row exists
-before the first submission.
-
-The fallback is `session.directory`, matched against the resolved real path of the working
-directory. On macOS that is the `/private` form.
-
-## State
-
-| Question | Source |
+| question | source |
 |---|---|
-| Is the agent working | The backend, from its own screen rules |
-| Is the agent waiting for a person | `GET /permission` on the pinned port |
+| is the agent working | the backend, from its own screen rules |
+| is the agent waiting for a person | `GET /permission` on the pinned port |
 
-Blocked is available over HTTP only. The `permission` table stays empty both while a request
-is pending and after it is answered, and the event table carries only message and session
-events.
+blocked is available over HTTP only. the `permission` table stays empty both while a request is
+pending and after it is answered, and the event table carries only message and session events.
 
-The backend has no idle rule for this kind, so its idle answer is a default rather than an
-observation. orcr does not depend on it. Readiness comes from the round trip and delivery
-comes from the database, and neither consults the backend's idle answer.
+the backend has no idle rule for this kind, so its idle answer is a default rather than an
+observation. orchestratr does not depend on it. readiness comes from the round trip and delivery
+comes from the database, and neither consults the backend's idle answer. see
+[state](/docs/readiness-and-delivery#state).
 
-## Interrupt
+## interrupt
 
-Two Escapes, with the second within 5 seconds of the first.
+two escape key presses, with the second within 5 seconds of the first.
 
-One Escape is ignored. A counter resets after 5 seconds, so two Escapes further apart than that
-do nothing: 2 seconds apart interrupted in 0.45 seconds, 6 seconds apart did nothing. orcr sends
-them as one burst, which is the safe end of that window rather than a requirement.
+one escape is ignored. a counter resets after 5 seconds, so two escapes further apart than that
+do nothing: 2 seconds apart interrupted in 0.45 seconds, 6 seconds apart did nothing.
+orchestratr sends them as one burst, which is the safe end of that window rather than a
+requirement.
 
-The Escape is dropped entirely when the agent is idle, when a permission or auto overlay is
+the escape is dropped entirely when the agent is idle, when a permission or auto overlay is
 visible, or when the composer does not have focus.
 
-An Escape at rest does nothing here, but Escape is also the dismiss key for the command
-palette, the model picker and the permission dialog, so orcr sends it only while the agent is
-working.
+an escape at rest does nothing here, but escape is also the dismiss key for the command palette,
+the model picker and the permission dialog, so orchestratr sends it only while the agent is
+working. see [`orcr agent interrupt`](/docs/cli#orcr-agent-interrupt).
 
-## Transcript
+## transcript
 
-The conversation is in the same database as the delivery record. This kind writes no
-transcript file.
+the conversation is in the same database as the delivery record. this kind writes no transcript
+file.
 
-`orcr agent read` selects the parts of one session and joins `part` to `message` for the role.
+[`orcr agent read`](/docs/cli#orcr-agent-read) selects the parts of one session, and joins `part`
+to `message` for the role.
 
-```
+```sql
 select p.time_created, m.data ->> '$.role', p.data
   from part p
   join message m on m.id = p.message_id
@@ -263,40 +269,50 @@ select p.time_created, m.data ->> '$.role', p.data
  order by p.time_created, p.id
 ```
 
-Order by `time_created` and then by `id`. Time alone is not enough. In one database 1122 of
-6654 parts shared a millisecond with another part of the same session, and one millisecond
-held 18 parts.
+order by `time_created` and then by `id`. time alone is not enough: in one database, 1122 of
+6654 parts shared a millisecond with another part of the same session, and one millisecond held
+18 parts.
 
-The tie-break works because parts written in the same millisecond share an id prefix and end
-in a counter that increases in write order.
+the tie-break works because parts written in the same millisecond share an id prefix and end in a
+counter that increases in write order.
 
-Never order by `id` alone. The prefix is not ordered across sessions. In the same database no
+never order by `id` alone. the prefix is not ordered across sessions. in the same database, no
 row held the same position under id order and under time order.
 
 `part.data` carries the type: `text`, `reasoning`, `tool`, `step-start`, `step-finish` and
-`file`. Only `message` carries the role.
+`file`. only `message` carries the role.
 
-## Model catalogue
+## session identity
 
-Start `opencode serve` on a free port, read `GET /config/providers`, and stop the process.
+the backend never binds a session for this kind, so orchestratr finds it itself.
 
-This is the only kind whose catalogue needs a server, and the only source that carries the
-per model variants where effort lives. orcr stops the server before the command returns.
+take `part.session_id` from the row that confirms the first delivery. no session row exists
+before the first submission.
+
+the fallback is `session.directory`, matched against the resolved real path of the working
+directory. on macOS that is the `/private` form.
+
+## model catalogue
+
+start `opencode serve` on a free port, read `GET /config/providers`, and stop the process.
+
+this is the only kind whose catalogue needs a server, and the only source that carries the per
+model variants where effort lives. orchestratr stops the server before the command returns.
 
 `opencode models --verbose` also lists variants and needs no server, but it has no structured
-output mode. Its lines interleave with pretty printed blocks that a reader must brace match,
-and it omits the provider metadata and the default model map.
+output mode. its lines interleave with pretty printed blocks that a reader must brace match, and
+it omits the provider metadata and the default model map.
 
-Variants are not in the model cache on disk. The cache format has no variant field. They are
+variants are not in the model cache on disk. the cache format has no variant field. they are
 produced at runtime.
 
-## Steering
+## steering
 
-A message sent while the agent is working reaches the model at the next tool call. If the
-turn makes no further tool call, it runs as a separate turn afterwards, 53 milliseconds after
-the first one ends. OpenCode's screen calls this a queued message.
+a message sent while the agent is working reaches the model at the next tool call. if the turn
+makes no further tool call, it runs as a separate turn afterwards, 53 milliseconds after the
+first one ends. OpenCode's screen calls this a queued message.
 
-## Not verified
+## not verified
 
-- Whether the HTTP event stream and the database agree on ordering under load.
-- Whether the round trip readiness check is safe when a person is attached and typing.
+- whether the HTTP event stream and the database agree on ordering under load.
+- whether the round trip readiness check is safe when a person is attached and typing.
