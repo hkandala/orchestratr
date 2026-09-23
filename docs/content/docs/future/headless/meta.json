@@ -1,0 +1,10 @@
+{
+  "title": "Headless",
+  "pages": [
+    "index",
+    "claude",
+    "codex",
+    "pi",
+    "opencode"
+  ]
+}

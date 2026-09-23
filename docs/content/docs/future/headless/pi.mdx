@@ -1,0 +1,45 @@
+---
+title: "Pi"
+description: "headless Pi"
+---
+
+## The interface
+
+```
+pi --mode rpc
+```
+
+A newline delimited JSON duplex stream on standard input and output. One process serves one
+session.
+
+Requests look like `{"id":"1","type":"get_available_models"}`. The type field names the
+operation.
+
+## Model and effort catalogue
+
+Two useful calls:
+
+- `get_available_models` returns the catalogue with cost, context window, provider, and a
+  `reasoning` flag per model.
+- `get_available_thinking_levels` returns the effort values for the model the process was
+  started with.
+
+The second is per process, not per request. Verified: with 30 models that is 30 spawns, each
+about two seconds. [the Pi page](/docs/agents/pi) states why, and it states how `thinkingLevelMap` resolves.
+
+## State
+
+Pi has the strongest state reporting of the four kinds even in interactive mode, because its
+herdr integration pushes full lifecycle state and screen reading is skipped entirely. A
+headless Pi can report the same state through the RPC stream.
+
+## Transcript
+
+Pi writes a JSONL session file under `~/.pi/agent/sessions/<mangled-cwd>/`. Its herdr
+integration reports the session as a path rather than an id, so the transcript location is
+known from the moment the agent starts. Pi is the only kind where that is true.
+
+## Not verified
+
+- Whether the RPC session file and the interactive session file have the same layout.
+- Whether `--no-session` changes what is written to disk.

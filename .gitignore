@@ -1,0 +1,14 @@
+.DS_Store
+
+# node
+node_modules/
+*.tsbuildinfo
+
+# fumadocs docs site (docs/)
+docs/.next/
+docs/.source/
+docs/.vercel/
+
+# vercel link and local environment
+.vercel
+.env*

@@ -1,0 +1,26 @@
+---
+title: "Future work"
+description: "what is left out"
+---
+
+This folder holds work that orcr does not do. Nothing here is part of the specification in
+these documents. Each file states what was left out, why, and the cost to add it.
+
+| File | Subject |
+|---|---|
+| [Permissions](/docs/future/permissions) | Moving off permission bypass onto each kind's auto mode |
+| [Sending without typing](/docs/future/api-send) | Delivering a message without typing it |
+| [Headless](/docs/future/headless) | Running agents without a terminal |
+| [Claude](/docs/future/headless/claude) | The Claude control protocol |
+| [Codex](/docs/future/headless/codex) | The Codex app server |
+| [Pi](/docs/future/headless/pi) | The Pi RPC mode |
+| [OpenCode](/docs/future/headless/opencode) | The OpenCode server and ACP |
+| [tmux backend](/docs/future/tmux-backend) | Running on tmux instead of herdr |
+| [External agents](/docs/future/external-agents) | Reading and driving agents orcr did not start |
+| [Dropped items](/docs/future/dropped) | Smaller items cut from the first version |
+
+## Why these are separate
+
+The first version answers one question: can orcr start agents of four kinds, drive them the
+same way, and report what happened. Everything in this folder widens that question before it
+has been answered once.

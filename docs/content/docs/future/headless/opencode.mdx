@@ -1,0 +1,59 @@
+---
+title: "OpenCode"
+description: "headless OpenCode"
+---
+
+## The interface
+
+OpenCode differs from the other three kinds in shape, not only in protocol.
+
+```
+opencode serve --port <n>
+```
+
+This starts an HTTP server that serves every session. The other three kinds run one process
+per agent. A supervisor therefore manages one long lived server plus N logical sessions,
+rather than N processes.
+
+Sessions are created and driven over HTTP. Events arrive on a server sent event stream. An
+event cursor exists, so a controlling program that reconnects can resume rather than lose
+events.
+
+There is also an ACP interface:
+
+```
+opencode acp
+```
+
+ACP session creation returns the flattened model list, where each entry is the exact string
+the model argument accepts, including the effort variant. Verified: its startup took about
+twenty seconds, against about half a second for the fast paths of other kinds.
+
+## Model catalogue
+
+[The OpenCode page](/docs/agents/opencode) records where the catalogue comes from for this kind, and why it needs a
+server.
+
+## State
+
+The server reports session status and a separate asked-permission event. Those are the
+structured forms of `working` and `blocked`.
+
+## Transcript
+
+Storage is a SQLite database at `$XDG_DATA_HOME/opencode/opencode.db`, with write ahead
+logging. `opencode export <session-id>` renders one session.
+
+Verified in interactive mode: a message submitted in the middle of a turn is recorded at
+submit time, not at turn end. The recorded time was 50.8 seconds before a running 60 second tool
+returned.
+
+## A note on builds
+
+A binary named `opencode` is not always OpenCode, so any work here must check
+`opencode --version` against upstream first.
+
+## Not verified
+
+- Whether the HTTP event stream and the database agree on ordering under load.
+- Whether an invalid effort variant fails at launch or silently starts the base model.

@@ -1,0 +1,34 @@
+---
+title: "orcr"
+description: "one CLI for coding agent sessions"
+---
+
+orcr runs and controls AI coding agents of four kinds through one interface.
+
+Read in this order.
+
+| Page | Subject |
+|---|---|
+| [Purpose](/docs/purpose) | What orcr is, why it works this way, and the rules that decide arguments |
+| [CLI and socket API](/docs/cli-reference) | Every command, and the socket API with its schema |
+| [Implementation](/docs/implementation) | Layers, the kind adapter, and the shared procedures |
+| [Claude Code](/docs/agents/claude) | Claude Code |
+| [Codex](/docs/agents/codex) | Codex |
+| [Pi](/docs/agents/pi) | Pi |
+| [OpenCode](/docs/agents/opencode) | OpenCode |
+| [Configuration](/docs/configuration) | `config.toml`, and what is deliberately fixed |
+| [Limitations](/docs/limitations) | What does not work, with the evidence |
+
+The CLI and socket API page is the contract. The agent pages hold everything specific to one
+kind. Nothing in them changes the contract.
+
+Work that orcr does not do is in [Future work](/docs/future).
+
+## Measurements
+
+Every latency, path and key in these documents came from a live run on macOS against Claude
+Code 2.1.276, Codex 0.154.0, Pi 0.85.1, and OpenCode 1.18.31 built from source. The run drove
+all four through herdr 0.9.1 at protocol 22.
+
+Where something was not tested, the document says so in a section named "Not verified". Those
+sections are part of the specification. Do not implement around them silently.
