@@ -1,70 +1,108 @@
 ---
 title: "agent kinds"
-description: "the four kinds orchestratr drives, and how they differ"
+description: "the kind table: everything that differs between the four kinds"
 ---
 
-orchestratr drives four kinds of agent. each page below holds everything specific to one kind:
-its launch arguments, how its startup screens are removed, its readiness signal, its delivery
-record, and what it cannot do. nothing on these pages changes the contract in the
-[CLI](/docs/cli) or the [socket API](/docs/socket-api). the shared method they plug
-into is in [readiness, delivery, and state](/docs/readiness-and-delivery).
+orchestratr drives four kinds of agent. the core names none of them. everything that differs
+between them is in the table below, plus the integration code for each kind.
+
+**the table is the specification.** each agent page holds the evidence behind its column, the
+traps, and what was not verified. where a page and the table disagree, the page's evidence wins,
+and the table is fixed.
 
 <Cards>
-  <Card title="Claude Code" href="/docs/agents/claude">
-    `--kind claude`
-  </Card>
-  <Card title="Codex" href="/docs/agents/codex">
-    `--kind codex`
-  </Card>
-  <Card title="Pi" href="/docs/agents/pi">
-    `--kind pi`
-  </Card>
-  <Card title="OpenCode" href="/docs/agents/opencode">
-    `--kind opencode`
-  </Card>
+  <Card title="Claude Code" href="/docs/agents/claude">`--kind claude`</Card>
+  <Card title="Codex" href="/docs/agents/codex">`--kind codex`</Card>
+  <Card title="Pi" href="/docs/agents/pi">`--kind pi`</Card>
+  <Card title="OpenCode" href="/docs/agents/opencode">`--kind opencode`</Card>
 </Cards>
 
-## at a glance
+## the kind table
 
-every cell below summarizes a fact stated on the kind's own page. the kind page is the
-authority, and holds the evidence.
-
-### launch and startup
+### launch
 
 | | [Claude Code](/docs/agents/claude) | [Codex](/docs/agents/codex) | [Pi](/docs/agents/pi) | [OpenCode](/docs/agents/opencode) |
 |---|---|---|---|---|
-| launch | `claude --dangerously-skip-permissions` | `codex --yolo` | `pi --approve` | `opencode --yolo --hostname 127.0.0.1 --port <port>` |
-| model | `--model <model>` | `-m <model>` | `--model <provider>/<model>` | `-m <provider>/<model>` |
-| effort | `--effort <effort>` | `-c model_reasoning_effort=<effort>` | `--thinking <level>` | inline configuration: `model` and `variant` in `OPENCODE_CONFIG_CONTENT` |
-| startup screens | theme picker, security notes, folder trust, bypass permissions warning | directory trust; hook review when `hooks.json` exists | trust dialog, only when the working directory or an ancestor holds specific `.pi` or `.agents/skills` entries | none when a provider resolves |
-| how they are removed | three keys in `~/.claude.json`, plus `--settings` | `-c projects.<path>.trust_level=trusted`; hook review is not removed; [`orcr doctor`](/docs/cli#orcr-doctor) reports an untrusted herdr integration for Codex | `--approve` | orchestratr asserts a provider; `Connect a provider` is a launch failure |
-| configuration file writes | three keys in `~/.claude.json` | none | none | none |
-| interactive tools disabled | `--disallowedTools AskUserQuestion,ExitPlanMode,EnterPlanMode,Workflow` | `tools.experimental_request_user_input`, `tools.update_plan`, `tool_call_mcp_elicitation` | none, Pi ships none | `question` and `plan_exit` tools, and the `plan_enter` permission, via `OPENCODE_CLIENT` and `OPENCODE_PERMISSION` |
+| versions | 2.1.287 and later | 0.159 and later, with a known app-server schema | 0.84.4 and later | 1.18.29 up to 2.0, and 2.x |
+| permission bypass | `--dangerously-skip-permissions` | `--yolo` | none needed | `--auto`, plus `"*": "allow"` as the **first** key of orchestratr's permission block. rules resolve by last match, and the block lands after OpenCode's defaults. |
+| model | `--model <model>` | `-m <model>`, on the app-server | `--model <provider>/<model>` | `agent.build.model` in the inline configuration. 1.x also takes `-m <provider>/<model>`. |
+| effort | `--effort <effort>` | `-c model_reasoning_effort=<effort>`, on the app-server | `--thinking <level>` | `agent.build.variant`. needs a model. |
+| session id | chosen: `--session-id <uuid>` | from the thread, at registration | chosen: `--session-id <uuid>` | 1.x from the first session. 2.x chosen: `--session <id>`, in OpenCode's own id format |
+| launch shape | one process | a private app-server, the bridge, and the TUI with `--remote`, in one pane | one process | one process. 2.x adds `--standalone`. |
 
-### readiness, delivery, and state
+### startup
 
-| | [Claude Code](/docs/agents/claude) | [Codex](/docs/agents/codex) | [Pi](/docs/agents/pi) | [OpenCode](/docs/agents/opencode) |
+| | Claude Code | Codex | Pi | OpenCode |
 |---|---|---|---|---|
-| readiness signal | `sessions/<pid>.json` with `status` `idle` | `thread-writer-locks/<thread uuid>.lock` | the backend's bound agent session is not empty | nonce round trip through the composer |
-| delivery record | transcript: a `user` or `queue-operation` `enqueue` record | `history.jsonl` | transcript entry with source `interactive` | `part` and `message` rows in the SQLite database |
-| watermark | line count | byte offset | byte offset | current time in milliseconds |
-| delivery timeout | 10 seconds | 5 seconds | no fixed number: waits for the turn to end, then `possibly_delivered` if there is no record | 5 seconds |
-| state source | status file (`idle`, `busy`, `waiting`); the backend also reports `blocked` | the backend, from the terminal title | pushed by the herdr integration for Pi | the backend for working; `GET /permission` for blocked |
-| `blocked` reporting | yes, with the reason from `waitingFor` | not stated; the backend's default | never | over HTTP only |
-| interrupt | one escape | one escape | one escape | two escapes, the second within 5 seconds |
-| escape at rest | two escapes open the rewind view | two escapes open the backtrack view | harmless | does nothing, but escape also dismisses the command palette, the model picker and the permission dialog |
+| startup screens | theme picker, security notes, folder trust, bypass warning | directory trust. hook review when `hooks.json` exists. | trust dialog, only for some project files | 1.x: `Connect a provider` with no provider. 2.x: none that blocks. a migration overlay on the first start over a 1.x database ends by itself. |
+| how they are removed | trust key in `.claude.json` (the only file write). bypass warning: `--settings`. first-run screens: refuse, "run `claude` once". | `-c 'projects={"<real path>"={trust_level="trusted"}}'` on the app-server. the dotted form fails silently on a path with a dot. hook review: `doctor` reports it. | `--approve` | assert a model in the inline configuration |
+| interactive tools denied | `permissions.deny` in `--settings`: `AskUserQuestion`, `ExitPlanMode`, `EnterPlanMode`, `Workflow`. measured as `--disallowedTools`; the settings form under bypass is not verified. | on the app-server: `-c tools.experimental_request_user_input.enabled=false`, `-c tools.update_plan.enabled=false`, `--disable tool_call_mcp_elicitation` | none. Pi ships none. | permission `question: deny` (plus `plan_enter`, `plan_exit` on 1.x) |
+| stall environment | the shared one | the shared one, and again on the app-server as one inline table of strings: `-c 'shell_environment_policy.set={EDITOR="true",…,CI="1"}'`. a bare `true` stops the app-server. | the shared one | the shared one |
+| other variables | none | none | none | `OPENCODE_CLIENT=orcr`, `OPENCODE_DISABLE_AUTOUPDATE=1`, `OPENCODE_CONFIG_CONTENT`. 1.x: `OPENCODE_TUI_CONFIG`, which loads the TUI half. 2.x: `ORCR_SESSION_ID`, because the plugin runs in a child process that does not see `--session`. |
 
-### transcript, identity, and catalogue
+### integration
 
-| | [Claude Code](/docs/agents/claude) | [Codex](/docs/agents/codex) | [Pi](/docs/agents/pi) | [OpenCode](/docs/agents/opencode) |
+| | Claude Code | Codex | Pi | OpenCode |
 |---|---|---|---|---|
-| transcript | `$CLAUDE_CONFIG_DIR/projects/<mangled cwd>/<session uuid>.jsonl` | `~/.codex/sessions/<year>/<month>/<day>/rollout-<timestamp>-<uuid>.jsonl` | `$PI_CODING_AGENT_DIR/sessions/<mangled cwd>/<timestamp>_<uuid>.jsonl` | no file; the SQLite database |
-| transcript exists | early in the first turn | not before the first turn | after the first assistant message | not applicable |
-| session id source | bound by the backend at session start | the lock file name, at readiness | the transcript path, published by the backend at readiness | `part.session_id` from the first delivery |
-| model catalogue | not specified; see [not verified](/docs/agents/claude#not-verified) | `codex debug models` | `pi --list-models` | `opencode serve`, then `GET /config/providers` |
+| mechanism | mod | bridge (`orcr bridge codex`) | extension | plugin (one folder serves 1.x and 2.x) |
+| loaded by | `--plugin-dir <dir>/claude-mod` | the pane's launch script | `-e <dir>/pi.ts` | `OPENCODE_CONFIG_CONTENT={"plugin":["file://<dir>/opencode"]}` |
+| registers at | the mod's `session.start`. no mod loads before workspace trust: verified against the trust dialog only. | the user thread's `thread/started` | `session_start` | 1.x plugin init. 2.x plugin `setup`, after it creates the session. |
+| wake, when idle | `$.prompt.submit` | `turn/start` | `sendMessage(…, {deliverAs: "steer", triggerTurn: true})`. the first message to a fresh session is `sendUserMessage`. | 1.x `session.promptAsync`. 2.x `session.synthetic`. |
+| steer, while working | a `tool.call` hook adds the message as `context` to the next tool result. if no tool call follows, submit at turn end. | `turn/start` on the running thread | `deliverAs: "steer"` | 1.x `promptAsync` joins the running loop. 2.x `delivery: "steer"`. |
+| followUp | `$.prompt.submit` while working waits for idle | held by the bridge until `turn/completed` | `deliverAs: "followUp"` | 1.x held until `session.idle`. 2.x `delivery: "queue"`. |
+| immediate | `$.turn.abort`, then submit | `turn/interrupt`, then `turn/start` | `ctx.abort()`, then deliver at the first `agent_settled` with `ctx.signal` unset | 1.x `session.abort`, then prompt. 2.x at rest: a plain `synthetic`. working: `synthetic({resume: false})`, then `interrupt({resume: true})`. with no text: `interrupt`, with `resume: true` only while other undelivered messages remain. |
+| `.accepted` at | the mod calls `$.prompt.submit`, not awaited, or adds the message to its steer list | `turn/start` returns, or the bridge holds a followUp | `sendMessage` or `sendUserMessage` returns | the prompt or synthetic call returns. 1.x: or the plugin holds a followUp. |
+| `.delivered` at | submit resolves (its turn started), or the steer is attached | `item/started` for a user message carrying our id | `message_start`, for the custom message or the first user prompt | 1.x `experimental.chat.messages.transform`. 2.x `session.inbox.delivered`. |
+| interrupt drops accepted messages, so the integration hands them over again | no: steers wait in the mod's memory until a tool result or the turn's end | yes, measured | yes, measured | 2.x no: a steer is a durable inbox row until delivered. 1.x not measured, and not handed over again, which would duplicate the text. |
+| tools for the model | `orcr mcp`, through `--mcp-config` | `orcr mcp`, through `-c mcp_servers.orcr.*` on the app-server | registered by the extension | `orcr mcp`, through the inline configuration. 1.x `mcp.orcr`. 2.x `mcp.servers.orcr` with `codemode: false`. |
+| reports blocked itself | no, herdr sees it | no, herdr sees it | yes: `ui_prompt_start` and `ui_prompt_end` | no, herdr sees it |
 
-the kinds share one behavior for a message sent mid turn: it reaches the model at the next tool
-call, or runs as the next turn if the turn makes no further tool call. see
-[`orcr agent message`](/docs/cli#orcr-agent-message).
+### reading
 
-known limits per kind are collected in [limitations](/docs/limitations#per-kind).
+| | Claude Code | Codex | Pi | OpenCode |
+|---|---|---|---|---|
+| state from | herdr | herdr, from the terminal title | herdr, pushed by its Pi integration | herdr. 1.x has no idle rule, so its idle is a default, and an abort shows `blocked` for a moment. 2.x reads a provider failure as `blocked`. |
+| transcript | `$CLAUDE_CONFIG_DIR/projects/*/<session>.jsonl`, by glob | `$CODEX_HOME/sessions/<y>/<m>/<d>/rollout-<ts>-<thread>.jsonl`, written by the app-server | `$PI_CODING_AGENT_DIR/sessions/*/*_<session>.jsonl` | no file. 1.x: `part` and `message`. 2.x: `session_message`. one database. |
+| transcript exists | early in the first turn | after the first turn | after the first assistant message | not applicable |
+| reader notes | skip tool results, meta and compaction records, and synthetic assistant records. unwrap `pasted_content`. | prompts from `event_msg`, not `response_item`. | a tree. follow the branch that ends at the last entry. | pick tables by the agent's recorded line, never by which tables exist. |
+| model catalogue | `claude -p` with the stream-json `initialize` request | `codex debug models` | `pi --list-models`. efforts for one named model only. | 1.x `opencode serve`, then `GET /config/providers`. 2.x `opencode serve`, then `GET /api/model`. |
+
+### herdr
+
+every kind needs its herdr integration, which herdr installs with `herdr integration install
+<kind>`. herdr recognizes an agent by its process name, so each kind must run under its usual
+name.
+
+## the kind entry
+
+the core reads one entry per kind and nothing else. a new kind fills in these fields. the rest of
+the table above is notes for the integration's author, which the core never reads.
+
+| field | what it is |
+|---|---|
+| `kind` | the kind value, also herdr's integration name and the process name herdr detects |
+| `binary` | the default program name, overridden by `kind.<k>.binary` |
+| `versions` | the supported range, and how to read the version from `<binary> --version`. where a kind has two lines (OpenCode), the entry says which line a version belongs to, and orchestratr records it as `kind_version`. |
+| `home` | the variable that `kind.<k>.home` sets, or none |
+| `markers` | the session variables to remove at launch |
+| `integration` | the version, and the embedded files, if any |
+| `checks` | the kind's install and start checks |
+| `prepare(cwd)` | settings written before launch. only Claude Code has one: the trust key. |
+| `launch(agent, folder)` | the arguments and variables for the [launch line](/docs/how-it-works#the-launch-line), including how the integration is loaded and how `model` and `effort` are passed. it may refuse a combination, as OpenCode refuses an effort with no model. |
+| `read(record)` | the transcript reader, from the session in the record |
+| `models()` | the catalogue probe |
+
+that is the whole per-kind surface of the core. delivery, readiness and state need no per-kind
+code in the core: the integration and herdr provide them.
+
+## behavior every kind shares
+
+- **a steer reaches the model at the next tool call.** if the turn makes no further tool call,
+  it runs as the next turn. each kind's own screen names this differently: queued message,
+  steering, or messages to be submitted after the next tool call.
+- **an injected message shows in the agent's own interface**, in the agent's own style. a person
+  watching or attached sees it arrive.
+- **nothing is typed.** a person attached to the pane can type at the same time, and their input
+  and the agent messages interleave in the agent's own queue.
+
+known limits for each kind are collected in [limitations](/docs/limitations#per-kind).

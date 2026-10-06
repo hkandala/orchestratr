@@ -3,206 +3,189 @@ title: "limitations"
 description: "what does not work, and why"
 ---
 
-everything here is a known limit of the design, not a defect to fix during implementation.
-each entry states the limit, the evidence, and what a caller should do.
+everything here is a known limit of the design, not a defect to fix during implementation. each
+entry states the limit, the evidence, and what a caller should do.
 
 ## scope
 
-**orchestratr controls only the agents it started.** an agent started by a person, or by
-another tool, is invisible to orchestratr. [`orcr agent list`](/docs/cli#orcr-agent-list) shows
-nothing for it.
+**orchestratr controls only the agents it started.** an agent started by a person, or by another
+tool, is not on the bus and does not appear in `orcr agent list`. see
+[future work](/docs/future#peoples-own-sessions-on-the-bus).
 
-**permissions are bypassed on every agent.** an agent that orchestratr starts can run any
-command in its working directory without asking. there is no command to approve or reject a
-single action, and no setting that turns this off. start agents in directories where that is
-acceptable.
+**permissions are bypassed on every agent.** an agent can run any command in its working
+directory without asking. there is no command to approve or reject a single action, and no
+setting that turns this off. start agents in directories where that is acceptable.
 
-**orchestratr disables the tools that stop and ask a person a question.** bypassing
-permissions removes the permission prompt, but it does not remove an agent's own question
-tool, so orchestratr also turns those tools off at launch, on every kind. it also sets an
-environment that stops a program started inside a shell command from waiting for input (see
-[remove what can stall](/docs/readiness-and-delivery#remove-what-can-stall)). this was verified
-on all four kinds: the model answers in prose instead, and the turn completes.
+**orchestratr removes what can stall an agent, but not everything.** it turns off each kind's
+question tools, prevents its startup screens, and sets an environment that stops programs inside
+shell commands from waiting for input. the tool denial was verified on all four kinds; the
+exceptions in its current form are listed on each agent page. these can still stop
+an agent, and none can be turned off:
 
-that makes `blocked` uncommon. it does not make it impossible, and orchestratr still cannot
-clear it. when an agent is blocked, [`orcr agent message`](/docs/cli#a-blocked-agent) refuses
-and tells a person to attach.
+- a usage limit or quota dialog;
+- an authentication or sign-in flow when a token expires;
+- a dialog raised by an MCP server, including its consent flows;
+- a model migration or upgrade notice;
+- a dialog from one of the person's own extensions, on Pi.
 
-these can still stop an agent and make it wait, and none of them can be switched off:
+a stalled agent reads `blocked`. orchestratr cannot clear it: attach with
+[`orcr agent attach`](/docs/cli#orcr-agent-attach) and answer it. messages sent meanwhile wait in
+the agent's queue, and nothing typed reaches the dialog.
 
-- a usage limit or quota dialog. three kinds have one.
-- an authentication or sign-in flow when a token expires.
-- a dialog raised by an MCP server, including its own consent flows.
-- a model migration or upgrade notice.
-- on one kind, a dialog offered when resuming a large session.
+**herdr is required**, with its integration for each kind. so is the orcr integration for each
+kind orchestratr drives.
 
-reporting differs by kind:
+## integrations
 
-| kind | what it reports |
-|---|---|
-| Claude Code | the status file gives the reason, distinguishing a permission prompt from input needed. |
-| OpenCode | a pending request, exposed on its own port. |
-| Codex | typed waiting states, in a protocol orchestratr does not speak. |
-| Pi | nothing. |
+**each integration depends on an extension system that is young and changes.** Claude Code's
+mods arrived in 2.1.287 and grow every week. Codex's app-server is marked experimental. OpenCode
+1.x and 2.x have different plugin interfaces. orchestratr's answers:
 
-**herdr is required.** orchestratr does not run without it, and requires the herdr integration
-for each kind it drives. [`orcr doctor`](/docs/cli#orcr-doctor) reports a missing or stale
-integration.
+- each integration declares a version range;
+- its tests run at the minimum version and at the newest;
+- `agent new` fails closed when an integration does not register.
 
-## configuration writes
+these extension interfaces are still more stable than the terminal screen, which the earlier
+design typed into.
 
-for one kind, Claude Code, orchestratr writes three keys to `~/.claude.json`.
+**an integration can be switched off by the person's environment.** examples:
 
-| key | purpose |
-|---|---|
-| `projects["<path>"].hasTrustDialogAccepted` | clears the folder trust dialog. |
-| `hasCompletedOnboarding` | clears the theme picker. |
-| `lastOnboardingVersion` | clears the security notes screen. |
+- Claude Code loads no mod under the conditions listed in [checks](/docs/integrations#checks).
+  some company-managed sensitive modes set one of them. Anthropic can also turn mods off
+  remotely.
+- OpenCode loads no plugin under `--pure`.
 
-orchestratr writes a key only when it is absent, and writes the trust key only for the working
-directory of the agent. it resolves a symbolic link before writing, so a configuration file
-that is linked into a repository stays linked. see
-[writing a person's configuration](/docs/implementation#writing-a-persons-configuration).
+`orcr integration status --check` reports what it can detect. the rest shows as
+`integration_missing` with reason `not_registered` at the first start.
 
-this is the same state that answering the dialogs once produces. no flag and no environment
-variable avoids it for Claude Code.
+**the integration runs inside the person's agent.** a bug in it is a bug in their session. the
+[contract](/docs/integrations#the-contract) keeps each one small, catches every error, and loads
+it only for agents orchestratr starts.
 
-the other three kinds need no configuration write. Codex, Pi and OpenCode all carry their
-startup settings as launch arguments or as inline configuration.
+## messaging
 
-## backend readiness
+**delivery is at least once.** a reload of the integration between the model seeing a message and
+the marker being written delivers the message again.
 
-the backend reports agents as ready when they are not.
+**`.delivered` means the model has the message, not that it acted on it.** a provider error or an
+expired login can end the turn without an answer. a watch then ends `idle` with the last text,
+or the caller sees no reply.
 
-of twelve reachable screens where an agent could not accept input, the backend reported only
-two correctly, and reported the other ten as ready. they include startup trust dialogs, command
-pickers, model selection screens, and a composer still holding unsent text.
+**`pending` and `queued` must not be re-sent.** see [outcomes](/docs/messaging#outcomes).
 
-the backend's own readiness answer is also early: by 2.6 to 5.1 seconds on one kind, and by
-about 25 seconds on another.
+**an interrupt can cancel accepted steers.** on Pi and on Codex, an abort, including the person
+pressing Esc, silently drops steers the agent had accepted and not yet delivered. the
+integration hands them over again after the interrupted turn (see
+[the contract](/docs/integrations#the-contract), item 7). they arrive one turn later than they
+would have.
 
-so orchestratr does not use the backend's readiness answer, and it confirms every message
-against the delivery record rather than against the fact that keys were sent. see
-[readiness](/docs/readiness-and-delivery#readiness) and
-[delivery](/docs/readiness-and-delivery#delivery).
+**a steer waits for the running tool call.** a message sent while an agent runs a 60-second
+command reaches the model when the command returns. it reads `queued` until then.
+
+**messages from different senders are ordered by send time to the millisecond**, not by a shared
+sequence.
+
+**the bus has no access control beyond file permissions.** any process of the same user can read
+and write it. that is the same trust level as the herdr socket, through which any such process
+can already type into every agent.
 
 ## per kind
 
 ### Claude Code
 
-- the transcript does not exist before the first prompt, although the session start event
-  reports its path earlier. it is created early in the first turn, not when the turn finishes.
-  [`orcr agent read`](/docs/cli#orcr-agent-read) returns an empty conversation rather than
-  failing.
-- an inherited `CLAUDE_CODE_CHILD_SESSION` variable disables transcript writing completely,
-  which disables delivery confirmation. orchestratr removes `CLAUDE_CODE_*` from the
-  environment it gives the backend. if you start the herdr server yourself from inside a
-  Claude Code session, scrub it yourself.
-- a brand new configuration directory triggers every startup screen. pointing
-  `kind.claude.home` at a fresh directory makes startup harder, not easier.
-- permission bypass fails when the user id is zero. Claude Code refuses
-  `--dangerously-skip-permissions` under root or sudo, and states that reason. do not run
-  orchestratr as root.
-- Claude Code writes the work of each subagent to its own file beside the main transcript,
-  `projects/<mangled cwd>/<session uuid>/subagents/agent-<id>.jsonl`, with a `.meta.json` file
-  next to it. `orcr agent read` reads the main transcript only, so subagent work does not
-  appear. each of these files repeats the parent session id inside it, so a reader must key
-  them on the file name. orchestratr does not read them.
+- **mods run only after workspace trust.** orchestratr writes the trust key before launch, so
+  the record cannot appear while the trust dialog is up. an untrusted folder shows as
+  `not_registered`.
+- **mods ignore `/clear` and `/resume` as session starts.** the session id changes with no event,
+  so the integration looks it up again when a turn starts.
+- **subagents fire the same events as the main agent.** the integration ignores events that carry
+  an agent id. a steer can never land inside a subagent.
+- **an abort leaves a running shell command in the background.** it may later produce a
+  notification turn.
+- **orchestratr writes one key into `~/.claude.json`**, the folder trust for the working
+  directory, under Claude Code's own lock. see
+  [writing a person's configuration](/docs/how-it-works#writing-a-persons-configuration).
+- **permission bypass fails under root.** Claude Code refuses `--dangerously-skip-permissions`
+  with user id zero. do not run orchestratr as root.
+- **a subagent's work is not in `orcr agent read`.** Claude Code writes it to a separate file
+  beside the main transcript, and orchestratr reads the main transcript only.
 
 ### Codex
 
-- a message sent mid turn does not reach the rollout transcript until the running tool
-  returns. one measurement was 17.82 seconds, and the delay is unbounded. orchestratr confirms
-  delivery from the history file instead, which records it in under half a second.
-- if a hooks file exists in the Codex home, Codex shows a hook review screen. hooks load
-  untrusted and never run until trusted. the herdr integration for Codex is a hook, so an
-  untrusted integration silently never reports, and the agent never binds its session.
-  `orcr doctor` reports this state.
+- **each agent runs three processes**: the app-server, the bridge and the TUI. they share one
+  process group and die together with the pane.
+- **thread configuration goes on the app-server.** a `--remote` TUI forwards only a short list of
+  `-c` keys, so trust, tools, effort and the MCP server must be passed to the app-server. so must
+  `kind.codex.args`.
+- **`--remote` refuses** `--add-dir`, `--worktree`, extra writable roots and `/cd`.
+- **an interrupt does not stop a running shell command.** that needs the agent's own stop
+  command, typed by a person.
+- **the app-server socket has no authentication beyond its mode.** the path in orchestratr's
+  `0700` folder is a symbolic link to a `0600` socket in `/private/tmp/codex-daemon-<uid>/`, a
+  `0700` folder.
+- **a hooks file in the Codex home shows a review screen.** herdr's Codex integration is such a
+  hook. `orcr doctor` reports an untrusted herdr integration.
 
 ### Pi
 
-- **a message sent mid turn is confirmed late.** Pi records a message when it acts on it, not
-  when it accepts it, so the delivery record does not appear until the running tool call
-  returns. one measurement was 39.6 seconds behind a 60 second command, and the delay is
-  bounded only by the tool's own runtime. allow for it in `--timeout`, or send when the agent
-  is `idle`. orchestratr stops waiting the moment the turn ends without the record, and reports
-  `possibly_delivered`.
-- **Pi can never be reported as `blocked`.** it has no blocked screen rules, and nothing in Pi
-  emits the blocked event that the herdr integration for Pi listens for. every blocking Pi
-  dialog reached during testing was reported as `idle`.
-- **Pi is the one kind where a message sent to a waiting agent answers the dialog.** the state
-  says `idle`, so orchestratr's refusal never fires, the text is typed into the dialog, and
-  enter selects the highlighted option. reproduced live: the message is lost, and a choice is
-  made on the person's behalf.
-- Pi ships nothing that waits for a person, so the risk comes from extensions, which
-  orchestratr leaves alone. clear such a dialog yourself with
-  [`orcr agent attach`](/docs/cli#orcr-agent-attach).
-- the complete set of effort values needs one process per model.
-  [`orcr models`](/docs/cli#orcr-models) reports them only for a named model.
-
-<Callout title="a small extension would remove two of these">
-  a small Pi extension loaded at launch would remove two of these limits: late mid turn
-  confirmation, which the extension reduced to 0.47 seconds, and the inability to report
-  `blocked`. it is not part of orchestratr, which ships no code that runs inside an agent. see
-  [dropped items](/docs/future/dropped#shipping-our-own-hooks-plugins-or-extensions).
-</Callout>
+- **Pi's own built-in pickers are not reported as blocked.** `/model`, `/resume` and `/tree` do not
+  go through the extension dialog events. extension dialogs are reported.
+- **the process must be named `pi`.** herdr does not recognize `pi.real`.
+- **an authentication failure leaves no trace in the inbox.** the message reads `queued` and is
+  never delivered, and the agent's screen shows the error.
+- **pi-herd sees orchestratr's Pi agents.** pi-herd registers every Pi session in herdr, so they
+  appear on its dashboard. the two sets of tools do not clash.
+- **the effort values need one probe per model.** [`orcr models`](/docs/cli#orcr-models) reports
+  them for a named model only.
 
 ### OpenCode
 
-- OpenCode must be 1.18.29 or newer. below that, the herdr integration for OpenCode loads and
-  never reports.
-- the backend never binds a session for this kind, even on a current build. the integration
-  loads, its hooks fire with a real session id, and its calls return success. the backend
-  accepts the report and discards it. orchestratr finds the session id from the database
-  instead.
-- the backend has no idle rule for this kind, so its idle answer is a default rather than an
-  observation. orchestratr does not depend on it.
-- a blocked agent is visible only over HTTP, on the port orchestratr pins at launch. the
-  database does not record it.
-- an interrupt needs two escapes, with the second within 5 seconds of the first. a single
-  escape does nothing. orchestratr sends both as one burst, which is the safe end of that
-  window.
-- listing models starts a short lived server. OpenCode is the only kind that needs one, and it
-  is the only source that carries the per model effort variants.
-
-## behavior to expect
-
-**`possibly_delivered` is a real outcome, and a caller must handle it.** it means the
-keystrokes went out and the delivery record never appeared. the message can still arrive, and
-a retry can duplicate it. look at the agent before deciding. see
-[confirmation](/docs/cli#confirmation).
-
-**orchestratr never answers a dialog.** when an agent is blocked, orchestratr refuses and tells
-you to attach. on one kind, the backend's own send method typed into a directory trust dialog,
-and the enter key selected `Yes, continue`.
-
-**`orcr agent attach` is not available over the socket API.** it hands over a terminal rather
-than returning data.
-
-**the backend restores agents across its own restart, but not reliably.** treat it as an
-optimization. orchestratr keeps its own registry and reconciles against the backend. see
-[registry](/docs/implementation#registry).
+- **two lines, one integration.** 1.x and 2.x have different plugin interfaces, launch flags,
+  transcripts and catalogues. the integration covers both, and orchestratr records the line each
+  agent runs.
+- **2.x must run `--standalone`.** without it, the TUI joins a shared service, which ignores the
+  agent's environment and its plugin. each agent therefore has its own server process, about
+  330 MB in one measurement.
+- **a 2.x agent killed mid turn can be resumed later, unattended.** 2.x keeps an interrupted turn
+  marked as running unless a user interrupt clears it, and its shared service resumes such turns
+  at boot. `orcr agent stop` interrupts first. a crash cannot.
+- **do not open an orchestratr session in your own OpenCode.** two processes would execute one
+  session.
+- **1.x has no idle rule in herdr**, so its idle is a default rather than an observation.
+- **1.x does not tell the plugin which session the TUI shows.** the integration's TUI half
+  reports it.
 
 ## reported upstream
 
-three findings belong to herdr, and are better fixed there than worked around here:
+these are better fixed upstream than worked around here:
 
-1. session reports from the herdr integration for OpenCode are accepted and discarded.
-2. ten of 22 detection manifests have no positive idle rule, including OpenCode's.
-3. the Pi manifest has no blocked rule, and Pi emits no blocked event for the one the herdr
-   integration for Pi listens for.
+1. **herdr:**
+   - bridge Pi's dialog events to `blocked` in herdr's own Pi integration;
+   - recognize `pi.real`;
+   - make `pane.process_info` with `target` answer for the target;
+   - add positive idle rules for the kinds that have none.
+2. **Claude Code:**
+   - a steer option for `$.prompt.submit`;
+   - an event after `/clear` and `/resume` that carries the new session id;
+   - a file watch in the mod API.
+3. **Codex:**
+   - a stable app-server protocol;
+   - fix: queued input stays stuck after an interrupt;
+   - fix: an interrupt drops another client's pending steer;
+   - let a hook or MCP server enqueue input.
+4. **Pi:**
+   - keep or report custom messages when an abort clears the queues;
+   - report a failed `sendMessage`;
+   - a duplicate tool name should be a diagnostic, not an exit.
+5. **OpenCode 2.x:**
+   - an owner on a turn's running mark, so a shared service never resumes another process's turn;
+   - per-client plugins and environment on the shared service.
 
 ## not verified
 
-- OpenCode: whether its event stream and its database agree on ordering under load, and
-  whether an invalid effort segment fails at launch or silently starts the base model.
-- OpenCode: whether the readiness round trip is safe while a person is attached and typing.
-- Claude Code: whether a status file survives the process being killed rather than exiting.
-- Claude Code: whether permission bypass fails under root or sudo. the refusal is recorded in
-  another project, which avoids it by not asking for bypass. orchestratr did not measure it.
-- Codex: whether the lock file survives the process being killed, and whether the model list
-  ever needs more than one page.
-- Pi: whether the published transcript path changes when a session is resumed.
-- all kinds: behavior when two orchestratr agents run in the same working directory at once.
-- all kinds: what an approval dialog looks like, for the two kinds where one could not be
-  reached during testing.
+the gaps that touch more than one kind. the gaps specific to one kind are on its page.
+
+- two agents of one kind in one working directory, each receiving only its own messages.
+- delivery while the recipient is compacting its conversation.
+- a message of 32 KB, and messages with many lines, on every kind.
+- herdr restarting while agents run: whether each kind's restored pane is detected as `exited`.

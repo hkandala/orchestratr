@@ -1,201 +1,296 @@
 ---
 title: "Codex"
-description: "how orchestratr launches, drives and reads Codex"
+description: "how orchestratr launches Codex with a private app-server, delivers messages through its bridge, and reads it"
 ---
 
-**kind value:** `--kind codex`
+**kind value:** `--kind codex`. versions: 0.159 and later, while the app-server offers the methods
+the bridge uses (see [checks](#checks)). the integration was measured on 0.159.3. older measurements name their version.
 
 ## launch
 
+the pane runs a short script through `sh -c`. the TUI is its last command, so it becomes the
+pane's process.
+
 ```sh
-codex --yolo [-m <model>] [-c model_reasoning_effort=<effort>]
+exec env -u CODEX_SESSION_ID -u CODEX_THREAD_ID -u CODEX_VERSION -u CODEX_PERMISSION_PROFILE \
+    -u CODEX_SANDBOX -u CODEX_SANDBOX_NETWORK_DISABLED -u CODEX_NETWORK_PROXY_ACTIVE \
+    -u CODEX_EXEC_SERVER_URL <other kinds' markers> \
+  ORCR_AGENT_ID=<id> ORCR_BUS=<bus> [CODEX_HOME=<home>] <stall environment> \
+  /bin/sh -c '<script>'
 ```
 
-Codex has no dedicated effort flag. effort is a configuration override on the command line.
+the script, before shell quoting:
+
+```sh
+S=~/.local/state/orcr/run/<id>.sock
+/abs/codex app-server --listen "unix://$S" \
+  -c 'projects={"<real cwd>"={trust_level="trusted"}}' \
+  -c tools.experimental_request_user_input.enabled=false \
+  -c tools.update_plan.enabled=false \
+  --disable tool_call_mcp_elicitation \
+  -c 'shell_environment_policy.set={EDITOR="true",VISUAL="true",GIT_EDITOR="true",PAGER="cat",GIT_PAGER="cat",GIT_TERMINAL_PROMPT="0",CI="1"}' \
+  -c 'mcp_servers.orcr={command="/abs/orcr",args=["mcp"],env_vars=["ORCR_AGENT_ID","ORCR_BUS","XDG_STATE_HOME"]}' \
+  [-m <model>] [-c model_reasoning_effort=<effort>] <config args> >>"$S.log" 2>&1 &
+for i in $(seq 100); do [ -S "$S" ] && break; sleep 0.1; done
+( /abs/orcr bridge codex --socket "$S" >>"$S.log" 2>&1; kill 0 ) &
+exec /abs/codex --remote "unix://$S" --yolo -C <real cwd> [-m <model>]
+```
+
+| part | why |
+|---|---|
+| `CODEX_HOME` | only when `home` is set. the app-server and the TUI share it. |
+| `S` | one socket per agent, in `$XDG_STATE_HOME/orcr/run/` (default `~/.local/state/orcr/run/`, mode `0700`), beside orchestratr's own socket ([transport](/docs/socket-api#transport)). orchestratr writes the absolute path. |
+| `app-server` | a private server for this agent. it runs every turn, tool, hook and MCP server, and writes the transcript. the TUI is only a client. its output goes to `$S.log`, off the TUI's screen. |
+| `projects=…`, `tools.*`, `--disable …`, `shell_environment_policy.set` | trust, the interactive tools and the stall environment. see [startup](#startup). |
+| `mcp_servers.orcr` | the [tools](#tools). an MCP server gets a base environment plus `env_vars` only, so the variables `orcr mcp` needs are named. |
+| `-m`, `model_reasoning_effort` | effort must be on the app-server, because a remote TUI does not forward it. `-m` goes on both. |
+| `<config args>` | `kind.codex.args`, on the app-server, because only there do thread settings apply. |
+| `( … bridge …; kill 0 ) &` | the [bridge](#the-bridge). when it exits, for any reason, `kill 0` ends the whole process group: the pane closes and the agent reads `exited`. an agent whose bridge died would otherwise look alive and never read its inbox. |
+| the socket wait | the TUI does not retry a missing socket: it exits with `failed to connect to remote app server`. after 10 seconds the TUI starts anyway, fails visibly, and `agent new` reports the pane. the bridge starts after the wait, and also retries its connect for 10 seconds before it gives up. |
+| `--remote … --yolo -C` | the TUI. it sends `--yolo` (the permission bypass) and `-C` (the thread's working directory) with `thread/start`. |
+
+**every thread setting goes on the app-server.** with `thread/start`, a remote TUI sends only
+`model`, the approval policy, the sandbox, and these `-c` keys: `allow_login_shell`,
+`default_permissions`, `features`, `network`, `permissions`, `sandbox_workspace_write`,
+`shell_environment_policy` and `suppress_unstable_features_warning`
+(`tui/src/app_server_session.rs:1795`). trust, `tools.*`, `mcp_servers.*`, hooks and effort on the
+TUI are silently ignored.
+
+**start the app-server through the person's `codex`.** a wrapping launcher may add `-c` flags for
+the provider and authentication. at Meta it adds dozens, and turns ran only when the app-server
+was started through it (verified).
+
+### process lifetime
+
+`sh -c` has no job control, so the app-server, the bridge and the TUI share one process group,
+which `exec` makes the pane's foreground group. measured on 0.159.3 with herdr 0.9.3:
+
+- when the TUI exits, or the pane is closed, the hangup ends every process within 3 seconds, MCP
+  servers included.
+- without `exec`, the app-server is orphaned.
+- `kill` on a wrapping launcher's pid orphans the real `codex`: the launcher does not forward
+  SIGTERM. whoever ends Codex signals the **process group**.
 
 ## startup
 
-Codex shows a directory trust dialog in a directory it has not seen. `--yolo` does not remove
-it, and neither does `--dangerously-bypass-approvals-and-sandbox`. no environment variable
-removes it: a sweep of the binary's strings found none.
-
-orchestratr passes trust as a launch argument. it writes no configuration file for this kind.
+**directory trust.** Codex shows a trust dialog in a folder it has not seen. `--yolo` does not
+remove it, and no environment variable does. a remote TUI reads trust from the server with
+`config/read` (`tui/src/onboarding/directory_trust.rs`), so the override goes on the app-server:
 
 ```sh
--c projects.<canonical absolute working directory>.trust_level=trusted
+-c 'projects={"<real cwd>"={trust_level="trusted"}}'
 ```
 
-<Callout type="warn" title="the spelling matters, and the wrong one fails silently">
-the dotted path must be unquoted. the TOML-quoted form,
-`-c 'projects."<path>".trust_level="trusted"'`, exits 0 and the dialog still appears. an earlier
-round of testing used the quoted form, concluded the override did not work, and had orchestratr
-writing a configuration file it does not need.
+<Callout type="warn" title="the dotted spelling breaks on a path with a dot">
+Codex splits an override key on every `.` (`config/src/overrides.rs:22`). with
+`-c projects.<path>.trust_level=trusted`, the cwd `/private/tmp/orcr-trust/a.b/w` became the key
+`/private/tmp/orcr-trust/a`, and `config/read` showed no trust (0.159.3). the inline table keeps
+the path inside a TOML string: `config/read` showed it trusted, and the person's other `projects`
+entries kept. a TOML-quoted key is split the same way. escape `"` and `\` in the path.
 </Callout>
 
-rules the tests established:
+the path is the resolved real path: on macOS, `/tmp/x` is `/private/tmp/x`. any other form was
+silently ignored (0.154). a git repository root entry covers every folder under it.
 
-- the path must be the resolved real path. on macOS, `/tmp/x` must be written as
-  `/private/tmp/x`. any other form of the path is silently ignored.
-- trust granted this way applies to the invocation. nothing is persisted, and project-local
-  configuration still loads.
-- a git repository root entry covers every directory under it. a deep subdirectory key also
-  works. there is no inheritance from an arbitrary parent that is not a repository root.
+**hook review.** when the Codex home holds hooks that are new or changed, the TUI shows a review
+screen before it starts the thread. herdr's Codex integration is such a hook, so anyone who
+installed it has answered the screen. orchestratr installs no hook, writes no hook trust, and
+never passes `--dangerously-bypass-hook-trust`, which would also run the person's untrusted hooks.
+[`orcr doctor`](/docs/cli#orcr-doctor) reports the herdr hook when it is untrusted.
 
-the file form below is equivalent. orchestratr does not use it, because a launch argument is
-reversible and a file is not.
+**interactive tools.** the three flags in the script, on the app-server. the first key must be a
+table: `tools.experimental_request_user_input = false` fails with `invalid type: boolean, expected
+struct`. `update_plan` was off by default (0.154), and is set anyway. `request_permissions` is off
+unless enabled.
 
-```toml
-[projects."<fully resolved absolute working directory>"]
-trust_level = "trusted"
-```
+**stall environment.** Codex captures a shell snapshot at startup and applies it after the process
+environment, which undoes `EDITOR`. demonstrated on 0.154: an editor held the terminal until it
+was killed. `shell_environment_policy.set` is applied after the snapshot, so the seven values are
+set there too, in one inline table.
 
-### interactive tools
+- **the values must be TOML strings.** `-c shell_environment_policy.set.EDITOR=true` makes the
+  app-server exit: ``invalid type: boolean `true`, expected a string`` (0.159.3). `CI=1` fails as
+  an integer.
+- the inline table merged with the `set` entries the person already had (`config/read`, 0.159.3).
 
-```sh
--c tools.experimental_request_user_input.enabled=false
--c tools.update_plan.enabled=false
---disable tool_call_mcp_elicitation
-```
+## integration
 
-or the same in `config.toml`:
+### why `--remote`
 
-```toml
-[tools.experimental_request_user_input]
-enabled = false
-```
+the bridge must start a turn from outside the TUI. a second client on an app-server socket is the
+only way: the embedded TUI exposes no listener, a hook result is read only at a turn boundary, and
+Codex drops an MCP server's notifications (0.159.3, source). so the TUI runs with `--remote`
+against a private app-server, and the person and the bridge drive one thread. measured on 0.159.3:
 
-<Callout type="warn" title="a bare boolean is rejected">
-`tools.experimental_request_user_input = false` produces
-`invalid type: boolean, expected struct`. the key must be a table with an `enabled` field.
-</Callout>
+a bridge `turn/start` shows in the TUI as a normal `›` user line. during a bridge turn, the
+person's Enter (steer), Tab (queue) and Esc (interrupt) all work, and steers from both sides merge
+into one turn. a TUI submit and a bridge `turn/start` 0.3 seconds apart became one turn plus one
+steer.
 
-`update_plan` is already off by default on the build tested, and is never available in the
-non-interactive mode at all. orchestratr sets it anyway, because "off by default" is a property
-of one build.
+### limits of `--remote`
 
-`request_permissions` is a second interactive tool. it is off unless explicitly enabled, and
-orchestratr does not enable it. its own schema says it waits for the client to grant permissions.
-
-for tools that come from an MCP server, the keys are `mcp_servers.<name>.disabled_tools` and
-`mcp_servers.<name>.enabled_tools`. they combine, and deny wins. names must match exactly, and
-patterns are not accepted.
-
-### editors and pagers
-
-the [shared environment](/docs/readiness-and-delivery#the-shared-environment) that stops a shell
-command waiting for input is not enough here. Codex captures a shell snapshot at startup and
-applies it after orchestratr's environment, which silently defeats `EDITOR`. this was
-demonstrated: an editor opened and held the terminal until it was killed.
-
-orchestratr therefore also sets the editor and pager values through Codex's own configuration,
-which is applied after the snapshot.
-
-### the hook review screen
-
-if a `hooks.json` file exists in the Codex home, Codex shows a second screen asking for hook
-review. hooks load untrusted and never run until they are trusted.
-
-this matters because the herdr integration for Codex is a hook. anyone who has installed it
-has already answered that screen. orchestratr does not install hooks and does not write hook
-trust. [`orcr doctor`](/docs/cli#orcr-doctor) reports when the integration is present but
-untrusted, because in that state the integration silently never runs and the agent never binds
-its session id.
-
-## readiness
-
-```text
-$CODEX_HOME/thread-writer-locks/<thread uuid>.lock
-```
-
-poll every 100 milliseconds. ignore the sibling coordination lock file.
-
-the file appears 0.71 to 0.92 seconds after the composer is usable, measured across three runs.
-it never appears while the trust dialog or the hook review screen is on screen: six runs that
-were abandoned at a dialog produced no `thread-writer-locks` directory at all.
-
-the file name is the thread identifier, which is also the session identifier. orchestratr
-therefore learns the session id at readiness, before any transcript exists, and can derive the
-rollout path immediately.
-
-two signals must not be used for readiness:
-
-- the backend's own start response returns between 2.6 and 5.1 seconds too early, and reports
-  the agent as idle while the trust dialog is on screen.
-- the session start hook fires at the first message, not when the terminal is ready.
-
-## delivery
-
-use the history file. do not use the rollout transcript.
-
-```text
-$CODEX_HOME/history.jsonl
-```
-
-<Steps>
-<Step>
-before submitting, note `H0`, the length of the file in bytes. treat a missing file as zero.
-note `SID`, the thread identifier from the lock file name.
-</Step>
-<Step>
-after submitting, poll every 100 milliseconds. read from offset `H0`, split on newlines, and
-discard an incomplete final line.
-</Step>
-<Step>
-delivery is confirmed when a new line parses, its `session_id` equals `SID`, and its `text`
-equals the submitted string exactly.
-</Step>
-</Steps>
-
-| case | delay |
+| limit | effect |
 |---|---|
-| from rest, warm | 0.378 seconds |
-| first message of a new session | 0.436 seconds |
-| mid turn, behind a 32 second tool call | 0.496 seconds |
+| refused at start | `--no-daemon`, `--add-dir`, `--worktree`, `-c sandbox_workspace_write.writable_roots`. orchestratr passes none. |
+| `/cd` | refused for remote workspaces. |
+| `!cmd` | runs in the app-server, under its environment and shell policy. |
+| `history.jsonl` | the TUI writes its own composer submissions only. bridge messages never appear. |
+| app-server crash | the TUI tries to reconnect for 120 seconds, and herdr reports `working` throughout. |
+| protocol | `app-server` is labelled experimental, and changes between versions. see [checks](#checks). |
 
-timeout: 5 seconds, ten times the worst measurement.
+### the bridge
 
-### why not the rollout file
+`orcr bridge codex --socket <path>`, in the `orcr` binary. there are no integration files. it
+speaks JSON-RPC over a WebSocket on the unix socket, and sends `initialize` with
+`capabilities.experimentalApi: true`, as the TUI does. it is a sidecar in the pane's process
+group, so it dies with the pane, and the pane dies with it.
 
-a message sent mid turn does not reach the rollout file until the running tool call returns. one
-measurement was 17.82 seconds, and the delay is bounded only by the tool's own runtime. a
-delivery check built on the rollout file reports failure for a message that was delivered.
+1. **find the user thread.** `thread/started` is broadcast to every client. follow the newest
+   thread with `parentThreadId == null` and `threadSource == "user"`. this skips subagents, and a
+   short-lived thread a managed hook loaded at startup on the test machine. if the bridge
+   connected after the TUI's thread started, it checks `thread/loaded/list` with `thread/read`.
+2. **register.** add `session` (`{"id": <thread id>, "transcript": <thread.path>}`),
+   `integration` (`"2"`, the version: Codex has no files) and `started_at` to the record,
+   only if the record file still exists. orchestratr recorded `pid` at launch. on a later user
+   `thread/started` (`/new`, `/fork`), rewrite `session`, and `thread/unsubscribe` the old thread,
+   or it stays loaded with its own MCP server.
+3. **subscribe** with `thread/resume {threadId, excludeTurns: true}`. turn and item events need a
+   subscription, and it keeps the thread loaded.
+4. **take messages** by mode (below).
+5. **watch the app-server.** when its connection closes, the bridge exits, and the launch
+   script's `kill 0` ends the pane. orchestratr does not restart an app-server, although the TUI
+   rejoins a restarted one ("Reconnected. No input was resent.", verified). when the TUI exits,
+   the pane's hangup ends the bridge.
+
+**the negative test.** the TUI sends `thread/start` only after its trust check and hook review
+(`tui/src/lib.rs`: trust at 1807, hook review at 2012, `App::run` at 2031). so the record cannot
+appear while either screen is up. not measured in remote mode. on 0.154 with the embedded TUI, the
+thread's writer lock never appeared in six runs abandoned at either screen. the thread starts at
+TUI startup, before any prompt: its MCP server started 1.8 seconds after the app-server (verified).
+
+### delivery
+
+| mode | at rest | while working |
+|---|---|---|
+| `steer` | `turn/start` | `turn/start`. on a running thread it steers, and returns the running turn's id. |
+| `followUp` | `turn/start` | held by the bridge. at each `turn/completed`, the oldest held message goes in a `turn/start`: one follow-up per turn. after an interrupt, see [recovery](#recovery-after-an-interrupt). |
+| `immediate` | `turn/start` | `turn/interrupt {threadId, turnId}`. at `turn/completed`, `turn/start`. |
+
+`turn/start` takes `{threadId, clientUserMessageId: <msgId>, input: [{type: "text", text: <block>,
+text_elements: []}]}`, one message per call, in id order. it returns the turn's id, which is the
+`turnId` for `turn/interrupt`. the bridge treats the thread as working from the moment it calls
+`turn/start` on an idle thread, not from `turn/started`, so a second message moments later is a
+steer into the starting turn, or a held `followUp`.
+`<block>` is the `<agent-message>` block, or the `<agent-watch>` block for a message that has a
+`watch` field.
+
+**before every hand-over**, including a held `followUp` and a re-hand, the bridge checks that
+`<msgId>.json` still exists. `orcr agent stop` deletes undelivered messages before it interrupts,
+so this check keeps a stop from starting a new turn.
+
+- **`.accepted`** when `turn/start` returns, or when the bridge holds a `followUp`.
+- **`.delivered`** at `item/started` on the followed thread with `item.type == "userMessage"` and
+  `item.clientId` equal to the message id. it fires when the input enters
+  the model's context: a steer sent during `sleep 15` was announced 13 seconds later, when the
+  tool returned (0.159.3). the person's messages carry TUI uuids, which never collide.
+- **an empty `immediate`** only interrupts, and never starts a turn. on an idle thread the bridge
+  writes `.accepted` and `.delivered` at once and does nothing else. on a working thread it calls
+  `turn/interrupt`, writes `.accepted` when the call returns, and `.delivered` at
+  `turn/completed`. an empty `immediate` older than 10 seconds by `sent_at` when the bridge takes
+  it is marked `.accepted` and `.delivered` and ignored, so a stale interrupt never aborts a later
+  turn. an empty `immediate` is never handed over again. a running command survives the interrupt as a background terminal (0.159.3).
+  stopping it needs Codex's own stop command, typed by a person.
+
+**the first turn.** `thread/resume` fails with `no rollout found for thread id …` until the
+thread has run a turn. the bridge retries it at each broadcast `thread/status/changed` for the
+thread, and every 50 milliseconds after its own first `turn/start`. measured: success at 0.08
+seconds, `item/started` at 1.34 seconds. without slow hooks the item can come first. so on a
+thread that has never run, the bridge writes `.delivered` when `turn/start` returns: the message is
+the first input of the turn it starts.
+
+### recovery after an interrupt
+
+any interrupt, the person's Esc or an `immediate`, silently drops a bridge steer that has not
+reached `item/started`. measured on 0.159.3: after Esc, it got no `item/started` and no turn in 25
+seconds. the TUI shows only its own pending steers, and re-sends only those.
+
+at `turn/completed` with status `interrupted`, the bridge first sends the `immediate` message, if
+any, once. then it calls `turn/start` again, in id order, for every message it already handed over
+that is not `.delivered` and whose file still exists. without an `immediate`, the first of these
+starts the next turn. held follow-ups were never handed over, so they are not re-sent, and they
+stay held until the next `turn/completed`: they never join the turn the bridge just started. if
+no turn starts here (no `immediate` with text, nothing to re-hand), the bridge sends the oldest
+held follow-up at once, so an Esc or an empty `immediate` never leaves follow-ups held forever.
+
+### tools
+
+`orcr mcp`, from `mcp_servers.orcr` on the app-server. `from` comes from `ORCR_AGENT_ID`, not
+from the per-call `_meta.threadId`, because the inbox is keyed by the agent id. the server starts
+one identical MCP process per loaded thread. a crashed one is not restarted: its calls fail with
+`Transport closed` (verified).
+
+### checks
+
+the [check](/docs/integrations#checks) runs `codex app-server generate-json-schema` and refuses
+install and `agent new` when a method, notification or field the bridge uses is missing:
+
+- requests: `turn/start` with `clientUserMessageId`, `turn/interrupt`, `thread/resume`,
+  `thread/unsubscribe`, `thread/loaded/list`, `thread/read`;
+- notifications: `thread/started`, `thread/status/changed`, `turn/started`, `turn/completed`,
+  `item/started` with `clientId`.
+
+### traps
+
+- **any process of the same user can drive any agent's app-server.** the path in orchestratr's
+  `0700` folder is a symbolic link to a `0600` socket in `/private/tmp/codex-daemon-<uid>/`, a
+  `0700` folder (verified on 0.159.3). there is no other authentication. that is the trust level
+  of the bus.
+- **the socket path is a link**, and `connect` follows it, so the `sun_path` limit (104 bytes on
+  macOS) applies to the link's path. stale `.lock` files collect in the `codex-daemon` folder,
+  and are harmless.
+- **the person's hooks run on every injected message.** on the test machine, `UserPromptSubmit`
+  hooks added about 0.8 seconds to each steer.
+- **`mcp_servers.orcr` merges** key by key with a person's own `[mcp_servers.orcr]`.
+- **a provider or authentication error** ends the turn with status `failed`. the message was
+  delivered.
 
 ## state
 
-Codex reports state through the backend, from the terminal title rather than from body text.
-that mechanism is correct during a turn.
+from herdr's Codex integration, which reads the terminal title: a spinner while working
+(`⠼ work`), the bare title at rest. verified with `--remote` on 0.159.3, including turns the bridge
+started. the screen body is not enough: during a turn that streams text and calls no tool, it
+matches the body at rest (0.154).
 
-screen reading of the terminal body alone is not enough for Codex. during a turn that streams
-text and calls no tool, the terminal body is identical to the body at rest.
-
-## interrupt
-
-one escape key press.
-
-two escapes at rest open the backtrack view. orchestratr sends an interrupt only while the agent
-is working. see [`orcr agent interrupt`](/docs/cli#orcr-agent-interrupt).
-
-an interrupt does not stop a Codex background terminal. that needs the agent's own stop command,
-typed by a person.
+herdr's Codex hook runs in the app-server, and needs the pane's `HERDR_*` variables. that is why
+the app-server starts in the pane, not from the orcr server: without `HERDR_PANE_ID` the hook
+exits early.
 
 ## transcript
 
 ```text
-~/.codex/sessions/<year>/<month>/<day>/rollout-<timestamp>-<uuid>.jsonl
+$CODEX_HOME/sessions/<year>/<month>/<day>/rollout-<timestamp>-<thread id>.jsonl
 ```
 
-the uuid is the thread identifier, known from the lock file at readiness.
+written by the app-server. the path comes from `thread.path` at registration, a field Codex marks
+unstable. the file exists after the first turn.
 
-this file holds the conversation, and [`orcr agent read`](/docs/cli#orcr-agent-read) uses it. it
-is not used for delivery confirmation, for the reason [above](#why-not-the-rollout-file).
+- prompts come from `event_msg` (`user_message`, or `item_completed` with a `UserMessage`), never
+  from `response_item` user records, which also carry `<environment_context>` and `AGENTS.md`.
+- skip `developer` records tagged `hooks.additional_context`.
+- a turn's outcome is its last `task_started`, `task_complete` or `turn_aborted`.
+  `task_complete.last_agent_message` is the answer. an `error` field is a provider failure.
+- input sent mid turn reaches the file only when the running tool returns: 17.82 seconds in one
+  measurement (0.154). fine for reading, and the reason delivery uses `item/started`.
 
 ## session identity
 
-the backend binds the Codex session id after the first completed turn. orchestratr does not
-wait for that, because the lock file gives the same identifier at readiness.
+the thread id is the session id, a UUIDv7. the bridge learns it from `thread/started`, before any
+transcript exists, and follows `/new` and `/fork`. `/new` was verified, including a bridge
+`turn/start` on the fresh thread before its first turn. `/resume` broadcasts no `thread/started`.
 
-Codex writes no rollout before the first turn, so nothing earlier is possible from the transcript
-side.
+orchestratr never reads Codex identity from herdr. herdr's binding is right here, because each
+agent has its own app-server. under the shared daemon, one hook reported every TUI's thread to the
+first pane (herdr-web-ui, 0.157.1).
 
 ## model catalogue
 
@@ -203,26 +298,34 @@ side.
 codex debug models
 ```
 
-prints the full catalogue as JSON and exits in about half a second. no server, no socket, no
-handshake.
+prints the catalogue as JSON in about half a second, with no server and no turn. filter on
+`visibility == "list"` to match what the agent offers. not `--bundled`, the compiled-in list, which
+is out of date. not the model route files in the Codex home, a small overlay that lacks most effort
+values.
 
-filter on `visibility == "list"` to match what the agent itself offers. this reproduces the app
-server's model list exactly, because both read the same source.
+## what is not used, and why
 
-two sources not to use:
-
-- `--bundled`, which is the compiled in catalogue and is out of date.
-- the model route files in the Codex home, which are a small overlay and are missing most effort
-  values.
-
-## steering
-
-a message sent while the agent is working reaches the model at the next tool call. if the turn
-makes no further tool call, it runs as a separate turn afterwards. Codex's screen states this
-directly.
+| not used | why |
+|---|---|
+| typed keys | the design rule. also, two escapes at rest open the backtrack view. |
+| the shared app-server daemon | any `-c` makes the TUI skip it. the private server is the same binary. |
+| `thread/queue/add` for `followUp` | after an interrupt, a queued item waits until a later turn completes normally, and the TUI shows nothing. once, one vanished. |
+| `turn/steer` | needs `expectedTurnId`, and races the turn's end. `turn/start` does not. |
+| hooks and `codex queue` | a 10 second poll, no `immediate`, a steer the TUI does not show, and it breaks once a daemon runs for the same home. |
+| the bridge inside `orcr mcp` | one MCP process per loaded thread: `/new` delivered a message twice. no restart after a crash, and no thread id. |
+| the bridge in the orcr server | the app-server must start in the pane for herdr's hook. a sidecar also works while the orcr server is down. |
+| `thread-writer-locks/`, `history.jsonl` | lock files outlive their process and name no pane. `history.jsonl` never sees bridge messages. |
 
 ## not verified
 
-- whether the model list needs pagination. it returns a cursor, and today one page holds every
-  model.
-- whether the lock file is removed when the process is killed rather than exiting.
+- the negative test in remote mode, and a bridge that connects after the TUI's `thread/started`.
+- trust on the app-server alone. the source says it is enough. every live run also passed it to
+  the TUI.
+- `-m` on both commands, and whether `thread.path` is set before the first turn.
+- `/resume` and `/fork` in a remote TUI, and how the bridge follows them.
+- subagent threads with their own MCP processes, and `turn/start` during auto-compaction.
+- the order of an `immediate` and re-sent steers.
+- a first message sent with the person's first prompt. it becomes a steer, and is marked delivered
+  early.
+- the exact tool name the model sees for `orcr mcp`.
+- whether the model list needs pagination. it returns a cursor, and one page holds every model.

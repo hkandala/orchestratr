@@ -1,0 +1,94 @@
+---
+title: "future work"
+description: "what the first version leaves out, and why"
+---
+
+none of this is part of the specification. each section says what was left out, why, and what
+it would take. the first version answers one question first: can agents of four kinds work as a
+team through one interface?
+
+## permissions
+
+orchestratr bypasses permissions on every agent (see [scope](/docs#scope)). where a kind has an
+auto mode, that would be the better default: it keeps the agent's own checks on risky actions.
+
+| kind | full bypass | auto mode | does the auto mode ever ask? |
+|---|---|---|---|
+| Claude Code | `--dangerously-skip-permissions` | `--permission-mode auto` | yes, measured |
+| Codex | `--yolo` | `--approve-for-me` | probably, not provoked |
+| OpenCode | `--auto` | none: asking and not asking are the only settings | not applicable |
+| Pi | permissive by default | none | not applicable |
+
+what was measured:
+- **Claude Code's auto mode asks, but only after a while.** after three classifier denials in a
+  row, a blocking dialog appears, and it does not time out. there is a second limit at 20
+  denials. a short test says the mode never asks. a long-running agent eventually hits a counter.
+- **`dontAsk` is not the answer.** it refuses what is not pre-approved, so the agent fails at its
+  work instead of stalling.
+
+an auto mode that stops to ask leaves the agent `blocked` until someone answers. the bus changes
+what answering could look like:
+- each kind's extension system can see a pending approval: Claude Code mods, Codex app-server
+  approval events, OpenCode's `permission.asked`, and Pi's tool hooks.
+- an integration could send the approval to the agent's parent as a message, and apply the reply.
+
+that needs a reply format, a rule for who may approve, and a timeout. until then, bypass stays.
+**do not approve by typing into a matched screen.** pressing the wrong row answers a question
+that a person was about to answer differently.
+
+## people's own sessions on the bus
+
+orchestratr drives only the agents it starts. people also run their own sessions, and they may
+want those on the same team.
+
+- **reading** them is close to free. the transcript readers exist. what is missing is finding a
+  session without a record of having started it.
+- **messaging** them needs the integration loaded in a session orchestratr did not launch. that
+  means installing it into the kind's global configuration, the way herdr installs its own
+  integrations. this was considered and left out:
+  - a broken global plugin would break every session the person starts, not only orchestratr's.
+    on Pi, a tool name clash exits at startup.
+  - OpenCode 2.x's shared service cannot load a plugin for one session only.
+  - Codex has no global plugin that can start a turn at all.
+- **Pi has a shorter path.** pi-herd already puts every Pi session in herdr on a bus of the same
+  shape. if pi-herd reads and writes orchestratr's bus, the person's own Pi agents join the team
+  with no new integration.
+
+## headless agents
+
+every kind can run without a terminal, over its own protocol:
+
+| kind | protocol |
+|---|---|
+| Claude Code | newline JSON on stdio (`claude -p --input-format stream-json`) |
+| Codex | the app-server, JSON-RPC |
+| Pi | newline JSON on stdio (`pi --mode rpc`) |
+| OpenCode | HTTP with server-sent events |
+
+orchestratr does not use these modes. they bill per token instead of against a subscription, and
+a person cannot watch or take over. the integrations already give most of what headless would:
+structured injection, and no screen reading. if headless is added, it is a launch mode behind
+the same socket API. `attach` has no meaning for it.
+
+## dropped items
+
+each item was considered and left out.
+
+| item | why it was dropped |
+|---|---|
+| typing messages into the composer | the first design pasted text into the terminal and confirmed delivery from per-kind records. it needed a composer clear with no safe key, bracketed paste, an Enter re-send, and four delivery records. it also typed into dialogs on one kind. every kind can now take a message from inside, so the typing path is gone. |
+| interrupt key sequences | two escapes open destructive views on two kinds. the integration aborts from inside instead. |
+| Claude Code channels | not available through Vertex or company gateways, and a research preview. |
+| Claude Code's peer socket | no follow-up, no interrupt, and no receipt. it shows an approval dialog unless a setting is changed. kept in mind as a way in if mods are switched off. |
+| Codex hooks plus `codex queue` | needs `--dangerously-bypass-hook-trust`, which also runs the person's untrusted hooks. wakes in 7 to 12 seconds through a 10 second poll. has no interrupt, and breaks when a daemon runs. |
+| Codex's shared daemon | any `-c` override makes the TUI skip it. a private app-server per agent is the same program. |
+| installing integrations into a kind's global configuration | see [people's own sessions](#peoples-own-sessions-on-the-bus). |
+| a queue in orchestratr | every kind queues natively. a second queue adds a place for messages to get lost. |
+| batching messages | the kinds already join steers into the running turn. handing messages over one at a time is simpler. |
+| watches inside each integration | four implementations of one rule. the server runs them once. |
+| classifying why an agent is blocked | it needs screen reading per kind. orchestratr reports `blocked` and shows the screen. |
+| an abstract effort vocabulary | the words do not line up across kinds, and a wrong mapping changes what a turn costs. `--effort` passes through. |
+| catalogue caching | the probes run in parallel when someone asks. a cache adds a staleness policy for no real gain. |
+| a tmux backend | herdr supplies panes and state, from per-kind detection rules it maintains. tmux would need both rebuilt and maintained forever. |
+| list filters, transcript formats, `--follow` | `jq` filters JSON output. clients that follow use [`events.subscribe`](/docs/socket-api#eventssubscribe). |
+| a time to live on agents | nothing was going to enforce it. |

@@ -1,165 +1,205 @@
 ---
 title: "socket API"
-description: "the wire protocol every command is built on"
+description: "the protocol every client is built on"
 ---
 
-the socket API is the product. the [`orcr` command line tool](/docs/cli) is one caller of it,
-and every command maps to one method. any program that can open a UNIX socket and write a line
-of JSON can do everything the command line tool can do.
+the socket API is the product. the [`orcr` command line tool](/docs/cli), the agents'
+[tools](/docs/integrations#tools) and any future client, such as a web interface, are all callers
+of it. every command maps to one method.
+
+## the server
+
+the server is the one long-lived orchestratr process. it does four things that must happen in
+one place:
+
+- it answers requests from every client;
+- it runs the [watches](/docs/messaging#watches);
+- it pushes [events](#events) to subscribed clients;
+- it deletes integration folders that nothing uses.
+
+it keeps no state of its own that cannot be rebuilt. agents, messages and markers are files on
+the [bus](/docs/messaging#the-bus), and agent state comes from herdr. it follows state with
+herdr's own `events.subscribe`, one subscription per agent pane, and reads a fresh snapshot
+whenever that connection drops.
+
+**starting.** any client starts the server when it is not running, under a lock on the socket
+folder, so two clients never start two servers. the server holds `bus/.server.lock` for its whole
+life, so a second server on the same bus refuses to start. the client starts it detached: in a
+new process session, with no terminal, and with the client's environment minus every kind's
+[session markers](/docs/how-it-works#session-markers) and every `HERDR_*` and `ORCR_*` variable. a
+server started by a tool inside an agent must not die with that agent's pane, and must not act in
+that agent's herdr session.
+
+**upgrading.** a client that finds an **older** server asks it to exit with
+[`server.exit`](#methods), and starts its own. a client that finds a newer or equal server uses
+it, as long as it speaks the client's `protocol`. long-lived old clients, such as an agent's
+`orcr mcp` from before an upgrade, therefore never replace a newer server.
+
+**restarting.** on start, the server reconciles:
+- a record that is still `starting` after its `ready_by` time belongs to an `agent new` that a
+  crash interrupted. the server stops it as `agent new` would have.
+- a record whose `pid` is not running is `exited`.
+- watches are found again from the bus (see [watches](/docs/messaging#watches)).
+
+**while it is down,** integrations still deliver what is already in their inboxes. a new send
+starts the server first.
 
 ## transport
 
-the server listens on a UNIX domain stream socket. the default path is in
-[`orcr serve`](/docs/cli#orcr-serve).
+the server listens on a UNIX domain stream socket at `$XDG_STATE_HOME/orcr/run/orcr.sock`, which
+is `~/.local/state/orcr/run/orcr.sock` by default. the path is fixed, and does not depend on
+`XDG_RUNTIME_DIR`, which differs between a desktop session and an SSH login. every client and
+every agent's tools must find the same server without asking. the folder is created with mode
+`0700`, because any process that can connect can start agents with permissions bypassed.
 
-the framing is newline-delimited JSON: one compact JSON object per line, UTF-8 encoded,
-terminated by `\n`. there is no length prefix and no header.
+the framing is newline-delimited JSON: one compact JSON object per line, UTF-8, terminated by
+`\n`. a connection carries many requests, and their responses can come in any order. a response
+carries the `id` of its request.
 
-a single connection carries many requests and their responses, in any order. a response carries
-the `id` of its request, so a caller can have several requests in flight at once.
+a request frame larger than 8 MiB closes the connection. responses have no limit.
 
-the maximum frame size is 8 MiB. a larger frame closes the connection.
-
-the first frame a caller sends must be [`hello`](#hello). before `hello`, the server rejects
-every other method with `invalid_request`.
+the first frame on a connection must be [`hello`](#hello).
 
 ## request
 
 ```json
-{"protocol": 1, "id": "c1", "method": "agent.list", "params": {}}
+{"id": "c1", "method": "agent.list", "params": {}}
 ```
 
-| field | required | meaning |
-|---|---|---|
-| `protocol` | yes | the protocol version the client speaks. |
-| `id` | yes | any string the client chooses. the server echoes it. |
-| `method` | yes | a method name from [methods](#methods). |
-| `params` | yes | an object. send `{}` when a method takes no arguments. |
+| field | meaning |
+|---|---|
+| `id` | any string the client chooses. the server echoes it. |
+| `method` | a method from [methods](#methods). |
+| `params` | an object. `{}` when a method takes no arguments. |
 
 ## success response
 
 ```json
-{"id": "c1", "ok": true, "result": {"type": "agent_list", "agents": []}}
+{"id": "c1", "ok": true, "result": {"agents": []}}
 ```
-
-`result` is a tagged union, and `type` names its shape. a caller can route or log any response
-without knowing which method produced it.
 
 ## error response
 
 ```json
 {"id": "c1", "ok": false,
- "error": {"code": "not_ready", "message": "agent codex-1 is not at its input prompt",
-           "details": {"name": "codex-1", "state": "idle", "state_source": "fallback"}}}
+ "error": {"code": "not_ready", "message": "agent codex-1 has exited",
+           "details": {"name": "codex-1", "state": "exited"}}}
 ```
 
-`id` is an empty string when the server could not parse a request far enough to find one.
+`id` is an empty string when the server could not read the request far enough to find one.
 
-`code` is one of nine values. the set is closed.
+`code` is one of eight values. the set is closed.
 
 | code | meaning | exit code |
 |---|---|---|
 | `invalid_request` | the frame or the arguments are wrong. | 2 |
-| `unsupported_protocol` | the client protocol is not supported. | 6 |
-| `not_found` | no agent has that name. | 3 |
-| `not_ready` | the agent cannot accept this action now. | 4 |
-| `blocked` | the agent waits for a person. | 4 |
-| `timeout` | the action did not finish in time. | 5 |
+| `unsupported_protocol` | the client's protocol is not supported. | 6 |
+| `not_found` | no agent has that name or id. | 3 |
+| `not_ready` | the agent cannot do this now. `details.state` says why. | 4 |
+| `timeout` | the action did not finish in time. `details.result` says what is known. | 5 |
 | `backend_unavailable` | herdr is missing, stopped, or incompatible. | 6 |
-| `integration_missing` | the herdr integration for this kind is missing or stale. | 7 |
+| `integration_missing` | the kind's orcr integration is not usable. `details.reason` is `not_installed`, `check_failed` or `not_registered`. | 7 |
 | `internal` | anything else. | 1 |
 
-`message` is prose for a person. it states what to do next when there is something to do.
-
-`details` carries machine readable context. a small, closed code set works because `details`
-carries the specifics. see [errors](/docs/implementation#errors) for the rules that keep it
-small.
+`message` is prose for a person, and says what to do next when there is something to do.
+`details` carries machine-readable specifics. a small code set stays usable only if specifics go
+in `details` and not into new codes.
 
 ## methods
 
-| method | result type | command |
-|---|---|---|
-| [`hello`](#hello) | `hello` | none |
-| [`agent.new`](#agentnew) | `agent` | [`orcr agent new`](/docs/cli#orcr-agent-new) |
-| [`agent.list`](#agentlist) | `agent_list` | [`orcr agent list`](/docs/cli#orcr-agent-list) |
-| [`agent.get`](#agentget) | `agent` | [`orcr agent status`](/docs/cli#orcr-agent-status) |
-| [`agent.read`](#agentread) | `transcript` | [`orcr agent read`](/docs/cli#orcr-agent-read) |
-| [`agent.message`](#agentmessage) | `message_sent` | [`orcr agent message`](/docs/cli#orcr-agent-message) |
-| `agent.interrupt` | `ok` | [`orcr agent interrupt`](/docs/cli#orcr-agent-interrupt) |
-| `agent.stop` | `ok` | [`orcr agent stop`](/docs/cli#orcr-agent-stop) |
-| [`models.list`](#modelslist) | `model_list` | [`orcr models`](/docs/cli#orcr-models) |
-| [`watch.open`](#watchopen) | `watch_opened` | `--follow`, `--wait` |
-| `doctor` | `doctor` | [`orcr doctor`](/docs/cli#orcr-doctor) |
+| method | command |
+|---|---|
+| [`hello`](#hello) | none |
+| [`agent.new`](#agentnew) | [`orcr agent new`](/docs/cli#orcr-agent-new) |
+| `agent.list` | [`orcr agent list`](/docs/cli#orcr-agent-list) |
+| [`agent.get`](#agentget) | [`orcr agent status`](/docs/cli#orcr-agent-status) |
+| [`agent.read`](#agentread) | [`orcr agent read`](/docs/cli#orcr-agent-read) |
+| `agent.interrupt` | [`orcr agent interrupt`](/docs/cli#orcr-agent-interrupt) |
+| `agent.stop` | [`orcr agent stop`](/docs/cli#orcr-agent-stop) |
+| [`message.send`](#messagesend) | [`orcr agent message`](/docs/cli#orcr-agent-message) |
+| [`message.list`](#messagelist) | [`orcr inbox`](/docs/cli#orcr-inbox) |
+| [`models.list`](#modelslist) | [`orcr models`](/docs/cli#orcr-models) |
+| `integration.install`, `integration.uninstall`, `integration.status` | [`orcr integration`](/docs/cli#orcr-integration) |
+| [`events.subscribe`](#eventssubscribe) | none. for clients that show live state. |
+| `doctor` | [`orcr doctor`](/docs/cli#orcr-doctor) |
+| `server.exit` | none. a newer client asks an older server to exit. |
 
-there are eleven methods. [`orcr agent attach`](/docs/cli#orcr-agent-attach) has no method,
-because it hands over a terminal.
+`orcr agent attach` has no method, because it hands over a terminal.
 
-the examples below show the `params` object of each request, except for `hello`, which shows
-the full frame.
+every method that acts on an agent takes `agent`: a name or an id. every method that sends,
+starts or stops takes `from`: an agent id, or `"orcr"`. an agent may stop only the agents it
+started, and the agents they started. `orcr` may stop any agent. the CLI and the tools fill it in from `ORCR_AGENT_ID` (see
+[the sender](/docs/cli#the-sender)).
 
 ### `hello`
 
 ```json
-{"protocol": 1, "id": "c0", "method": "hello",
- "params": {"client": "orcr-cli", "client_version": "0.1.0"}}
+{"id": "c0", "method": "hello", "params": {"protocol": 1, "client": "orcr-cli", "version": "0.2.0"}}
 ```
 
 ```json
-{"id": "c0", "ok": true, "result": {
-  "type": "hello",
-  "version": "0.1.0",
-  "protocol": 1,
-  "capabilities": {"watch": true, "follow": true}
-}}
+{"id": "c0", "ok": true, "result": {"protocol": 1, "version": "0.2.0"}}
 ```
 
-the response has three separate fields:
-
-- `version` is for people.
-- `protocol` is an integer for wire compatibility.
-- `capabilities` is a named set for feature probing.
-
-a caller checks `protocol` once and refuses with one clear error, instead of failing method by
-method.
+a server that does not speak the client's `protocol` answers `unsupported_protocol`. a client
+that sees an older `version` than its own asks the server to exit and starts a new one. see
+[upgrading](#the-server).
 
 ### `agent.new`
 
 ```json
-{"kind": "codex", "cwd": "/Users/me/code/p", "model": "gpt-5.6-sol",
- "effort": "high", "name": null, "prompt": null, "timeout_ms": 120000}
+{"kind": "codex", "cwd": "/Users/me/code/p", "model": null, "effort": "high", "name": null,
+ "message": null, "needs_reply": false, "wait_reply": false, "wait_ready": true,
+ "timeout_ms": 120000, "from": "orcr"}
 ```
 
-`kind` is required. every other field can be null.
+`kind` is required. the result is one agent object, as in
+[`orcr agent new`](/docs/cli#orcr-agent-new).
 
-### `agent.list`
-
-```json
-{"kind": null, "state": null, "cwd_glob": null, "since": null}
-```
+- `message` is written into the inbox before launch, with `needs_reply` if set.
+- `wait_ready: false` returns as soon as the agent is launched, in state `starting`. the `start`
+  tool uses it. a failure to start then reaches the parent as the watch's `exited` ending.
+- `wait_reply` waits for the reply, as in `message.send`.
 
 ### `agent.get`
 
 ```json
-{"name": "codex-1", "wait": ["idle", "blocked"], "timeout_ms": 300000}
+{"agent": "codex-1", "wait": ["idle", "blocked"], "timeout_ms": null}
 ```
 
-`wait` can be null or an empty array. the server then returns at once.
+`wait` null or empty returns at once.
 
 ### `agent.read`
 
 ```json
-{"name": "codex-1", "last": 50}
+{"agent": "codex-1", "last": 50}
 ```
 
-`last: 0` returns the whole conversation. use [`watch.open`](#watchopen) to follow a live
-transcript.
-
-### `agent.message`
+### `message.send`
 
 ```json
-{"name": "codex-1", "text": "also check the tests", "immediate": false,
- "timeout_ms": 30000}
+{"from": "orcr", "to": "codex-1", "text": "also check the tests", "delivery": "steer",
+ "id": null, "reply_to": null, "needs_reply": false, "wait_reply": false, "timeout_ms": 30000}
 ```
+
+- `to` is an agent, or `"orcr"`. a message to `orcr` cannot ask for a reply.
+- `id` is optional, in the [message id format](/docs/messaging#messages). a client that may retry
+  chooses it. a retry with the same id, sender and text writes nothing new and returns the
+  current outcome. the same id with other content is refused with `invalid_request` and
+  `details.reason: "id_in_use"`.
+- `needs_reply` starts a watch.
+- `wait_reply` also holds the response until the reply or the watch ending, and puts it in
+  `reply`. it implies `needs_reply`. `timeout_ms` is then the watch's deadline.
+
+the result is the [send result](/docs/cli#orcr-agent-message).
+
+### `message.list`
+
+```json
+{"agent": null}
+```
+
+null lists the `orcr` inbox.
 
 ### `models.list`
 
@@ -167,58 +207,41 @@ transcript.
 {"kind": null}
 ```
 
-### `watch.open`
+### `events.subscribe`
 
 ```json
-{"subjects": ["agent.state_changed", "agent.exited"],
- "names": ["codex-1"], "since_seq": null}
+{"agents": null}
 ```
 
-the response carries a snapshot and a cursor under one number, so a caller never misses an
-event between reading the state and subscribing to changes.
+the response carries a snapshot of every agent (or the named ones), then events stream on the
+same connection until it closes:
 
 ```json
-{"id": "c9", "ok": true, "result": {
-  "type": "watch_opened",
-  "watch": "w1",
-  "seq": 412,
-  "snapshot": {"agents": []}
-}}
+{"id": "c9", "ok": true, "result": {"subscription": "s1", "snapshot": {"agents": []}}}
 ```
 
-`watch.close` is not a method. closing the connection closes the watch.
+there is no replay. a client that reconnects subscribes again and takes a new snapshot. messages
+are files, so nothing durable lives only in the event stream.
 
 ## events
 
-after `watch.open`, events stream on the same connection.
-
 ```json
-{"watch": "w1", "seq": 413, "event": {
-  "type": "agent.state_changed",
-  "name": "codex-1",
-  "state": "working",
-  "state_source": "rule:osc_title_working",
-  "at": "2026-09-18T09:22:10Z"
-}}
+{"subscription": "s1", "event": {"type": "agent.state_changed", "agent": "019fd875-…",
+ "name": "codex-1", "state": "working", "at": "2026-10-06T09:22:10Z"}}
 ```
 
-an event frame has no `id`, because it answers no request. it has `watch` and `seq` instead.
-
-`seq` increases by one for every event on a watch. a caller that reconnects passes
-`since_seq` and receives everything it missed. without a cursor, a dropped connection loses
-events with no way to catch up.
+an event frame has no `id`, because it answers no request.
 
 | type | when |
 |---|---|
-| `agent.created` | an agent reached a ready state. |
-| `agent.state_changed` | the state changed. |
-| `agent.message` | a message was appended to a transcript. |
-| `agent.exited` | the agent process ended. |
+| `agent.state_changed` | an agent's state changed, including from `starting` and to `exited`. |
+| `agent.removed` | `stop` removed an agent's record. |
+| `message.sent` | a message file was written. carries `id`, `from` and `to`. |
+| `message.accepted` | an integration wrote `.accepted`. |
+| `message.delivered` | an integration wrote `.delivered`. |
 
 ## schema
 
-the server generates its JSON Schema from the same method registry it dispatches on, so the
-schema cannot drift from the implementation. every `$ref` uses the standard JSON Pointer root
-`#/$defs/`, so any conforming resolver can read it.
-
-`orcr serve --schema` writes the schema to standard output and exits.
+the server generates its JSON Schema from the same method table it dispatches on, so the schema
+cannot drift from the code. every `$ref` uses the standard root `#/$defs/`.
+`orcr serve --schema` prints it.

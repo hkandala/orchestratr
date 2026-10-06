@@ -1,0 +1,292 @@
+---
+title: "how it works"
+description: "the layers, launching an agent, readiness, state, transcripts and the shared procedures"
+---
+
+this page names no kind. everything specific to one kind is in the
+[kind table](/docs/agents#the-kind-table) and on the [agent pages](/docs/agents).
+
+## layers
+
+```text
+ orcr CLI     agent tools (orcr mcp, Pi extension)     web UI, scripts
+     \                    |                                /
+      └──────── socket API: newline JSON ─────────────────┘
+                          |
+                     orcr server ── watches, events
+                     /          \
+           herdr socket          the bus (files)
+          panes, state           agents/, inbox/
+                |                     |
+          agent processes ◄── orcr integration inside each agent
+```
+
+- **clients** parse arguments and print results. every decision happens in the server.
+- **the server** holds no state that the bus and herdr cannot rebuild. how it starts, upgrades
+  and recovers is under [the server](/docs/socket-api#the-server).
+- **integrations** move messages between the bus and the agent's own session. they make no
+  decisions.
+- **herdr** hosts the panes, and reports state through its own integration for each kind.
+
+## placement
+
+there is one herdr session, named `orcr`. it has one workspace per distinct working directory,
+labelled with that directory, and one tab per agent, labelled with the agent's name. orchestratr
+starts the session itself when it is not running (`herdr --session orcr server`, detached).
+
+orchestratr creates and manages only that session. it never closes a pane, tab or session it did
+not create.
+
+## launching an agent
+
+### the launch line
+
+orchestratr creates the tab with `tab.create`, then sends one line to the new pane's shell with
+`pane.send_input`, followed by Enter. this is what `herdr pane run` does. the pane is one
+orchestratr just created, so the line goes to a fresh shell, never to an agent:
+
+```sh
+exec env -u <session markers> \
+  ORCR_AGENT_ID=<id> ORCR_BUS=<bus> <home variable> <stall environment> <kind variables> \
+  <absolute binary> <kind arguments> <integration loading> <config args>
+```
+
+- **`exec`** makes the agent the pane's process, so the pane closes when the agent exits. no
+  shell is left behind for a stray message to run in.
+- **`env`** runs after the pane shell has read its startup files. those files cannot undo the
+  stall environment. on one test machine, line 1 of `~/.zshrc` was `export EDITOR=nvim`.
+- **`env -u`** removes variables. herdr's `env` parameter can only set them.
+- **the absolute binary** is the one `orcr doctor` checked. it is resolved once, through
+  orchestratr's own `PATH`.
+- **one line, every kind.** Codex is the one kind whose binary slot is a short script, because
+  it runs three processes. the script's last command is `exec codex`, so the rules below still
+  hold. see [Codex](/docs/agents/codex#launch).
+- **the pid is the shell's.** after `tab.create` and before it sends the line, orchestratr reads
+  `shell_pid` from `pane.process_info` and writes it, with the pane, into the record. `exec`
+  keeps that pid, so it is the agent's own. orchestratr's last write to the record happens before
+  the agent starts, so it never races the integration's registration.
+- **the process name must match the kind.** herdr recognizes an agent by its process name. a
+  launcher that runs the real program under another name (`pi.real`) leaves herdr reporting
+  `unknown`. call the program by its usual name, or through a link that has that name.
+
+why not herdr's own `agent start`: it runs the kind's default executable only, and it has no
+environment. it also waits on herdr's own readiness, which was measured as early (see
+[readiness](#readiness)).
+
+### session markers
+
+every kind leaves variables in the environment of the processes it starts. an agent started
+from inside another agent would inherit them and believe it is a child session. on one kind
+that silently turns off the transcript. orchestratr removes the markers of every kind, on every
+launch, because orchestratr is often run from inside an agent of any kind:
+
+| kind | markers removed |
+|---|---|
+| Claude Code | `CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_EFFORT`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN` |
+| Codex | `CODEX_SESSION_ID`, `CODEX_THREAD_ID`, `CODEX_VERSION`, `CODEX_PERMISSION_PROFILE`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`, `CODEX_NETWORK_PROXY_ACTIVE`, `CODEX_EXEC_SERVER_URL` |
+| Pi | `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL`, `PI_REASONING_LEVEL`, `PI_CODING_AGENT`, `AI_AGENT`, `PI_HERD_PARENT` |
+| OpenCode | `OPENCODE_TERMINAL`, `OPENCODE_ROUTE`, `OPENCODE_PTY_HANDOFF`, `OPENCODE_PASSWORD`, `OPENCODE_SERVER_PASSWORD` |
+
+the lists start from the ones amx measured (`src/vendor/*.rs`, `not_inherited`). they live in
+the kind table, so a new marker is a one-line change. `CLAUDE_EFFORT` matters beyond identity: it
+silently overrides effort when `--effort` is not passed. `PI_HERD_PARENT` makes pi-herd stop the
+new agent when that parent ends.
+
+the list is exact, not a prefix. removing every `CLAUDE_CODE_*` would also remove
+`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` and the OAuth token, which some people need
+to sign in.
+
+### the stall environment
+
+an agent stops and waits for a person in three ways. orchestratr removes all three before launch,
+rather than detecting them afterwards. a stalled agent never reads its inbox.
+
+1. **a startup screen.** see [startup screens](#startup-screens).
+2. **a tool whose job is to ask the person something.** every kind can be told not to load
+   these. the names are in the kind table.
+3. **a program that a shell command starts, and that waits for input of its own**: an
+   interactive rebase, a pager, a host key confirmation, a login dialog. this one is the same
+   for every kind, so orchestratr handles it once, in the environment:
+
+```sh
+EDITOR=true  VISUAL=true  GIT_EDITOR=true
+PAGER=cat    GIT_PAGER=cat
+GIT_TERMINAL_PROMPT=0  CI=1
+```
+
+`VISUAL` takes precedence over `EDITOR` in most editor selection. leaving it out was shown to
+hand a real editor the terminal despite `EDITOR=true`. `GIT_PAGER` is separate from `PAGER` for
+the same reason.
+
+one kind, Codex, applies a shell snapshot after this environment, which undoes `EDITOR`. for
+Codex, orchestratr also sets these values through its own configuration. see
+[Codex](/docs/agents/codex#startup).
+
+### startup screens
+
+every kind shows at least one screen before it accepts input, and permission bypass removes none
+of them. each screen has a configuration key or a launch argument that stops it from appearing.
+orchestratr sets those before launch. a screen that never appears needs no detection and no
+keystroke.
+
+three kinds carry every startup setting as a launch argument or inline configuration. Claude Code
+is the exception: folder trust has no launch form.
+
+### writing a person's configuration
+
+orchestratr writes one key, for one kind: Claude Code's folder trust for the agent's working
+directory, in `.claude.json` in the Claude Code configuration folder (`~/.claude.json` by
+default, `$CLAUDE_CONFIG_DIR/.claude.json` when `home` is set). Claude Code itself prints the instruction to set it. the rules:
+
+- **check first.** Claude Code inherits trust from a parent folder. if an ancestor is trusted,
+  write nothing.
+- **take Claude Code's own lock.** Claude Code rewrites this file often. take the file's path
+  plus `.lock`, the same lock Claude Code uses. retry briefly, and never break it. if
+  the lock stays held, `agent new` fails before launch.
+- **re-read under the lock**, add the one key, and write a temporary file beside the real file,
+  then rename it. a rename alone stops a torn file. it does not stop a lost update, which is what
+  the lock is for.
+- **resolve a symbolic link first**, and write beside the real file. a configuration file is
+  often a link into a repository the person manages. renaming over the link would replace it
+  with a plain file.
+- **write only when absent**, never create the file, and never rewrite a file that does not parse.
+- report what was done: written, already present, or skipped.
+
+the first-run screens that a fresh Claude Code configuration shows (theme, security notes) are
+not written. orchestratr checks for them, and if they would appear, `agent new` fails with "run
+`claude` once". anyone who has run Claude Code already has these keys.
+
+when orchestratr cannot apply a startup setting, `agent new` fails before launching. it does not
+start an agent that would stop on a dialog.
+
+## readiness
+
+**an agent is ready when its integration has registered.** the integration adds `session` and
+`started_at` to the agent's record. see [the contract](/docs/integrations#the-contract).
+
+a readiness signal is usable only if it passes the negative test: it must stay absent while a
+startup screen is on screen. several obvious signals fail that test by more than a minute,
+including herdr's own answer. of twelve screens where an agent could not take input, herdr
+reported ten as ready. it was also early by 2.6 to 5.1 seconds on one kind and by about 25 seconds
+on another.
+
+registration is stronger than any signal used before, for two reasons:
+
+- each kind's registration point comes after its startup screens. Claude Code loads no mod until
+  workspace trust is accepted (measured). Pi's `session_start` comes after its trust dialog
+  (measured).
+- delivery no longer depends on the screen at all. a message waits in the agent's own queue, so
+  a dialog cannot take it.
+
+each agent page records how its kind passes the negative test, or says that it was not verified.
+
+while waiting, orchestratr also checks that the pane's process is alive. an agent that crashes at
+start, for example on a bad `--model`, fails at once instead of after the timeout. on failure,
+orchestratr reads the last 40 lines of the pane into the error. it only reports this text, and
+never matches on it.
+
+## state
+
+the state comes from herdr, through herdr's integration for each kind. orchestratr keeps no
+detection rules and does not read the terminal to second-guess herdr.
+
+orchestratr adds four rules on top:
+
+1. **`starting`** until the integration registers.
+2. **`exited`** when the record's `pid` is not running, or the pane is gone. liveness is checked
+   before herdr's answer. if herdr restarts and restores a pane by relaunching the agent itself,
+   the new process has a new pid and none of orchestratr's launch settings. orchestratr treats it
+   as `exited`.
+3. **herdr's `done` is `idle`.** herdr reports `done` for a finished agent in a pane nobody has
+   focused, which is almost every orchestratr pane.
+4. **`blocked` passes through.** where herdr cannot see a kind's dialogs, the integration reports
+   them (see [the contract](/docs/integrations#the-contract), item 9).
+
+if herdr is wrong about a state, the fix belongs in herdr's detection rules, where every tool
+benefits. it does not belong in orchestratr.
+
+state is not what makes messaging correct. that rests on the markers the integration writes. state
+is used for reporting, for watches, and for `--wait`.
+
+## sending, interrupting and stopping
+
+- **sending** writes a file. see [sending](/docs/messaging#sending).
+- **interrupting** sends an `immediate` message with no text. the integration aborts the turn
+  from inside the agent. no key is ever pressed, so no key can open a view that a second escape
+  would open.
+- **stopping** follows the order in [`orcr agent stop`](/docs/cli#orcr-agent-stop): refuse new
+  sends, end the watches, withdraw undelivered messages, interrupt, close the pane, delete the
+  files.
+
+  the interrupt matters on one kind: OpenCode 2.x keeps a turn that a pane close ended marked as
+  running, and its shared service would later resume that turn with no one watching.
+
+## transcripts
+
+each kind writes its conversation differently. the kind's reader converts it into the one shape
+of [`orcr agent read`](/docs/cli#orcr-agent-read). the reader takes the whole session, not one
+line at a time, because:
+
+- Pi's transcript is a tree. after a person moves back in the conversation, abandoned branches
+  stay in the file. the reader follows the branch that ends at the last entry.
+- Claude Code records a mid-turn message as a pair of records, which must read as one.
+- OpenCode writes no file. its reader queries a database.
+
+rules for every reader:
+
+- **find the transcript from the session id**, never by computing a path from the working
+  directory. every kind mangles the directory into its path, and the mangling is lossy. Claude
+  Code, for one, replaces every character that is not a letter or a digit.
+- **tolerate a known path with no file.** some kinds report a path before the file exists.
+- **discard an incomplete final line.** a reader can see a line mid write.
+- **skip what is not conversation**: tool output recorded as user records, injected context, and
+  compaction summaries. the skip rules are on each agent page. an error record written in the
+  assistant's place is not shown as an answer, but the reader reports it as a failed turn, which a
+  watch needs.
+
+## the model catalogue
+
+[`orcr models`](/docs/cli#orcr-models) runs one probe per installed kind, in parallel. no probe
+starts a billed turn. the probes are on each agent page. they are slow, because each starts the
+kind's program, and they run only when someone asks.
+
+## herdr
+
+- orchestratr speaks herdr's socket directly. it shells out for two things only: starting the
+  `orcr` herdr session, which has no socket method, and attaching a terminal.
+- every herdr call that targets a pane passes `pane_id`. one method, `pane.process_info`, silently
+  answers for the focused pane when given a `target` instead.
+- herdr takes timeouts in milliseconds. orchestratr accepts a human duration and converts it.
+
+## concurrency
+
+- the server handles requests concurrently.
+- the server creates every agent, so a lock inside the server is enough to keep two calls from
+  picking the same name.
+- nothing else needs a lock:
+  - messages are separate files, created with `link`, so two senders never touch one file;
+  - an agent record has one writer at a time (see [agent records](/docs/messaging#agent-records)).
+
+## errors
+
+eight error codes, closed, defined in [error response](/docs/socket-api#error-response).
+specifics go in `details`, not in new codes. every message says what orchestratr looked for.
+
+## testing
+
+1. **reader and integration tests over captured files.** every measurement in these documents
+   came from a captured file. those files are the fixtures, kept with the version of the kind
+   that wrote them.
+2. **integration tests per kind, at the minimum version and the newest:**
+   - launch the kind;
+   - see the record appear;
+   - deliver one message in each mode;
+   - interrupt;
+   - stop.
+
+   run them in an isolated configuration folder, never against a person's real one.
+3. **a team test:** two agents of different kinds in one working directory, one asking the other
+   for a reply, with a watch.
+
+backend tests run against a throwaway herdr session. never against a session orchestratr did not
+create.

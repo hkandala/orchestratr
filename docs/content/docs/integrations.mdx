@@ -1,0 +1,223 @@
+---
+title: "integrations"
+description: "the plugin each kind runs, how it is installed, and how to add a new kind"
+---
+
+an orcr integration is the small piece of code that makes one kind of agent part of the
+[bus](/docs/messaging). it runs with the agent, written in that kind's own extension system. it
+takes messages from the agent's inbox into its session, writes the markers, and reports the
+agent as ready.
+
+orchestratr drives a kind only when its integration is installed. installing one is a choice the
+person makes, kind by kind.
+
+## what each kind uses
+
+| kind | mechanism | loaded by | tools for the model |
+|---|---|---|---|
+| Claude Code | a **mod**: a plugin with JS modules that run inside the process (2.1.287 and later) | `--plugin-dir <dir>` | `orcr mcp`, through `--mcp-config` |
+| Codex | a **bridge**: a second client on a private app-server, which the TUI also uses through `--remote` | the pane's launch script | `orcr mcp`, on the app-server command line |
+| Pi | an **extension** | `-e <file>` | registered by the extension |
+| OpenCode | a **plugin**, one folder for 1.x and 2.x. on 2.x it uses OpenCode's native session inbox. | `OPENCODE_CONFIG_CONTENT` | `orcr mcp`, through the same variable |
+
+every mechanism loads per agent, from a launch flag or an environment variable. **no integration
+ever edits a kind's configuration.** the details, with the measurements, are on each
+[agent page](/docs/agents).
+
+## the contract
+
+every integration does exactly this. anything more belongs in orchestratr, not in the
+integration.
+
+1. **stay inert outside orchestratr.** do nothing unless `ORCR_AGENT_ID` and `ORCR_BUS` are set.
+2. **register when the agent can take input.** read `agents/<id>.json`, add `session`,
+   `integration` (the version folder it was loaded from) and `started_at`, and rename it back into
+   place. this is the readiness signal, so it must pass the negative test: it must not appear
+   while a startup screen is on screen. each agent page records how its kind passes.
+3. **keep the record current.** where the kind lets a person change the session (`/clear`,
+   `/new`, `/resume`), rewrite `session` when it changes. rewrite the record only if it still
+   exists.
+4. **take messages in,** as [receiving](/docs/messaging#receiving) describes:
+   - rescan the inbox on any change;
+   - take every `*.json` without `.delivered`, in id order, one at a time;
+   - check the file still exists just before each hand-over;
+   - hand it to the agent's own queue by its delivery mode, and write `.accepted`;
+   - treat an idle agent as working from the moment of the hand-over, not from the kind's
+     turn-start event. a second message a moment later is then a steer into the starting turn,
+     not a second turn.
+5. **mark delivery.** write `.delivered` at the kind's event for "this message is in the model's
+   context".
+6. **handle an empty `immediate`.** at rest, mark it `.accepted` and `.delivered` and do nothing
+   else. while working, abort the turn, and mark it `.delivered` when the turn has ended. it never
+   starts a turn. one older than 10 seconds when taken is marked the same way and ignored.
+7. **recover after an interrupt, where the kind needs it.** on Pi and on Codex, and only there, an interrupt
+   (an `immediate`, or the person pressing Esc) silently drops messages the agent had accepted
+   and not yet delivered. this was measured on both. when a turn ends interrupted, hand over again
+   every message the integration had handed to the agent, that is not delivered, and whose file
+   still exists: steers, and follow-ups the agent queued itself. messages the integration still
+   holds are not affected. an empty `immediate` is never handed over again. `stop` removes undelivered files before it interrupts, so a stop never restarts the
+   agent.
+8. **render the blocks.** wrap a message in `<agent-message>`, with the reply hint that names the
+   tool as this kind shows it to the model. render a message with a `watch` field as
+   `<agent-watch>`. see [what the model sees](/docs/messaging#what-the-model-sees) and
+   [watches](/docs/messaging#watches).
+9. **report a dialog where herdr cannot see it.** if the kind has an event for "a dialog is open"
+   that herdr's own integration does not use, emit herdr's `blocked` signal. today this applies to
+   Pi only.
+
+the integration never sends a message itself, never watches another agent, and never decides who
+may talk to whom. the [tools](#tools) and the server do that.
+
+### rules for code inside a person's agent
+
+- **never crash the agent.** catch every error in a watcher callback. one OpenCode plugin crash
+  can take down the TUI's backend.
+- **survive a reload.** some kinds load the plugin twice at start, or again on reload. keep state
+  where the reload keeps it, close the previous watcher, and rely on the markers on disk.
+- **never clash with the person's extensions.** register no name that another extension may own.
+  on Pi, a duplicate tool name makes the process exit at startup.
+- **ignore subagents.** events from an agent's own subagents must not move the record, take a
+  message, or end a turn.
+
+## tools
+
+the model gets these tools, named in each kind's convention (for example `mcp__orcr__send` on
+Claude Code):
+
+| tool | does |
+|---|---|
+| `send` | `{to, text, reply_to?, needs_reply?, delivery?}`. sends a message, waits up to 5 seconds for the markers, and returns the id and the [outcome](/docs/messaging#outcomes). |
+| `list` | the live agents: id, name, kind, cwd and state. |
+| `read` | `{agent, last?}`. another agent's recent conversation. |
+| `start` | `{kind, text, name?, cwd?, model?, effort?}`. starts an agent with the caller as its parent, and sends it `text` with `needs_reply`. it returns as soon as the agent is launched. the watch reports the reply, or why there is none. |
+| `stop` | `{agent}`. stops an agent the caller started, or one started below it. |
+
+the tools hold no logic. each one is a call to the [socket API](/docs/socket-api), with `from`
+set from `ORCR_AGENT_ID`. three kinds get them from `orcr mcp`, a stdio MCP server built into the
+`orcr` binary. Pi registers them in its extension, which saves a second process. either way the
+logic lives once, in the server.
+
+## installing
+
+```text
+~/.local/share/orcr/integrations/
+  claude/
+    enabled                      the person's choice
+    4-1a2b3c4d/                  <version>-<first 8 hex of the content hash>. read only.
+      claude-mod/…
+  codex/
+    enabled                      Codex has no files: the bridge and the tools are in the orcr binary
+  pi/
+    enabled
+    3-9f8e7d6c/pi.ts
+  opencode/
+```
+
+an integration's files are embedded in the `orcr` binary. the folder on disk is a copy, so the
+files an agent loads can never drift from the binary that launched it. the folder name is the
+version stamp.
+
+### `orcr integration install <kind>`
+
+<Steps>
+<Step>
+
+run the kind's [checks](#checks). a hard failure stops here, writes nothing, and says what to
+fix.
+
+</Step>
+<Step>
+
+write the embedded files into a temporary folder, make it read only, and rename it to
+`<version>-<hash>`. if that folder already exists, this step does nothing.
+
+</Step>
+<Step>
+
+create `<kind>/enabled`.
+
+</Step>
+</Steps>
+
+the folder is read only, and a new version is a new folder. so an upgrade never rewrites a file
+that a running agent loaded. Claude Code and OpenCode 2.x both reload a plugin when its files
+change, and an in-place upgrade would reload every live agent mid turn.
+
+install is idempotent. on a current kind it prints `claude: current (v4)`.
+
+### `orcr integration uninstall <kind>`
+
+remove `enabled`, then remove each version folder that no live agent's record names. a folder
+still in use stays, and the command names the agents that use it. it never touches a kind's own
+files, because install never wrote any.
+
+### `orcr integration status`
+
+```text
+claude:   current (v4) (~/.local/share/orcr/integrations/claude/4-1a2b3c4d)
+codex:    current (v2)
+pi:       outdated (v2, expected v3), repaired at the next agent start
+opencode: not installed
+```
+
+| state | meaning |
+|---|---|
+| `not installed` | no `enabled` file. orchestratr does not drive this kind. |
+| `current` | enabled, and the folder for the embedded version and hash exists. |
+| `outdated` | enabled, and that folder is missing, usually right after `orcr` was upgraded. |
+
+`--check` also runs the kind's checks.
+
+### upgrading
+
+nothing runs at upgrade time. the new `orcr` binary embeds new files under a new hash. the next
+`agent new` for an enabled kind writes the new folder first. running agents keep their old
+folder until they stop. when the server starts, it deletes folders that are not current and that
+no live agent's record names. [`orcr doctor`](/docs/cli#orcr-doctor) lists agents that run an
+older folder.
+
+### checks
+
+| kind | refuses install and `agent new` | warns |
+|---|---|---|
+| every kind | the binary is not found, or its version is outside the kind's range | the version cannot be read |
+| Claude Code | mods are disabled: `--bare`, `--safe-mode`, `disableAllHooks`, `disableSideloadFlags`, or a managed `allowManagedHooksOnly` or `allowManagedModsOnly` | Anthropic can also turn mods off remotely, which only the first start can show |
+| Codex | the app-server does not offer a method or field the bridge uses. the list is on the [Codex page](/docs/agents/codex#checks). | none |
+| Pi | none | pi-herd is installed. this is safe: the tool names do not clash. |
+| OpenCode | none | on 2.x, orchestratr launches with `--standalone`. |
+
+## when a kind is not ready
+
+[`orcr agent new`](/docs/cli#orcr-agent-new) refuses with `integration_missing`, and
+`details.reason` says why:
+
+| reason | meaning |
+|---|---|
+| `not_installed` | run `orcr integration install <kind>`. nothing was created. |
+| `check_failed` | a check failed. `details.check` names it. nothing was created. |
+| `not_registered` | the agent started, and its integration never registered. orchestratr stops the agent and reports what its pane showed. |
+
+an enabled kind whose folder is missing is not an error. orchestratr writes the folder and
+continues.
+
+## adding a kind
+
+a new kind needs these things, and nothing in orchestratr's core changes:
+
+1. **a per-session way to load code.** a launch flag or an environment variable. a kind that can
+   only load plugins from its global configuration is not supported. orchestratr will not edit a
+   person's configuration to make one work.
+2. **a way for that code to start a turn when the agent is idle, and to steer a turn that is
+   running.** in process, as on three kinds, or as a sidecar speaking the kind's own protocol, as
+   on Codex. without both, the kind cannot take messages. answer this question first. hooks that
+   only run during a turn are not enough: nothing would wake an idle agent.
+3. **a herdr integration for the kind.** herdr reports every agent's state. a kind herdr does not
+   know cannot be driven.
+4. **the integration files**, implementing [the contract](#the-contract).
+5. **a kind entry**: one column of the [kind table](/docs/agents#the-kind-table), filled in. the
+   fields are listed under [the kind entry](/docs/agents#the-kind-entry).
+6. **a test** that launches the kind at its minimum version, sees the record appear, delivers one
+   message in each mode, interrupts, and stops.
+
+a fork of a supported kind can often reuse its integration files. examples are omp, a Pi fork,
+and kilo, an OpenCode fork, both of which herdr already integrates.

@@ -1,318 +1,330 @@
 ---
 title: "OpenCode"
-description: "how orchestratr launches, drives and reads OpenCode"
+description: "how orchestratr launches, drives and reads OpenCode 1.x and 2.x"
 ---
 
 **kind value:** `--kind opencode`
 
+OpenCode has two live lines: 1.x (`opencode-ai`) and 2.x (`@opencode/cli`). their flags, plugin
+APIs and tables differ. one orcr plugin folder serves both. measured on 1.18.34 and 2.0.24 unless
+stated.
+
 ## launch
 
-```sh
-opencode --yolo -m <provider>/<model> --hostname 127.0.0.1 --port <port>
-```
+### the line
 
-### version requirement
+orchestratr takes the first `<major>.<minor>.<patch>` from `opencode --version`: 1.x prints
+`1.18.34`, 2.x prints `opencode v2.0.24`.
 
-OpenCode must be 1.18.29 or newer. the herdr integration for OpenCode exports an entry point
-that older builds never call, so on an older build the integration loads, reports nothing, and
-everything it supplies is silently absent.
+| version | line |
+|---|---|
+| below 1.18.29 | refused. the herdr integration for OpenCode exports an entry point that older builds never call, so herdr's state reports would be silently absent. |
+| 1.18.29 up to 2.0 | 1.x |
+| 2.0 and later | 2.x |
 
-[`orcr doctor`](/docs/cli#orcr-doctor) checks the version and refuses below the floor.
+it records the version in the agent's record, and the transcript reader branches on it. never
+branch on which tables exist: after a 2.x start, both sets are in one file.
 
 <Callout type="warn" title="a binary named opencode is not always OpenCode">
-during this design work the binary with that name was a redirect stub for an older fork, and
-every conclusion drawn from it was wrong. set `kind.opencode.binary` in the
-[configuration](/docs/configuration#binary) to point at a specific build.
+during this design work it was a redirect stub for an older fork, and every conclusion drawn from
+it was wrong. set `kind.opencode.binary` ([configuration](/docs/configuration#keys)).
 </Callout>
 
-### permissions
-
-`--yolo`, `--auto` and `--dangerously-skip-permissions` are three spellings of one boolean,
-combined into a single value. OpenCode has no setting between asking and not asking, so there is
-no safer intermediate mode to prefer here.
-
-### effort
-
-**effort cannot be set on the command line for an interactive session.** a third path segment on
-`-m` does not select a variant. it is appended to the model identifier and breaks the run. the
-`--variant` flag that does select one exists on the non-interactive `run` subcommand only, and
-is absent from the interactive option list.
-
-effort comes from configuration, passed inline so that nothing the person owns is modified:
+### the arguments
 
 ```sh
-OPENCODE_CONFIG_CONTENT={"agent":{"build":{"model":"<provider>/<model>","variant":"<effort>"}}}
+# 1.x
+OPENCODE_CLIENT=orcr OPENCODE_DISABLE_AUTOUPDATE=1 \
+OPENCODE_CONFIG_CONTENT=<config> OPENCODE_TUI_CONFIG=<dir>/tui.json \
+opencode --auto [-m <provider>/<model>]
+
+# 2.x
+ORCR_SESSION_ID=<session id> OPENCODE_CLIENT=orcr OPENCODE_DISABLE_AUTOUPDATE=1 \
+OPENCODE_CONFIG_CONTENT=<config> opencode --standalone --auto --session <session id>
 ```
 
-this is merged as the last configuration layer, so it overrides the person's own settings for
-this process and changes no file. confirmed in source: the loader calls `merge` for that layer
-rather than replacing.
+`<dir>` is the integration's version folder. both go into the shared
+[launch line](/docs/how-it-works#the-launch-line).
 
-`build` is the name of a mode. OpenCode calls its modes agents, and a mode is not a model. the
-`-m` flag never accepts one. orchestratr uses the word agent for a session it starts, so the two
-meanings collide in this kind only.
+| part | why |
+|---|---|
+| `--auto` | 1.x: bypasses permission asks. `--yolo` and `--dangerously-skip-permissions` are the same boolean. 2.x: the TUI auto-replies only for the session on screen. the real bypass on 2.x is the permission rules in `<config>`. |
+| `-m` | 1.x only. the 2.x TUI has no `-m`, `--port` or `--hostname`. the model goes in `<config>` on both. |
+| `--standalone` | 2.x only, and required. without it, the TUI joins the shared background service, which reads its own environment. the pane's `ORCR_*` and the plugin are ignored, and one plugin instance would serve every pane. a TUI of another version also replaces a running shared service. |
+| `--session` | 2.x only. creates the session with this id, or continues it. the id is minted by orchestratr, in OpenCode's own format: `ses_`, 12 hex digits of the bitwise not of `ms·4096+n`, then 14 base62 characters. |
+| `ORCR_SESSION_ID` | 2.x only. the plugin runs in a server child whose arguments do not carry `--session`. |
+| `OPENCODE_CLIENT=orcr` | 1.x: keeps the `question` tool unregistered (any value outside `app`, `cli` and `desktop` does). 2.x: only names the client. an empty value fails the OpenCode Zen free tier, measured on 2.x. |
+| `OPENCODE_DISABLE_AUTOUPDATE=1` | the 2.x TUI checks for updates every 10 minutes. 1.x reads the same variable. |
+| `OPENCODE_CONFIG_CONTENT` | merged as the last configuration layer. it changes no file. arrays concatenate, so the person's own plugins still load. |
+| `OPENCODE_TUI_CONFIG` | 1.x only. merged after the person's global TUI configuration. loads the TUI half. 2.x finds the TUI half from the `plugin` entry. |
 
-proven on the wire rather than on screen. with the key set, the outgoing request carries
-`"reasoning": {"effort": "high", "summary": "auto"}`. without it the field is absent. the
-database and the HTTP API both report the same resolved variant.
+<Callout type="warn" title="a malformed session id fails at the first model call">
+OpenCode accepts any `ses` prefix. OpenCode Zen rejects an id like `ses_orcrspikeb1` with
+"OpenCode's free tier can only be used from within OpenCode" (4 of 4).
+</Callout>
 
-three rules, each of which fails quietly if broken:
+### the inline configuration
 
-1. **`variant` needs `model`.** the variant applies only to the agent's configured model, so
-   both keys must be present together. with `variant` alone the API reports the variant while
-   the request goes out with no reasoning field at all. this is the trap: every observable
-   except the wire says it worked.
-2. **the model must publish variants.** a variant name that the model does not offer resolves
-   to nothing. [`orcr models`](/docs/cli#orcr-models) reports the set per model.
-3. **it is fixed for the life of the process.** the value is read at startup, and editing
-   configuration under a running agent changes nothing until restart. only
-   [`orcr agent new`](/docs/cli#orcr-agent-new) sets it.
+```json
+{"plugin": ["file://<dir>/opencode"],
+ "agent": {"build": {"model": "<provider>/<model>", "variant": "<effort>"}},
+ "permission": {"*": "allow", "question": "deny", "plan_enter": "deny", "plan_exit": "deny"},
+ "mcp": <the orcr server, below>}
+```
 
-a person using the in-session model picker outranks all of this. that explains an agent whose
-effort is not what orchestratr set.
+2.x migrates these 1.x keys (verified through `/api/agent`). `build` is an OpenCode mode, which
+OpenCode calls an agent. it is not an orchestratr agent.
 
-### the pinned port
+<Callout type="warn" title="the order of permission rules matters">
+rules resolve by last match, on both lines. `"*": "allow"` must be the first key of the block, and
+the denies follow it. the block lands after OpenCode's own defaults (such as `external_directory:
+ask`), so it wins over them. put `"*"` last and it re-enables `question`.
+</Callout>
 
-**orchestratr pins an HTTP port.** the interactive program serves its own API on that port.
-orchestratr uses it for readiness and for detecting a blocked agent. orchestratr chooses a free
-port and records it in the registry.
+**effort** has no TUI flag: a third segment on `-m` joins the model id and breaks the run. three
+rules, each failing quietly (measured on 1.x):
+
+1. **`variant` needs `model`.** alone, the API reports the variant and the request carries no
+   `reasoning` field. orchestratr refuses `--effort` without `--model`.
+2. **the model must publish the variant.** an unknown name resolves to nothing.
+   [`orcr models`](/docs/cli#orcr-models) lists them.
+3. **it is fixed for the life of the process.** a person who picks a model in the session outranks it.
 
 ## startup
 
-OpenCode shows no startup screen when at least one model provider resolves. a provider resolves
-from the generated configuration, from stored credentials, or from a recognized API key
-variable.
+- **1.x:** `Connect a provider`, when no provider resolves. removed by the model in `<config>`.
+- **2.x:** none blocks. Zen's free models give a default, so no provider shows only a label. the
+  first 2.x start over a database with 1.x sessions shows a migration overlay, which ends by itself.
 
-with no provider at all it opens a `Connect a provider` dialog at startup, regardless of how
-fresh the configuration is. orchestratr asserts a provider in the configuration it generates, and
-treats that dialog as a launch failure rather than something to answer.
-
-given a provider, there is nothing to suppress and nothing to answer.
-
-the full screen notice reported on a fork is fork behavior, not OpenCode behavior.
-
-### interactive tools
-
-two layers, and orchestratr uses both.
-
-```sh
-OPENCODE_CLIENT=orcr
-OPENCODE_PERMISSION={"question":"deny","plan_enter":"deny","plan_exit":"deny"}
-```
-
-the first keeps `question` out of the registered tool list. the gate is on the client name: any
-value outside `app`, `cli` and `desktop` works, and `orcr` is one such value.
+**interactive tools.** `question: "deny"` drops `question` from the tool list on both lines
+(verified on 2.x, where it is always registered). `plan_enter` and `plan_exit` exist on 1.x only.
+on 2.x, plan is a primary agent a person enters with Tab.
 
 <Callout type="warn" title="do not set OPENCODE_ENABLE_QUESTION_TOOL">
-it overrides the client name gate and puts the `question` tool back.
+on 1.x it overrides the client gate and puts `question` back. 2.x has no such variable, and no
+`OPENCODE_PERMISSION` either.
 </Callout>
 
-`plan_exit` is a real tool id, but it is registered only when an experimental plan mode is
-enabled and the client is `cli`. under orchestratr's client name it is absent already.
-`plan_enter` is not a tool at all, only a permission name, so denying it is harmless and removes
-nothing.
+**stall environment.** the shared one. the 2.x server child sees the pane's environment
+(verified with `HERDR_PANE_ID`), so its shell tool does too (inferred).
 
-the second layer denies them even if registration changes. the variable is merged after the
-configuration file, so it wins.
+## integration
 
-the configuration form works too:
-
-```json
-{"permission": {"*": "allow", "question": "deny",
-                "plan_enter": "deny", "plan_exit": "deny"}}
-```
-
-<Callout type="warn" title="the order of permission rules matters">
-rules are a flat list resolved by last match. `"*": "allow"` must come first. put it last and it
-re-enables everything that precedes it, which silently undoes the whole thing.
-</Callout>
-
-keys accept wildcards, so `"quest*": "deny"` works.
-
-the older `{"tools": {"question": false}}` form also works, and loses to any later `permission`
-block.
-
-there is no command line flag for this on any subcommand.
-
-## readiness
-
-send a nonce through the agent's own composer and wait for it to come back.
+a **plugin**: one folder, loaded through the `plugin` entry of `OPENCODE_CONFIG_CONTENT`.
 
 ```text
-POST /tui/append-prompt   with a nonce
-POST /tui/clear-prompt
+<dir>/opencode/
+  package.json   {"type": "module", "exports": {"./server": "./server.js", "./tui": "./tui.js"}}
+  server.js      export default {id: "orcr", server: <1.x>, setup: <2.x>}
+  tui.js         export default {id: "orcr.tui", tui: <1.x>, setup: <2.x>}
+<dir>/tui.json   {"plugin": ["file://<dir>/opencode"]}     1.x only
 ```
 
-repeat until the nonce appears in `$XDG_STATE_HOME/opencode/prompt-history.jsonl`.
+| | 1.x | 2.x |
+|---|---|---|
+| server half runs in | a worker thread inside the TUI process | the `serve --stdio` child of the TUI |
+| it finds the entry by | `exports["./server"]` and `exports["./tui"]` | file name: `server` and `tui` in the folder. a file path is rejected. |
+| it calls | the `server` key | `setup`. the extra `server` key is ignored. |
 
-three details make this work. getting any of them wrong breaks it silently.
+both lines loaded both halves from this folder (verified). the URL must be absolute: a relative
+one resolves against the working folder.
 
-1. **the nonce must be at least 20 characters.** that file is appended when the composer is
-   submitted, and when it is cleared while holding a draft of 20 or more trimmed characters.
-   orchestratr never submits, so the clear is what records the nonce, and a short nonce records
-   nothing.
-2. **the return values prove nothing.** both endpoints publish an internal event and return true
-   immediately, before the interface has processed anything. waiting for the nonce to come back
-   out is the proof, not the response.
-3. **these endpoints reach the interface even when a dialog is open**, and `clear-prompt` closes
-   that dialog. so the readiness check must run before orchestratr considers the agent usable,
-   and never as a health check on a live agent, or it can dismiss something a person was
-   answering.
+### registration
 
-for the same reasons, orchestratr does not use these endpoints to deliver a message.
+| | 1.x | 2.x |
+|---|---|---|
+| at | server half init. it creates the session and selects it in the TUI with `client.tui.publish({body: {type: "tui.session.select", properties: {sessionID}}})`. | `setup`: `ctx.session.get`, else `ctx.session.create({id, location})`. the TUI creates a session only at the first typed prompt. |
+| timing | not measured | 0.65 seconds after launch. the composer drew 1.0 seconds later. |
 
-this round trip is the only signal that is not optimistic. everything cheaper fires early:
+the plugin adds `session` (`{id, transcript: null}`), `integration` and `started_at`, and only
+if the record file still exists. it writes no `pid`: orchestratr takes that from herdr, and on 2.x
+the plugin runs in a child process anyway.
 
-| signal | how early |
-|---|---|
-| the backend's own readiness answer | 25.4 seconds |
-| log file appears | 15 seconds |
-| database file appears, port opens | 11 seconds |
-| lock directory appears | 10 seconds |
-| `/tui/*` returns HTTP 200 | still starting |
+the negative test: 2.x has no blocking startup screen, and the plugin registers about 1 second
+before the TUI draws (verified). messages go to the server, not the screen, so that is safe. on
+1.x, whether the record appears while `Connect a provider` is on screen is not verified. the TUI
+starts on home, and the TUI half moves it to the session: on 2.x with
+`api.ui.router.navigate({type: "session", sessionID})`.
 
-the HTTP server answers before the terminal interface can accept input, so a bare health check
-is not readiness. only the round trip through the composer proves the interface is live.
+### delivery
 
-the terminal title becomes correct about 0.63 seconds early and is a usable cheap fallback.
-orchestratr uses the round trip, because the port is already pinned for the blocked check and
-the round trip costs one more request.
+`<block>` is the [rendered message](/docs/messaging#what-the-model-sees): `<agent-message>`, or
+`<agent-watch>` for a message with `watch`. on 1.x the part carries `metadata: {orcr: <msgId>}`,
+which OpenCode persists. one call per message, in id order. before every call, the plugin checks
+that `<msgId>.json` still exists: `stop` deletes undelivered messages before it interrupts. from
+the moment it hands a message to an idle agent, the plugin treats the agent as busy, so a second
+message moments later steers into the starting turn.
 
-## delivery
+| mode | 1.x | 2.x |
+|---|---|---|
+| wake, steer | `client.session.promptAsync({path: {id}, body: {parts: [{type: "text", text: <block>, metadata}]}})`. on a busy session it joins the running loop, and the model sees it at the next step. | `ctx.session.synthetic({sessionID, id: "msg_" + msgId, text: <block>, description: "agent message from <name>", metadata, delivery: "steer"})` |
+| followUp | held by the plugin until `session.idle` for the session, then `promptAsync` | the same call with `delivery: "queue"`. one queued item per turn. |
+| immediate | `client.session.abort({path: {id}})`, which returns once idle, then `promptAsync` | at rest: a plain `synthetic` (`resume` true, the default). an interrupt on an idle session is a no-op, and `resume: false` would skip the wake. while working: `synthetic` with `resume: false`, then `ctx.session.interrupt({sessionID, resume: true})`, 170 ms end to end. |
+| empty immediate | at rest: nothing. working: `abort` | at rest: nothing. working: `interrupt({sessionID, resume})`, with `resume: true` when undelivered files other than empty immediates remain in the inbox, else `false`. after a `stop` none remain, so a stop always gets `false`. |
 
-the delivery record is in the SQLite database.
+the plugin knows working from its own hand-overs and `session.status` on 1.x, and from
+`session.execution.*` on 2.x. an empty immediate older than 10 seconds (by `sent_at`) when the
+plugin takes it is marked `.accepted` and `.delivered`, and ignored.
+
+a steer waits for the step: several tool calls in one step all finish first. a 2.x synthetic
+reaches the model as a user message, and the TUI shows one collapsed row with its `description`.
+
+| marker | 1.x | 2.x |
+|---|---|---|
+| `.accepted` | `promptAsync` returns 204. a held followUp: when the plugin takes it into its hold. | `synthetic` returns |
+| `.delivered` | `experimental.chat.messages.transform`, which runs with the full history before every model request: a user part with `metadata.orcr` | the `session.inbox.delivered` event from `ctx.event.subscribe()`. the bus id is `inboxID.slice(4)`. |
+| measured | 50 ms after `promptAsync` at rest, 70 ms after the tool returned when steering | 30 ms after enqueue at rest, 44 ms after the tool returned when steering |
+| empty immediate | at rest: both at once. working: `.accepted`, then `.delivered` when `abort` returns | at rest: both at once. working: `.accepted`, then `.delivered` at `session.execution.interrupted` |
+
+an empty immediate starts no turn of its own. after it, on 2.x, undelivered steers start the next
+turn. on 1.x they are already in the history, and reach the model with the next turn.
+
+**2.x reconciles**, because the event stream can drop events: at setup, and whenever the
+subscription reconnects. for each message without `.delivered` whose file exists, except an empty immediate: if
+`msg_<msgId>` is in `ctx.session.context`, or in `session_message`, write `.delivered`. otherwise
+admit it again with the same id. the first admission wins, so this is a no-op that wakes the
+session.
+
+### recovery after an interrupt
+
+- **2.x:** after an interrupted turn, the plugin admits again every message it had handed over
+  that has no `.delivered` and whose file still exists, never an empty immediate. nothing is lost. a pending steer stays a row in `session_inbox` until a delivery
+  transaction moves it (source). the re-hand is a `synthetic` with the same id: the first
+  admission wins, so it only wakes the session. a person's double Esc also resumes pending steers
+  (`interrupt({resume: true})`).
+- **1.x:** no re-hand. it would put the text in the history a second time. `promptAsync` persists
+  a message at acceptance, so an abort should not remove it. if 1.x does drop an accepted message
+  on abort, it is not sent again.
+
+### tools
+
+`orcr mcp`, as a local MCP server in the same inline configuration. the model sees `orcr_send`,
+`orcr_list` and so on: both lines name an MCP tool `<server>_<tool>`.
+
+```text
+1.x  "mcp": {"orcr": {"type": "local", "command": ["<orcr>", "mcp"]}}
+2.x  "mcp": {"servers": {"orcr": {"type": "local", "command": ["<orcr>", "mcp"], "codemode": false}}}
+```
+
+the server inherits the process environment, so it sees `ORCR_AGENT_ID` (source; an `environment`
+field also exists). on 2.x `codemode` defaults to true, and the 1.x form cannot set it. a code mode
+tool is reachable only inside `execute`: a plugin tool without it failed with "No tool named … is
+currently available" (measured).
+
+### traps
+
+- **2.x: stop must interrupt first.** a pane close or SIGTERM keeps the turn's execution claim
+  (`session_v2.time_suspended`), and the next shared service on that database resumes the turn
+  headless: measured, a model turn 60 seconds after the stop. a `user` interrupt releases it
+  (verified). `stop` deletes undelivered files first, so its empty `immediate` uses
+  `resume: false`. a steer already admitted stays parked in `session_inbox` and starts no turn
+  before the pane closes. `ctx.session` exposes no cancel.
+  a crash (SIGKILL) keeps the claim, and the plugin cannot help.
+- **2.x: two executors.** the sweep has no owner filter, so a person's own `opencode` opened on an
+  orcr session may run it a second time (inferred). use
+  [`orcr agent attach`](/docs/cli#orcr-agent-attach).
+- **the plugin loads more than once:** 1.x ran init twice in its first 3 seconds, and 2.x re-runs
+  `setup` 3 seconds after a plugin file changes. keep state on `globalThis`, close the previous
+  watcher, de-duplicate on the markers.
+- **1.x:** a throw in a watcher callback can kill the TUI's backend, which shares the worker. the
+  transform hook is `experimental`, and compaction calls it too: ignore the call after
+  `experimental.session.compacting`. subagent sessions fire `session.created` and `chat.message`:
+  track only sessions with no `parentID`.
+- **`--pure` turns off external plugins**, so the agent never registers. keep it out of
+  `kind.opencode.args`.
+
+## state
+
+from herdr. on 1.x herdr has no idle rule, so its idle is a default. its OpenCode plugin maps
+`session.error` to `blocked`, so an `immediate` can show `blocked` for a moment. on 2.x herdr's
+TUI plugin maps `permission.asked` and `form.created` to `blocked`, and `execution.interrupted` to
+`idle`. it also maps `execution.failed` to `blocked`, so a provider failure reads as blocked.
+
+## transcript
+
+no file. the record's `transcript` is null. the conversation is in SQLite, shared by both lines:
 
 ```text
 $XDG_DATA_HOME/opencode/opencode.db          release build
 $XDG_DATA_HOME/opencode/opencode-local.db    development build
 ```
 
-the file name carries the release channel. set `OPENCODE_DB` at launch to pin it, so
-orchestratr polls the file the agent writes.
-
-take the watermark as the current time in milliseconds. after submitting, poll every 200
-milliseconds, joining `part` to `message`:
-
-```text
-part.time_created >= <watermark>
-  and message.data ->> '$.role' = 'user'
-  and part.data   ->> '$.type' = 'text'
-  and part.data   ->> '$.text' matches the submitted text
-```
-
-| case | delay |
-|---|---|
-| from rest | 0.34 seconds |
-| mid turn | 0.38 seconds |
-| first message of a new agent | 0.43 seconds |
-
-timeout: 5 seconds.
-
-a message sent in the middle of a turn was readable 50.8 seconds before the running 60 second
-tool returned. OpenCode records a message when it accepts it, not when it acts on it.
-
-### reading the database safely
-
-the database uses write ahead logging. open it read only, with `mode=ro`.
+open it with `mode=ro`.
 
 <Callout type="warn" title="never open the database with immutable=1">
 `immutable=1` tells SQLite to ignore the write ahead log, and recent writes live there. one
 observed run had a 757 kilobyte main file and a 609 kilobyte log.
 </Callout>
 
-do not poll the `session_input` table. it is always empty.
-
-## state
-
-| question | source |
-|---|---|
-| is the agent working | the backend, from its own screen rules |
-| is the agent waiting for a person | `GET /permission` on the pinned port |
-
-blocked is available over HTTP only. the `permission` table stays empty both while a request is
-pending and after it is answered, and the event table carries only message and session events.
-
-the backend has no idle rule for this kind, so its idle answer is a default rather than an
-observation. orchestratr does not depend on it. readiness comes from the round trip and delivery
-comes from the database, and neither consults the backend's idle answer. see
-[state](/docs/readiness-and-delivery#state).
-
-## interrupt
-
-two escape key presses, with the second within 5 seconds of the first.
-
-one escape is ignored. a counter resets after 5 seconds, so two escapes further apart than that
-do nothing: 2 seconds apart interrupted in 0.45 seconds, 6 seconds apart did nothing.
-orchestratr sends them as one burst, which is the safe end of that window rather than a
-requirement.
-
-the escape is dropped entirely when the agent is idle, when a permission or auto overlay is
-visible, or when the composer does not have focus.
-
-an escape at rest does nothing here, but escape is also the dismiss key for the command palette,
-the model picker and the permission dialog, so orchestratr sends it only while the agent is
-working. see [`orcr agent interrupt`](/docs/cli#orcr-agent-interrupt).
-
-## transcript
-
-the conversation is in the same database as the delivery record. this kind writes no transcript
-file.
-
-[`orcr agent read`](/docs/cli#orcr-agent-read) selects the parts of one session, and joins `part`
-to `message` for the role.
+**1.x:** `part` joined to `message`, which alone has the role. `time_created` is acceptance, not delivery.
 
 ```sql
 select p.time_created, m.data ->> '$.role', p.data
-  from part p
-  join message m on m.id = p.message_id
- where p.session_id = <session id>
- order by p.time_created, p.id
+  from part p join message m on m.id = p.message_id
+ where p.session_id = ? order by p.time_created, p.id
 ```
 
-order by `time_created` and then by `id`. time alone is not enough: in one database, 1122 of
-6654 parts shared a millisecond with another part of the same session, and one millisecond held
-18 parts.
+- order by time, then id: 1122 of 6654 parts in one database shared a millisecond, and ids within
+  one end in a write-order counter. never by id alone: the prefix is not ordered across sessions.
+- part types: `text`, `reasoning`, `tool`, `step-start`, `step-finish`, `file`. read `text`, list
+  `tool`, skip the rest. `metadata.orcr` marks a bus message.
 
-the tie-break works because parts written in the same millisecond share an id prefix and end in a
-counter that increases in write order.
+**2.x:** `session_message`, by `seq`, which is unique per session. no tie-break.
 
-never order by `id` alone. the prefix is not ordered across sessions. in the same database, no
-row held the same position under id order and under time order.
+```sql
+select seq, type, time_created, data from session_message where session_id = ? order by seq
+```
 
-`part.data` carries the type: `text`, `reasoning`, `tool`, `step-start`, `step-finish` and
-`file`. only `message` carries the role.
+- read `user`, `synthetic` with `metadata.orcr`, and `assistant` (`text` and `tool` in
+  `content[]`).
+- skip `system`, `shell`, `skill`, `compaction`, the `*-switched` rows, and the other synthetics:
+  restart notices (`metadata.notice: "restart"`) and subagent results (`metadata.source:
+  "subagent"`).
+- an `idle` row (`outcome`: `succeeded`, `failed`, `interrupted`) ends a turn. last text is the
+  last `assistant` row before the last `idle`. a `user` or `synthetic` row's time is its delivery.
 
 ## session identity
 
-the backend never binds a session for this kind, so orchestratr finds it itself.
-
-take `part.session_id` from the row that confirms the first delivery. no session row exists
-before the first submission.
-
-the fallback is `session.directory`, matched against the resolved real path of the working
-directory. on macOS that is the `/private` form.
+- **2.x:** chosen at launch. the agent is that session. after a person's `/new`, the plugin keeps
+  delivering to it, and the TUI half navigates back.
+- **1.x:** the session the plugin created at init. after `/new`, the next root session becomes the
+  agent's, and the record is rewritten. the server half is never told which session the TUI shows,
+  so the TUI half polls `api.route.current` (250 ms) and passes it through a file: the halves share
+  no `globalThis`.
 
 ## model catalogue
 
-start `opencode serve` on a free port, read `GET /config/providers`, and stop the process.
+| line | probe |
+|---|---|
+| 1.x | `opencode serve` on a free port, `GET /config/providers`, stop |
+| 2.x | `OPENCODE_PASSWORD=<random> opencode serve --hostname 127.0.0.1 --port <free>`, then `GET /api/model?location[directory]=<cwd>` and `GET /api/model/default` with basic auth `opencode:<password>`, stop |
 
-this is the only kind whose catalogue needs a server, and the only source that carries the per
-model variants where effort lives. orchestratr stops the server before the command returns.
+efforts are the per-model variants (2.x: `variants[].id`), which only a server reports. a cold 2.x
+server answers `{"data": []}` (3 of 3): poll until it is not empty. plain `serve` is not the
+shared service, and runs no resume sweep. `opencode models` has no structured output on 1.x, and
+printed nothing cold on 2.x, twice.
 
-`opencode models --verbose` also lists variants and needs no server, but it has no structured
-output mode. its lines interleave with pretty printed blocks that a reader must brace match, and
-it omits the provider metadata and the default model map.
+## what is not used, and why
 
-variants are not in the model cache on disk. the cache format has no variant field. they are
-produced at runtime.
-
-## steering
-
-a message sent while the agent is working reaches the model at the next tool call. if the turn
-makes no further tool call, it runs as a separate turn afterwards, 53 milliseconds after the
-first one ends. OpenCode's screen calls this a queued message.
+- **a pinned port and the `/tui/*` endpoints.** 2.x has no `--port` on the TUI and no `/tui/*`
+  routes. on 1.x `/tui/clear-prompt` closes an open dialog.
+- **`GET /permission` and double Esc.** nothing asks, herdr reports blocked, and the plugin
+  interrupts from inside.
+- **`OPENCODE_PERMISSION`.** 2.x does not read it. the configuration form works on both lines.
+- **`OPENCODE_CONFIG_DIR`.** OpenCode runs `npm install` into it and writes a `.gitignore`.
+- **plugin tools.** they work (verified), but as two APIs. `orcr mcp` serves three kinds.
+- **a database per agent** (`OPENCODE_DB`). 2.x keeps credentials there (inferred), so the agent
+  would lose the person's sign-in.
 
 ## not verified
 
-- whether the HTTP event stream and the database agree on ordering under load.
-- whether the round trip readiness check is safe when a person is attached and typing.
+- the `mcp` entries above, live, on either line. they are read from source, including that 2.x
+  takes `codemode: false` from the native form only.
+- when 1.x registers relative to `Connect a provider`, and 2.x relative to the migration overlay.
+- a message delivered before the 1.x TUI has drawn: whether `tui.session.select` is missed, and
+  the TUI half must navigate.
+- whether an abort drops an accepted message on 1.x. if it does, that message is lost.
+- that `session.execution.interrupted` is the right moment for `.delivered` of an empty immediate
+  on 2.x. the interrupt call acknowledges before cleanup settles (source).
+- that `question: deny` beats the `plan` agent's own allow on 2.x. it does for `build`.
+- both lines' startup with the person's own plugins loaded.

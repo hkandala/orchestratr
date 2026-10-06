@@ -14,73 +14,71 @@ the file is optional. orchestratr works with no configuration at all.
 ## keys
 
 ```toml
-[orcr]
-socket = "~/.local/state/orcr/orcr.sock"
-
 [kind.claude]
-binary = "claude"
-home   = "~/.claude"
 model  = "sonnet"
 effort = "high"
-args   = []
 
 [kind.codex]
-binary = "codex"
-home   = "~/.codex"
+binary = "/opt/codex-dev/bin/codex"
 args   = ["--search"]
 
 [kind.pi]
-binary = "pi"
-home   = "~/.pi"
-
-[kind.opencode]
-binary = "opencode"
-home   = "~/.config/opencode"
+home   = "/tmp/pi-test"
 ```
 
 | key | default | purpose |
 |---|---|---|
-| `orcr.socket` | see below | where the server listens. |
-| `kind.<k>.binary` | the kind's own name | which program to run. use this to test a build. see [`binary`](#binary). |
-| `kind.<k>.home` | the kind's own default | the configuration directory orchestratr reads and writes for that kind. see [`home`](#home). |
+| `kind.<k>.binary` | the kind's own name, found on `PATH` | which program to run. orchestratr resolves it to an absolute path once, launches that path, and `orcr doctor` reports it. use it to test a build. |
+| `kind.<k>.home` | the kind's own default | the kind's configuration folder. orchestratr passes it to the agent as the kind's own variable (below), and reads the kind's files from there. |
 | `kind.<k>.model` | the kind's own default | used when `--model` is not given. |
 | `kind.<k>.effort` | the kind's own default | used when `--effort` is not given. |
-| `kind.<k>.args` | empty | extra arguments, appended after the arguments orchestratr builds. |
+| `kind.<k>.args` | empty | extra arguments, appended after the arguments orchestratr builds. for Codex they go on the app-server command, the only place thread settings take effect. |
 
-the default socket path is `$XDG_RUNTIME_DIR/orcr/orcr.sock`, or
-`~/.local/state/orcr/orcr.sock` when `XDG_RUNTIME_DIR` is not set.
+`home` maps to one variable per kind:
+
+| kind | variable |
+|---|---|
+| Claude Code | `CLAUDE_CONFIG_DIR` |
+| Codex | `CODEX_HOME` |
+| Pi | `PI_CODING_AGENT_DIR` |
+| OpenCode | none. OpenCode follows `XDG_CONFIG_HOME` and `XDG_DATA_HOME`, and orchestratr passes those through unchanged. |
+
+for Claude Code, `home` also moves `.claude.json`: with `CLAUDE_CONFIG_DIR` set, Claude Code keeps
+it inside that folder instead of in the home folder.
+
+when `home` is not set, orchestratr sets no variable, and the agent uses whatever the
+environment already says.
+
+<Callout type="warn" title="a fresh folder shows every startup screen">
+  a configuration folder that has never been used makes the kind show its first-run screens, and
+  some of them cannot be removed by a launch argument. point `home` at a folder you have already
+  used once. see [startup screens](/docs/how-it-works#startup-screens).
+
+  herdr installs its own integration into the kind's configuration folder. a `home` that herdr's
+  integration was not installed into leaves herdr unable to report the agent's state.
+</Callout>
 
 ## precedence
 
-a command line flag beats the configuration file, and the configuration file beats the kind's
-own default.
+a command line flag beats the file, and the file beats the kind's own default.
 
-`args` is the exception: it is always appended. it does not replace what orchestratr builds,
-because orchestratr must control the permission bypass argument and the startup arguments.
+`args` is the exception: it is always appended, never replacing what orchestratr builds.
+orchestratr must control the permission bypass, the startup settings and the integration's
+loading flags.
 
-## `binary`
+## what orchestratr writes
 
-this key exists because the name of a program does not always identify the program.
+orchestratr writes to its own folders only:
 
-[`orcr doctor`](/docs/cli#orcr-doctor) reports the resolved path and the reported version of
-each kind's binary.
+| path | holds |
+|---|---|
+| `~/.local/state/orcr/bus/` | agent records and inboxes. mode `0700`. see [the bus](/docs/messaging#the-bus). |
+| `~/.local/share/orcr/integrations/` | installed integrations. see [installing](/docs/integrations#installing). |
+| `~/.local/state/orcr/run/` | the socket, and each Codex agent's app-server socket. mode `0700`. |
 
-## `home`
-
-orchestratr reads each kind's configuration directory, and writes to only one of them: three
-keys in Claude Code's, for the folder trust record, the theme picker and the security notes
-screen. Codex, Pi and OpenCode carry their startup settings as launch arguments or inline
-configuration, so orchestratr writes nothing for them. see
-[startup screens](/docs/readiness-and-delivery#startup-screens) and
-[configuration writes](/docs/limitations#configuration-writes).
-
-point `home` at a directory under a temporary path to run agents with a configuration separate
-from the person's own.
-
-<Callout type="warn" title="a fresh directory shows every startup screen">
-  if the directory is fresh, some kinds show every startup screen, and orchestratr must then
-  suppress each screen, key by key.
-</Callout>
+the one exception is a person's Claude Code configuration. Claude Code has no launch argument for
+folder trust, so orchestratr writes that one key. see
+[writing a person's configuration](/docs/how-it-works#writing-a-persons-configuration).
 
 ## not configurable
 
@@ -88,21 +86,19 @@ these are deliberately fixed.
 
 | not configurable | why |
 |---|---|
-| permission bypass | orchestratr bypasses permissions on every agent it starts. a setting would create a mode that nothing else in orchestratr accounts for. |
+| permission bypass | orchestratr bypasses permissions on every agent it starts. a setting would create a mode nothing else accounts for. |
 | the backend | herdr is required. |
-| the backend session name | it is always `orcr`. a name that varies makes reconciliation ambiguous for no gain. |
-| delivery timeouts | they are derived from measurements per kind, recorded on the [agent pages](/docs/agents). a guessed value is worse than a measured one. |
-| polling intervals | same reason. |
-| the readiness signal per kind | it is a property of the agent, not a preference. |
+| the herdr session name | always `orcr`. a name that varies makes reconciliation ambiguous. |
+| the bus and socket locations | every integration and every client must find them without asking. |
+| delivery and watch timeouts | `--timeout` covers a single call. the defaults are measured, and a guessed default is worse. |
 | state names | a shared vocabulary that can be renamed is not shared. |
 
 ## environment
 
-orchestratr reads no environment variable for its own settings.
+orchestratr reads no environment variable for its own settings, apart from the standard
+`XDG_STATE_HOME` and `XDG_DATA_HOME` for its default paths.
 
-orchestratr removes known child session markers from the environment it passes to the herdr
-server. one of them silently disables transcript writing for a kind, and orchestratr confirms
-message delivery by reading transcripts. see [Claude Code environment](/docs/agents/claude#environment).
-
-orchestratr preserves every variable the herdr integrations require. removing them stops the
-integrations from reporting, which stops session binding.
+it sets these variables for every agent: `ORCR_AGENT_ID`, `ORCR_BUS`, the
+[stall environment](/docs/how-it-works#the-stall-environment), and the `home` variable above. it
+removes the session markers of every kind, so an agent started from inside another agent does not
+inherit them. see [the launch line](/docs/how-it-works#the-launch-line).

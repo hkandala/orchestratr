@@ -1,42 +1,116 @@
 ---
 title: "overview"
-description: "one interface for running and controlling coding agents"
+description: "one interface for running coding agents of four kinds, and letting them work as a team"
 ---
 
-orchestratr runs AI coding agents and controls them through one interface. it supports four
-kinds of agent: Claude Code, Codex, Pi and OpenCode.
+orchestratr starts AI coding agents, lets them message each other, and reports what they do. it
+supports four kinds of agent: Claude Code, Codex, Pi and OpenCode.
 
-each agent runs as an interactive terminal program in a pane that [herdr](https://herdr.dev)
-manages. orchestratr gives each agent an identity, tracks its state, and offers one set of
-commands that behaves the same way for all four kinds.
+every agent runs as an interactive terminal program in a pane that [herdr](https://herdr.dev)
+manages. orchestratr gives each agent an identity and an inbox, and offers one set of commands
+that behaves the same way for all four kinds.
 
 <Callout title="orchestratr and orcr">
-  orchestratr is the product. `orcr` is its command line tool, and the name it uses for its
-  own files, socket and herdr session. these documents say orchestratr when they mean the
-  product and `orcr` only in commands and literal names.
+  orchestratr is the product. `orcr` is its command line tool, and the name it uses for its own
+  files, socket and herdr session. these documents say orchestratr when they mean the product,
+  and `orcr` only in commands and literal names.
 </Callout>
+
+## the problem
+
+a coding agent usually runs alone: one terminal, one agent, one person watching it. real work
+needs more than one:
+
+- a reviewer per concern
+- a worker under a verifier
+- a lead that splits a task and hands the parts out
+
+that work often needs agents of different kinds, because each kind has different strengths and
+its own subscription quota. the agents then need to talk to each other: hand over work, ask a
+question, reply to a specific message, and wake each other up when something is done.
+
+## what orchestratr provides
+
+| capability | what it means |
+|---|---|
+| identity | every agent gets a unique name and an id, which last until it is stopped. |
+| placement | agents run in herdr panes. agents that share a working directory share a workspace. |
+| lifecycle | start an agent, message it, interrupt it, attach to it, stop it. |
+| messaging | any agent, person or program can message any agent, of any kind. a message has an id, and a reply names the message it answers. |
+| state | one state vocabulary for all four kinds. |
+| transcripts | read the conversation of any agent in one format. |
+| catalogue | list the models and effort values each kind accepts. |
+
+## how it works, in one paragraph
+
+orchestratr launches each agent with a small **integration**: a plugin that runs inside the agent,
+written in that kind's own extension system. every agent has an **inbox**, a folder of message
+files. the integration watches it, puts each new message into its own session as if it had
+arrived from the agent's own queue, and writes a marker when the model has seen it. the model
+gets tools to message other agents. nothing is ever typed into a terminal. see
+[messaging](/docs/messaging) and [integrations](/docs/integrations).
+
+## why interactive sessions
+
+every kind can also run without a terminal. orchestratr does not use that mode, because
+interactive sessions keep three properties that matter at this scale.
+
+1. **price.** an interactive session bills against a flat subscription plan. a non-interactive
+   call bills per token. across many agents, this difference sets the total cost.
+2. **control.** a person can watch an interactive session, correct it mid turn, and take over the
+   terminal when it goes wrong.
+3. **one surface.** each kind has a different non-interactive mode, with different flags and
+   different output. the interactive session, plus its extension system, is what all four share.
+
+## scope
+
+- orchestratr controls only the agents it starts. see [future work](/docs/future#peoples-own-sessions-on-the-bus).
+- orchestratr starts every agent with permission prompts turned off. an agent it starts can run
+  any command in its working directory without asking. see
+  [future work](/docs/future#permissions) for what would replace this.
+- herdr is the terminal backend, and orchestratr requires it. it also requires the herdr
+  integration for each kind, because herdr reports agent state through it.
+- orchestratr drives a kind only when its orcr integration is installed. see
+  [integrations](/docs/integrations).
+
+## design rules
+
+these rules settle design arguments. read them before proposing a change.
+
+1. **one behavior for all kinds.** where the kinds differ, orchestratr hides the difference or
+   states it. it does not grow a separate code path for each kind.
+2. **per-kind knowledge lives in the integration and the kind table.** the core names no kind.
+3. **use what exists.** if herdr or the agent's own extension system answers a question,
+   orchestratr asks it. it does not rebuild it.
+4. **never type into an agent.** messages go through the integration, never through the
+   terminal. the terminal belongs to the person.
+5. **fail closed.** when orchestratr cannot confirm that an action is safe, it refuses and says
+   why.
+6. **the socket API comes first.** the command line tool is one client of it. a feature the API
+   cannot express is a bug in the API.
+7. **say what is not known.** an honest gap is more useful than a confident guess. each page
+   lists what was not verified, and those lists are part of the specification.
 
 ## read in this order
 
 <Cards>
-  <Card title="purpose" href="/docs/purpose">
-    what orchestratr is for, why it drives interactive sessions, and the rules that settle
-    design arguments
+  <Card title="messaging" href="/docs/messaging">
+    the inbox, message files, delivery modes, replies and watches
+  </Card>
+  <Card title="integrations" href="/docs/integrations">
+    the plugin each kind runs, how to install it, and how to add a new kind
   </Card>
   <Card title="CLI" href="/docs/cli">
     every `orcr` command, its flags, output and exit codes
   </Card>
   <Card title="socket API" href="/docs/socket-api">
-    the wire protocol every command is built on
+    the protocol every client is built on
   </Card>
   <Card title="configuration" href="/docs/configuration">
     `config.toml`, and what is deliberately fixed
   </Card>
-  <Card title="readiness, delivery, and state" href="/docs/readiness-and-delivery">
-    how orchestratr knows an agent is ready, that a message landed, and where state comes from
-  </Card>
-  <Card title="implementation" href="/docs/implementation">
-    layers, the kind adapter, and the shared procedures
+  <Card title="how it works" href="/docs/how-it-works">
+    the server, launching, readiness, state, transcripts and the shared procedures
   </Card>
   <Card title="agent kinds" href="/docs/agents">
     everything specific to Claude Code, Codex, Pi and OpenCode
@@ -49,31 +123,24 @@ commands that behaves the same way for all four kinds.
   </Card>
 </Cards>
 
-the [CLI](/docs/cli), the [socket API](/docs/socket-api), and
-[readiness, delivery, and state](/docs/readiness-and-delivery) are the contract. the
-[agent pages](/docs/agents) hold everything specific to one kind, and nothing in them changes
-the contract.
-
-work that orchestratr does not do is collected under [future work](/docs/future).
-
 ## terms
 
 | term | meaning |
 |---|---|
-| kind | one of the four agent programs: `claude`, `codex`, `pi` or `opencode`. |
+| kind | one of the agent programs: `claude`, `codex`, `pi` or `opencode`. |
 | agent | one running session of a kind, started by orchestratr. |
-| backend | herdr, the terminal backend that hosts every agent in a pane. |
-| integration | the herdr integration for a kind. it reports to herdr, and herdr binds the agent's session from those reports. |
-| composer | the agent's input box, where a message is typed before it is submitted. |
-| turn | the work an agent does in response to a message. a message sent while a turn runs is sent mid turn. |
-| delivery record | the entry an agent writes for a message it received. orchestratr reads it to confirm delivery. |
-| readiness signal | a per-kind signal that appears only after every startup screen is cleared. |
+| backend | herdr, which hosts every agent in a pane and reports its state. |
+| herdr integration | herdr's own plugin for a kind. it reports state to herdr. |
+| orcr integration | orchestratr's plugin for a kind. it delivers messages and gives the model its tools. "integration" alone means this one. |
+| bus | the folder of agent records and inboxes that every integration reads and writes. |
+| inbox | one agent's folder of message files. |
+| delivery mode | when a message reaches the model: `steer`, `followUp` or `immediate`. |
+| turn | the work an agent does in response to a message. |
+| watch | the server following an agent on a sender's behalf, until it replies or stops working. |
 
 ## measurements
 
-every latency, path and key in these documents comes from a live run on macOS against Claude
-Code 2.1.276, Codex 0.154.0, Pi 0.85.1, and OpenCode 1.18.31 built from source. the run drove
-all four through herdr 0.9.1 at protocol 22.
-
-where something was not tested, the page says so in a section named "not verified". those
-sections are part of the specification. do not implement around them silently.
+the latencies, paths and keys in these documents come from live runs on macOS. the first round
+drove Claude Code 2.1.276, Codex 0.154.0, Pi 0.85.1 and OpenCode 1.18.31 through herdr 0.9.1.
+the integration round ran Claude Code 2.1.289, Codex 0.159.3, Pi 1.0.0, and OpenCode 1.18.34 and
+2.0.24, through herdr 0.9.3. each agent page names the version behind each claim.

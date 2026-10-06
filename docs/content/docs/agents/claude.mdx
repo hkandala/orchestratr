@@ -1,280 +1,315 @@
 ---
 title: "Claude Code"
-description: "how orchestratr launches, drives and reads Claude Code"
+description: "how orchestratr launches Claude Code, delivers messages through its mod, and reads it"
 ---
 
-**kind value:** `--kind claude`
+**kind value:** `--kind claude`. versions: 2.1.287 and later, because mods arrived in 2.1.287.
+the integration was measured on 2.1.289. older measurements name their version.
 
 ## launch
 
 ```sh
-claude --dangerously-skip-permissions [--model <model>] [--effort <effort>]
+exec env -u CLAUDECODE -u CLAUDE_PID -u CLAUDE_EFFORT -u CLAUDE_CODE_SESSION_ID \
+    -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH \
+    -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN <other kinds' markers> \
+  ORCR_AGENT_ID=<id> ORCR_BUS=<bus> [CLAUDE_CONFIG_DIR=<home>] <stall environment> \
+  /abs/claude --dangerously-skip-permissions \
+    --session-id <id> \
+    [--model <model>] [--effort <effort>] \
+    --settings '{"skipDangerousModePermissionPrompt":true,"permissions":{"deny":["AskUserQuestion","ExitPlanMode","EnterPlanMode","Workflow"]}}' \
+    --mcp-config '{"mcpServers":{"orcr":{"command":"/abs/orcr","args":["mcp"],"env":{"ORCR_AGENT_ID":"<id>"}}}}' \
+    --plugin-dir <version folder>/claude-mod \
+    <config args>
 ```
 
-`--effort` accepts the values that [`orcr models`](/docs/cli#orcr-models) reports for the chosen
-model. one model reports no effort values at all. pass no effort for that model.
-
-### environment
-
-orchestratr removes every `CLAUDE_CODE_*` variable from the environment it gives the agent.
-
-an inherited `CLAUDE_CODE_CHILD_SESSION` disables **session persistence** for an interactive
-session, not only the transcript. it removes:
-
-- the transcript file
-- the prompt history
-- the status file at `sessions/<pid>.json`
-- the ability to resume
-
-the status file is orchestratr's readiness signal and its state source for this kind, so losing
-it disables readiness, state and delivery confirmation together.
-
-this happens whenever the herdr server was started from inside another Claude Code session. that is
-the normal case when orchestratr itself is run by an agent. `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE`
-overrides it, and the condition applies only to interactive sessions, but orchestratr scrubs the
-variable rather than relying on either. see also
-[configuration: environment](/docs/configuration#environment).
+| part | why |
+|---|---|
+| `env -u …` | the [session markers](/docs/how-it-works#session-markers). an inherited `CLAUDE_CODE_CHILD_SESSION` turns off session persistence for an interactive session: no transcript, no prompt history, no resume (2.1.276). an inherited `CLAUDE_EFFORT` silently overrides effort when `--effort` is absent. the list is exact. a `CLAUDE_CODE_*` prefix would also remove `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` and the OAuth token. |
+| `ORCR_AGENT_ID`, `ORCR_BUS` | the mod reads them with `$.env.get`. without them it does nothing. |
+| `CLAUDE_CONFIG_DIR` | only when `home` is set. it moves `.claude.json`, `settings.json`, `projects/` and `sessions/`. |
+| `--dangerously-skip-permissions` | permission bypass. Claude Code refuses it as root. |
+| `--session-id <id>` | the agent id doubles as the session id, so the transcript name is known at launch. it must be a valid UUID. |
+| `--model`, `--effort` | passed through. `--effort` takes the values [`orcr models`](/docs/cli#orcr-models) reports for the model. a model that reports none gets no `--effort`. |
+| `--settings` | inline JSON, no file. removes the bypass warning, and denies the four tools that wait for a person. |
+| `--mcp-config` | the [tools](/docs/integrations#tools), from `orcr mcp`. `ORCR_AGENT_ID` sets `from`. the flag is variadic, so it never comes last. |
+| `--plugin-dir` | loads the mod for this session only. |
+| `<config args>` | `kind.claude.args`, always last. |
 
 ## startup
 
-Claude Code shows up to four screens before it accepts input. permission bypass removes none of them.
+Claude Code shows up to four screens before it takes input. permission bypass removes none.
 
-| screen | removed by |
-|---|---|
-| theme picker | `hasCompletedOnboarding` |
-| security notes | `lastOnboardingVersion` |
-| folder trust | `hasTrustDialogAccepted` for that directory |
-| bypass permissions warning | `skipDangerousModePermissionPrompt` in settings |
+| screen | key | how orchestratr removes it |
+|---|---|---|
+| theme picker | `hasCompletedOnboarding` | precondition. absent: `agent new` fails with "run `claude` once". |
+| security notes | `lastOnboardingVersion` | the same precondition. |
+| folder trust | `projects["<real path>"].hasTrustDialogAccepted` | the one key orchestratr writes. |
+| bypass warning | `skipDangerousModePermissionPrompt` | `--settings`. no file. |
 
-orchestratr sets all four. three are keys it writes to `~/.claude.json`. the fourth is a setting
-it passes in the launch arguments. the general approach is in
-[startup screens](/docs/readiness-and-delivery#startup-screens).
+- **the two onboarding keys are separate** (2.1.276). `hasCompletedOnboarding` alone removes only
+  the theme picker, and the security notes then wait on `Press Enter to continue`. any value of
+  `lastOnboardingVersion` works. anyone who has run Claude Code once has both.
+- **the trust key** follows [writing a person's
+  configuration](/docs/how-it-works#writing-a-persons-configuration). the file is `.claude.json`
+  in the configuration folder: `~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json` when `home`
+  is set. the lock is that path plus `.lock`. the key is the resolved real path: on macOS `/tmp/x`
+  is `/private/tmp/x`, and any other form was silently ignored (2.1.276).
+- **trust is inherited from a parent folder** on 2.1.285, up to the git root or `/` (binary
+  strings). orchestratr checks the ancestors first.
 
-the first two are separate keys, and both are needed. `hasCompletedOnboarding` alone suppresses
-only the theme picker. the security notes screen then blocks on `Press Enter to continue`, and
-nothing in an orchestratr agent will answer it. pressing enter there writes exactly one key:
-`lastOnboardingVersion`.
-
-the value of `lastOnboardingVersion` does not have to match the running version. a stale value
-works, so a constant is safe.
-
-for anyone who has already run Claude Code, the first two keys are usually present and orchestratr
-changes nothing. the trust key is per directory, so every new working directory needs it.
-
-### the bypass warning
-
-orchestratr passes the setting in the launch arguments. it writes no file.
-
-```sh
---settings '{"skipDangerousModePermissionPrompt": true}'
-```
-
-the binary's own schema describes this key as whether the user has accepted the bypass
-permissions mode dialog.
-
-<Callout type="warn" title="do not use bypassPermissionsModeAccepted">
-the older `bypassPermissionsModeAccepted` key is a one time migration into the key above, gated
-on a migration version. it does nothing on a configuration whose migration has already run.
-setting it globally and per project, five times, did not suppress the dialog.
+<Callout type="warn" title="two keys that look right and are not">
+`bypassPermissionsModeAccepted` is a one-time migration: set five ways, it did not remove the
+dialog. `permissions.defaultMode: "bypassPermissions"` does not replace the flag: a managed
+settings file silently outranked it, measured.
 </Callout>
 
-### interactive tools
+**interactive tools.** a model under bypass can still call `AskUserQuestion`, which opens a dialog
+and waits forever (2.1.276). with the four denied, the same request was answered in prose. that
+was measured with `--disallowedTools`. the settings deny list is the same mechanism without a
+second variadic flag. `askUserQuestionTimeout` and `dialogExpiry` only bound the wait.
 
-```sh
---disallowedTools AskUserQuestion,ExitPlanMode,EnterPlanMode,Workflow
-```
+**stall environment.** the shared one. nothing specific to Claude Code.
 
-verified live: with these disabled, a request that normally opens a question dialog is answered
-in prose instead, and the turn completes.
+## integration
 
-the flag is variadic. it must come last, or it swallows anything that follows. orchestratr never
-passes a positional prompt, so this is a constraint on argument order rather than a hazard.
+### mechanism
 
-the deny list can also be written in settings. it is the same mechanism:
+a **mod**: a plugin named `orcr` whose `hooks/hooks.json` is `{"modules": ["./register.js"]}`.
+the module exports `register(on)` and runs in a worker inside the Claude Code process for the
+session's life. it has no Node APIs, only `$`: `$.fs`, `$.process`, `$.clock`, `$.env`,
+`$.session`, `$.prompt.submit`, `$.turn.abort`. hooks are middleware:
+`on(event, [matcher], async ($, e, next) => …)`. each load writes exact `.d.ts` types for the
+running build into the plugin folder; they are the API reference. the spike ran as `orcr-herd`
+and `orcr-ro`. the quoted lines below say `orcr`.
 
-```json
-{"permissions": {"deny": ["AskUserQuestion", "ExitPlanMode", "EnterPlanMode", "Workflow"]}}
-```
+### loading
 
-<Callout type="warn" title="permissions.defaultMode is not equivalent to the launch flag">
-do not write `permissions.defaultMode: "bypassPermissions"` and expect it to replace
-`--dangerously-skip-permissions`. that key is honored only from the highest priority settings
-source present. a managed or policy settings file that sets `defaultMode` silently outranks it,
-and several hosts ignore it outright. tested on a machine with a managed settings file: the agent
-did not enter bypass, and the footer showed a different mode.
+`--plugin-dir <version folder>/claude-mod`, from the read-only
+[version folder](/docs/integrations#installing). verified from a `chmod -R a-w` folder: the mod
+loaded and ran, and the only effect was the debug line `type root of <plugin> not laid: EACCES`.
+Claude Code watches the folder and reloads the mod on change, which is why the folder never
+changes. Claude Code itself records `pluginUsage["orcr@inline"]` in `.claude.json`.
 
-orchestratr passes the flag. a setting that can be outranked without saying so guarantees
-nothing.
-</Callout>
+mods are switched off by: `--bare`, `--safe-mode`, `disableAllHooks`, `disableSideloadFlags`,
+managed `allowManagedHooksOnly` or `allowManagedModsOnly`, and Anthropic's remote flag
+(`tengu_plugin_hooks_modules`). `disableSideloadFlags` rejects `--plugin-dir` itself. the
+[checks](/docs/integrations#checks) catch what can be read. the remote flag cannot be read, so
+the start timeout is the final proof.
 
-other settings look relevant and are not used:
+### registration
 
-- `askUserQuestionTimeout` accepts `60s`, `5m`, `10m` or `never`, and defaults to `never`. it
-  bounds the stall rather than removing it, so orchestratr removes the tool instead.
-- `dialogExpiry` and `CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS`. their own description says local
-  prompts with no remote client are unaffected, which is every dialog orchestratr will ever see.
+in `session.start`:
 
-### the three written keys
+1. read `ORCR_AGENT_ID` and `ORCR_BUS` with `$.env.get`. the name must be a string literal: the
+   validator lists env reads statically.
+2. read `agents/<id>.json`, and add `session` (`{"id": await $.session.id(), "transcript":
+   null}`), `integration` (the version folder name, such as `4-1a2b3c4d`) and `started_at`.
+   orchestratr recorded `pid` itself at launch.
+3. if the record file still exists, write a temporary file with `$.fs.write`, then rename it with
+   `$.process.run(['mv', …])`. `$.fs.write` is not atomic. the same rule applies to every
+   later rewrite.
+4. start the inbox poll.
 
-Claude Code is the only kind for which orchestratr writes to a configuration file.
+`transcript` is null: the file does not exist yet, and the reader finds it by glob.
 
-```text
-~/.claude.json
-  projects["<resolved real path of the working directory>"].hasTrustDialogAccepted = true
-  hasCompletedOnboarding = true
-  lastOnboardingVersion  = "<any non-empty string>"
-```
+**the negative test.** no mod loads before workspace trust is accepted. measured on 2.1.289 with
+the trust dialog on screen: `hooks modules not loaded until workspace trust is accepted`. so the
+record cannot appear behind the trust dialog. for the other three screens, see
+[not verified](#not-verified). orchestratr removes all four before launch either way.
 
-orchestratr writes each key only when it is absent, and writes the trust key only for the
-working directory of the agent. it writes a temporary file and renames it, so a concurrent Claude Code
-cannot lose the update. the result is the same state that answering the dialogs once produces.
-the write rules are in
-[writing a person's configuration](/docs/implementation#writing-a-persons-configuration).
+### taking messages
 
-<Callout type="warn" title="the trust path must be the resolved real path">
-on macOS, `/tmp/x` must be written as `/private/tmp/x`. any other form of the path is silently
-ignored. there is no inheritance from a parent directory.
-</Callout>
+`$.fs` has no watch, so the mod polls with `$.clock.every(250, scan)`. it runs at rest and mid
+turn, starts no turn, and was measured as fine. the mod sets `busy` when it calls
+`$.prompt.submit`, not at `turn.start`, so a second message moments later is a steer into the
+starting turn, not a second turn. it takes `turnId` from main-loop `turn.start`, and clears
+`busy` at main-loop `turn.complete`. an `immediate` that arrives before `turn.start` waits for
+it, then aborts.
 
-no flag and no environment variable clears the folder trust dialog. Claude Code itself prints the
-instruction to set this key.
+one message per hand-over call, in id order. before every hand-over, including a held steer, the
+mod checks that `<msgId>.json` still exists. [`orcr agent stop`](/docs/cli#orcr-agent-stop)
+deletes undelivered messages before it interrupts, so this check keeps a stop from starting a
+turn.
 
-when orchestratr cannot write a key, [`orcr agent new`](/docs/cli#orcr-agent-new) fails before
-the agent starts. it does not start an agent that will stop on a dialog whose default answer is
-to exit.
+| mode | at rest | working |
+|---|---|---|
+| `steer` | `void $.prompt.submit({text})` starts a turn at once | kept in the mod's steer list. a catch-all `tool.call` hook returns `{...r, context: [...(r.context ?? []), ...texts]}` on the next main-loop tool result, one entry per message. steers left at `turn.complete` are submitted, one call each. |
+| `followUp` | as `steer` | `void $.prompt.submit({text})`. a plugin's prompt waits for idle, and is not absorbed mid turn. |
+| `immediate` | as `steer` | `await $.turn.abort({turnId})`, then submit. the aborted `turn.complete` submits the older held steers first, so id order holds (seen in the spike). |
+| empty `immediate` | write `.accepted` and `.delivered` at once. nothing else. | write `.accepted`, `$.turn.abort({turnId})`, and write `.delivered` at the aborted `turn.complete`. |
 
-## readiness
+an empty `immediate` never starts a turn. one older than 10 seconds by `sent_at` when the mod
+takes it is marked `.accepted` and `.delivered` and ignored, so a stale interrupt never aborts a
+later turn. after [`orcr agent interrupt`](/docs/cli#orcr-agent-interrupt), held steers start
+the next turn.
 
-```text
-$CLAUDE_CONFIG_DIR/sessions/<pid>.json    exists, and its "status" field is "idle"
-```
+measured on 2.1.289: a wake took 1.3 seconds from file to turn start. a steer sent during
+`sleep 8` was attached when that call returned, and acted on. a follow-up turn started 0.97
+seconds after the running turn ended. an immediate ended the turn 18 milliseconds after the
+message was seen, and its turn started 1.05 seconds later. most of each second was the person's
+own `UserPromptSubmit` settings hooks, 12 of them on that machine, which run on every submit.
 
-Claude Code writes this file only after every startup screen is cleared.
+**what the model sees.** a submit is recorded as a `user` record with
+`"origin": {"kind": "plugin", "name": "orcr"}`, framed by Claude Code: "The orcr plugin sent a
+message: … Address the message above." the screen shows `› Prompt from the orcr plugin`. a steer
+is read as `<system-reminder>tool.call hook additional context: …</system-reminder>`. the reply
+hint names `mcp__orcr__send`. a message with a `watch` field, a watch ending from `orcr`, is
+rendered as `<agent-watch agent="<name>" agent-id="<id>" event="…" worked="3m12s"
+reply-to="<msgId>">` with `<last-text>` and `<screen>` children instead. the block always starts
+with `<agent-`, so a message text that begins with `/` or `!` is never run as a command.
 
-| signal | when it appears |
-|---|---|
-| `sessions/<pid>.<hash>.key` | about 70 seconds too early. present while a dialog is up. |
-| `cc-socks/<pid>.sock` | about 70 seconds too early. present while a dialog is up. |
-| `sessions/<pid>.json` | 0.35 seconds after the last dialog is cleared. |
-| session start hook | about 1 second after the status file. |
-| transcript file | not until the first turn. |
+### markers
 
-the negative test is what makes the status file trustworthy (see
-[readiness](/docs/readiness-and-delivery#readiness)). during a 71 second run with the bypass
-dialog on screen, the key file and the socket both existed and the status file did not.
+- **`.accepted`** when the mod calls `$.prompt.submit`, or adds the message to its steer list.
+  submit does not return until the turn starts.
+- **`.delivered`**
+  - submit: when the promise resolves without `drop`. it resolved within 9 milliseconds of
+    `turn.start`, and at the same millisecond in most runs. `{drop: reason}` means one of the
+    person's hooks refused it. the mod logs the reason and does not retry, so the hook cannot
+    loop it. the message stays `.accepted` and undelivered.
+  - steer: in the `tool.call` hook, as it returns the result that carries the `context`. the model
+    reads it in the very next request.
 
-a message sent 0.69 seconds after the status file appeared was accepted and answered.
+never `await` a submit inside a hook while working: it hangs until idle (docs). use `void`, and
+write the marker in `.then`.
 
-Claude Code opens no TCP port.
+### tools
 
-## delivery
+the tools come from `orcr mcp`, through `--mcp-config`. the model sees them as `mcp__orcr__send`,
+`mcp__orcr__list`, `mcp__orcr__read`, `mcp__orcr__start` and `mcp__orcr__stop`. the mod registers
+no tools.
 
-before submitting, note the transcript line count as a watermark. treat a missing file as zero.
-after submitting, poll the transcript every 200 milliseconds and accept either record:
+### recovery after an interrupt
 
-| case | record |
-|---|---|
-| agent at rest | `type` is `user`, and the message content holds the submitted text |
-| agent working | `type` is `queue-operation`, `operation` is `enqueue`, and `content` equals the submitted text |
+- **held steers** wait in the mod's memory, not in Claude Code's queue, so an abort cannot drop
+  them. they are submitted at the next `turn.complete`, aborted or not, if their file still
+  exists.
+- **submitted follow-ups** are not handed over again. Claude Code is not a re-hand kind. whether
+  an abort can drop a pending plugin prompt is [not verified](#not-verified).
+- **empty `immediate` messages** are never handed over again.
 
-a message sent while the agent is working always produces the `queue-operation` record first.
-what happens next depends on the turn:
+### traps
 
-- if the turn absorbs it, a second `queue-operation` follows with operation `remove` and reason
-  `absorbed_mid_turn`, plus an attachment row of type `queued_command`.
-- if the turn ends first, the message is then delivered as an ordinary `user` record.
-
-so a mid turn message can produce both records, and a check that matches only `user` records
-misses the first case entirely. orchestratr matches either and accepts the earliest. anything
-that counts messages must treat the pair as one message, not two.
-
-| case | delay |
-|---|---|
-| from rest | 0.59 to 2.51 seconds |
-| mid turn | 0.51 to 0.59 seconds |
-
-timeout: 10 seconds. the worst measured case was 3.07 seconds.
-
-the timestamp inside the record is earlier than the moment the record can be read. compare
-positions in the file, not times inside it. the shared method is in
-[delivery](/docs/readiness-and-delivery#delivery).
+- **subagents fire `tool.call`, `turn.start` and `turn.complete` with `e.agentId` set** (types).
+  ignore them, or a steer lands in a subagent's tool result and `busy` goes wrong.
+- **`/clear` does not fire `session.start` again.** see [session identity](#session-identity).
+- **`$.turn.abort` leaves a running Bash call as a background shell.** measured: an aborted
+  `sleep 20` produced a `<task-notification>` turn 19 seconds later.
+- **a hot reload re-runs `register`**, and memory is lost. de-duplicate on `.delivered`. the
+  read-only folder means a reload never comes from orchestratr.
+- **limits.** 10 seconds of a hook's own CPU time. `session.end` hooks share 1.5 seconds. a
+  throwing hook is skipped; a throwing timer callback runs again next period.
+- **a submit runs under a modal dialog.** with a held-peer-message dialog on screen, a submitted
+  turn ran and answered. this is why startup screens are removed, not detected.
+- **the API changes weekly.** 2.1.290 added fields to `turn.step` and `tool.check`. pin the minimum
+  version, and run `claude plugin validate --strict` on the mod against the newest build.
 
 ## state
 
-the status file is a live state machine, and orchestratr reads its state from there.
-
-| file value | orchestratr state |
-|---|---|
-| `idle` | `idle` |
-| `busy` | `working` |
-| `waiting`, with `waitingFor` | `blocked` |
-
-measured latency from submitting a message to `busy`: 0.37 seconds.
-
-the backend also reports `blocked` correctly for these dialogs, and it is the default source (see
-[state](/docs/readiness-and-delivery#state)). the status file adds one thing the backend does not
-give: the reason. `waitingFor` reads `permission prompt` for a permission dialog and
-`input needed` for a question the model asked. orchestratr reports that reason, because the two
-need different responses from a person.
-
-when a question dialog opened, the status file showed `waiting` 6.7 seconds before the
-notification hook fired.
-
-Claude Code stops and asks even with permissions bypassed. bypass removes the permission prompt. it
-does not remove the model's own question tool, which opens a dialog and waits indefinitely. this
-was reproduced under bypass. a blocked Claude Code agent is normal, and orchestratr cannot clear it.
-
-## interrupt
-
-one escape key press.
-
-two escapes at rest open the rewind view, which offers to restore code and conversation to an
-earlier point. orchestratr sends an interrupt only while the agent is working, which keeps it
-away from that view. see [`orcr agent interrupt`](/docs/cli#orcr-agent-interrupt).
+from herdr's Claude Code integration. herdr finds the configuration folder from
+`CLAUDE_CONFIG_DIR`, then `~/.claude`, so its integration must be installed for the folder `home`
+names. herdr sees Claude Code's dialogs, so the mod reports no `blocked`. with bypass and the
+question tools denied, a blocked agent is rare, and orchestratr cannot clear one.
 
 ## transcript
 
 ```text
-$CLAUDE_CONFIG_DIR/projects/<resolved cwd, every / replaced by ->/<session uuid>.jsonl
+$CLAUDE_CONFIG_DIR/projects/*/<session id>.jsonl      (~/.claude/projects/… by default)
 ```
 
-the root is the configuration directory, not the home directory, so it moves with
-`CLAUDE_CONFIG_DIR`. the directory name is the resolved real working directory with every slash
-replaced by a hyphen, including the leading one: `/private/tmp/work` becomes
-`-private-tmp-work`. the file name is the session uuid, which is the same value the status file
-reports.
+- **find it by glob.** the folder name is the working directory with every character that is not a
+  letter or a digit replaced by `-`: `/private/var/folders/_4/…` becomes
+  `-private-var-folders--4-…`. long names are truncated and hashed. never compute it, and never
+  read a working directory back from it.
+- **the file appears early in the first turn**, 4 to 8 seconds after the message, with the turn
+  still running (2.1.276). its existence does not mean the turn finished.
+- **subagent transcripts** are separate files, and are not read.
 
-the file is absent while the agent is idle before its first message. it is created early in the
-first turn, measured 4 to 8 seconds after submission with the turn still running. it is not
-created when the turn completes.
+reader rules:
 
-so orchestratr can start tailing as soon as it submits, and must never read "the file exists" as
-"the turn finished".
+| record | reads as |
+|---|---|
+| `user` with text blocks | the person's message |
+| `user` with `origin.kind` `plugin` and `origin.name` `orcr` | an agent message. take the `<agent-message>` block out of Claude Code's frame. |
+| `attachment`, `attachment.type` `hook_additional_context`, `hookName` `tool.call` | a steered agent message |
+| `attachment`, `attachment.type` `queued_command` | a message a person typed mid turn |
+| `assistant` | the answer and tool calls |
 
-the session start hook reports a transcript path for a file that does not yet exist.
-orchestratr tolerates a known path with no file.
+skip:
 
-never derive a working directory from this path. the directory name is mangled, and the mangling
-is lossy.
+- `user` records of `tool_result` blocks: Claude Code records tool output as `user`.
+- `isMeta` and `isCompactSummary` records: skill bodies, command caveats, compaction summaries.
+- `assistant` records with `"model": "<synthetic>"`: API errors, usage limits, "No response
+  requested.". `isApiErrorMessage` gives the reason.
+- `queue-operation` records. a typed mid-turn message is `enqueue`, then `remove` with
+  `absorbed_mid_turn` and a `queued_command` attachment, or a later `user` record. one message.
+- `user` text starting `<command-`, `<local-command` or `<task-`, such as background shells'
+  `<task-notification>` turns.
 
-subagent transcripts are not read. see [limitations: Claude Code](/docs/limitations#claude-code).
+unwrap `<pasted_content id="…">…</pasted_content id="…">` around a person's long paste.
 
 ## session identity
 
-the backend binds the Claude Code session id at session start, and reports it as an id. orchestratr
-derives the transcript path from that id and the working directory.
+the session id is the agent id, set by `--session-id` at launch.
 
-the integration hands the backend both the id and the transcript path, and the backend keeps
-only the id. Claude Code is the one kind where a ready made transcript path exists and is discarded.
+`/clear`, `/resume` and `/branch` change it, and fire `session.end` but not `session.start`
+(measured for `/clear`: `4fd087de…` became `6b46dd5a…`). the mod reads `$.session.id()` again
+after `session.end` and at each main-loop `turn.start`. when it changed, it rewrites `session` in
+the record. the inbox is keyed by `ORCR_AGENT_ID` and does not move. measured: a message sent
+after `/clear` was delivered into the new conversation.
 
-## steering
+## model catalogue
 
-a message sent while the agent is working reaches the model at the next tool call. if the turn
-makes no further tool call, it runs as a separate turn afterwards. Claude Code's screen calls this a
-queued message.
+```sh
+printf '%s\n' '{"type":"control_request","request_id":"r1","request":{"subtype":"initialize"}}' \
+  | claude -p --input-format stream-json --output-format stream-json --verbose
+```
+
+run with the same `env -u` list and `CLAUDE_CONFIG_DIR`, and without `ORCR_AGENT_ID`. the
+`initialize` request emits one `control_response` and exits, with no assistant frames and no
+result frame. it starts no turn and costs no tokens.
+
+the response carries `models` (binary schema, 2.1.285). `value` is the `id` for `--model`,
+`displayName` the `display_name`, and `supportedEffortLevels` the `efforts`: `[]` when
+`supportsEffort` is false. a `disabled` model is visible and not selectable, and is skipped.
+
+it took about 20 seconds, mostly session-start hooks. `--bare` skips hooks, but it never reads
+OAuth or the keychain, so it breaks a subscription sign-in.
+
+## what is not used, and why
+
+| not used | why |
+|---|---|
+| typing into the composer | design rule: [nothing is typed](/docs/messaging). it also needed delivery records and interrupt keys, and two escapes at rest open rewind. |
+| the native peer socket (`cc-socks/<pid>.sock`, `--messaging-socket-path`) | wake and steer only: no followUp, no immediate, no receipt. it drops identical repeats. under bypass, a message from an unattested sender waits behind a modal dialog unless `crossSessionInbound` is `accept`. |
+| channels | measured: `channels are not available on third-party providers`. Vertex and gateway sign-ins cannot use them. |
+| `asyncRewake` settings hooks | they can wake, and nothing more. a timeout per firing, a re-arm on every Stop, and a misleading "Stop hook blocking error" frame. |
+| `$.tool.register` | it works: the tool was visible after 204 milliseconds. `orcr mcp` is one implementation for three kinds. |
+| `$.session.send` to itself | refused: `no live session on this machine has id <self>`. |
+| `sessions/<pid>.json` | the old readiness and state source. registration and herdr replace it. |
 
 ## not verified
 
-- whether `--bare` shortens the model catalogue probe, which spends most of its 20 seconds in
-  session start hooks.
-- whether a status file is left behind when the process is killed rather than exiting.
+- **whether `session.start` fires behind the bypass warning or the onboarding screens.** only
+  trust was tested. on 2.1.276 the settings `SessionStart` hook fired about 1 second after
+  `sessions/<pid>.json`, which stayed absent through 71 seconds of bypass warning.
+- **the first start on a fresh configuration folder.** in one run, the spike's `session.start`
+  write did not happen while Claude Code installed plugins. it was not reproduced.
+- **the `permissions.deny` form under `--dangerously-skip-permissions`.** the flag form was
+  measured.
+- **a UUIDv7 for `--session-id`.** the flag asks for a valid UUID.
+- **`$.prompt.submit` resolving before the turn starts.** the types say it resolves when its turn
+  started, "or it was queued behind the running one". every live run resolved at `turn.start`.
+  if it resolves early, write `.delivered` at the `turn.start` whose text holds the message id.
+- **an Esc from a person.** whether it fires `turn.complete` as aborted.
+- **a pending plugin prompt across an abort.** whether `$.turn.abort` or Esc drops a submitted
+  follow-up, and whether one survives [`orcr agent stop`](/docs/cli#orcr-agent-stop) and runs
+  before the pane closes.
+- **a prompt a person's hook dropped** stays `.accepted` and undelivered, and `send` reports
+  `queued`. how often hooks drop a plugin prompt is not known.
+- **the subagent filter, the `ORCR_AGENT_ID` key and the empty `immediate`** were written, not
+  run live. the live spike keyed on the session id and had no filter.
+- **trust inheritance from a parent folder**, from 2.1.285 strings only.
+- **whether `CLAUDECODE` alone stops a nested start** on the current version.
+- **whether a project `.mcp.json` opens an approval dialog** under bypass.
+- **whether the Bash shell snapshot restores `EDITOR`** from the person's rc files, as Codex's does.

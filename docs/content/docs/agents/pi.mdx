@@ -5,181 +5,253 @@ description: "how orchestratr launches, drives and reads Pi"
 
 **kind value:** `--kind pi`
 
-Pi is the least instrumented of the four kinds. it has no record of an accepted message and no
-signal that it is waiting for a person. both limits are stated below, and neither is worked
-around.
+Pi is the reference kind. every part of the [contract](/docs/integrations#the-contract) works
+from inside the process through Pi's public extension interface. unless a line says otherwise,
+the claims below were measured on Pi 1.0.0 with herdr 0.9.3.
 
 ## launch
 
 ```sh
-pi --approve [--model <provider>/<model>] [--thinking <level>]
+exec env -u <session markers> \
+  ORCR_AGENT_ID=<id> ORCR_BUS=<bus> [PI_CODING_AGENT_DIR=<home>] <stall environment> \
+  <abs path>/pi --approve --session-id <id> -e <dir>/pi.ts \
+  [--model <provider>/<model>] [--thinking <level>] <config args>
 ```
 
-Pi's effort argument is `--thinking`. its values are per model, and one model accepts only the
-lowest value. [`orcr models`](/docs/cli#orcr-models) reports the accepted values.
+| part | why |
+|---|---|
+| `env -u` | removes every kind's markers. for Pi these are `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL`, `PI_REASONING_LEVEL`, `PI_CODING_AGENT`, `AI_AGENT` and `PI_HERD_PARENT`. Pi exports `PI_SESSION_ID` and `PI_SESSION_FILE` to every child process. a leaked `PI_HERD_PARENT` makes pi-herd in the new agent stop it with `SIGTERM` when that parent ends. |
+| `ORCR_AGENT_ID`, `ORCR_BUS` | the extension does nothing without both. |
+| `PI_CODING_AGENT_DIR` | only when `kind.pi.home` is set. see [configuration](/docs/configuration). |
+| `<abs path>/pi` | the process must be named `pi`. herdr binds its Pi integration by process name. run as `pi.real`, which is the real binary behind one launcher, herdr reported no agent and the state `unknown`. through a link named `pi`, it reported `idle`, `working` and `blocked`. |
+| `--approve` | trusts the project's own files for this run. see [startup](#startup). |
+| `--session-id <id>` | the agent's id is also the first session id. Pi creates the session when it is missing, and opens it when it exists. see [session identity](#session-identity). |
+| `-e <dir>/pi.ts` | loads the orcr extension from the installed version folder. |
+| `--model`, `--thinking` | the model is always `<provider>/<model>`. `--thinking` is Pi's effort argument, with values per model. |
+
+no permission bypass is needed. Pi has no permission prompts.
 
 ## startup
 
-Pi shows no trust dialog in an empty new directory. it shows one only when the working
-directory, or an ancestor of it, holds one of these:
+### the trust dialog
+
+Pi shows no trust dialog in an empty new directory. it shows one only when the working directory,
+or an ancestor of it, holds one of these:
 
 - a `.pi/settings.json`
 - a `.pi` subdirectory for extensions, skills, prompts or themes
 - a `.pi` system prompt file
 - an `.agents/skills` directory
 
-`--approve` suppresses the dialog. it is a launch argument, so orchestratr writes no
-configuration file for this kind.
+`--approve` removes it. this is the same decision as the permission bypass: trust the directory
+the person asked orchestratr to run the agent in.
 
-| flag | what it does |
-|---|---|
-| `--approve` | trust the project's own files for this run |
-| `--no-approve` | ignore the project's own files for this run |
-
-<Callout type="warn" title="--approve and --no-approve both remove the dialog, and are not interchangeable">
-`--no-approve` removes the dialog by discarding the project's configuration: its settings, its
-extensions, its skills and its system prompt are all skipped. that is a silent loss of the setup
-a person built.
+<Callout type="warn" title="--no-approve also removes the dialog, and is not a substitute">
+`--no-approve` removes the dialog by skipping the project's settings, extensions, skills and
+system prompt. that silently discards the setup a person built.
 </Callout>
-
-orchestratr uses `--approve`, which answers the trust question instead of avoiding it. this
-matches the rest of orchestratr: permissions are already bypassed, so trusting the directory a
-person asked orchestratr to run an agent in is the same decision, not a new one.
-
-two configuration keys have the same effect. orchestratr does not use them, because a launch
-argument is reversible and a file is not:
-
-```text
-$PI_CODING_AGENT_DIR/settings.json   defaultProjectTrust = "always"
-$PI_CODING_AGENT_DIR/trust.json      {"<canonical absolute cwd>": true}
-```
-
-the path in `trust.json` must be the resolved real path. any other form of the path is silently
-ignored. no environment variable controls trust.
 
 ### interactive tools
 
-there is nothing to disable, and orchestratr disables nothing.
+none to deny. Pi's built-in tools are `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, and
+`powershell` on Windows. none of them waits for a person.
 
-Pi's built-in tools are `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, and `powershell` on
-Windows. only `read`, `bash`, `edit` and `write` are enabled by default. `grep`, `find` and `ls`
-are off.
+### the stall environment
 
-not one of them waits for a person. Pi is the only kind that needs no tool denial, because it
-ships nothing to deny.
+the shared one. what can still stop a Pi agent is an extension that opens a dialog, such as a
+confirm before each shell command. no launch argument prevents it. the integration reports it
+as `blocked` (see [dialogs](#dialogs)). a person clears it with
+[`orcr agent attach`](/docs/cli#orcr-agent-attach).
 
-an extension can register a tool under the same name as a built-in and shadow it, and such a
-tool survives `--no-extensions`. so the tool list an agent reports is not, by itself, evidence
-about Pi.
+## integration
 
-orchestratr also leaves Pi's extensions alone. it passes no `--no-extensions` and no tool
-exclusion list. both were considered and dropped:
+an **extension**: one TypeScript file, `pi.ts`, loaded with `-e`. Pi loads an extension given on
+the command line whatever the project trust says. no Pi configuration file is touched.
 
-- disabling extensions breaks a person's own setup, and does not even work completely, because
-  bundled extensions stay loaded regardless.
-- excluding tool names means guessing the tool names in a person's extensions. the exclusion list
-  is exact-match with no patterns, and it silently ignores a name that does not exist. a guessed
-  list protects against nothing.
+the extension returns at once unless `ORCR_AGENT_ID` and `ORCR_BUS` are set, and does nothing
+outside the interactive mode (`ctx.mode !== "tui"`), so `-p`, json and rpc runs are untouched.
 
-### what can still block a Pi agent
+### registration
 
-an extension, and only an extension.
+at `session_start`, the extension reads `agents/<id>.json` and adds `session` (`id` from
+`ctx.sessionManager.getSessionId()`, `transcript` from `getSessionFile()`), `integration` (its
+version folder name) and `started_at`. it writes the record back only if the file still exists,
+so a stopped agent is never re-created. orchestratr records `pid` itself, at launch. then the
+extension registers its tools, opens the inbox watch and scans once.
 
-Pi's extension interface lets an extension open a dialog from a lifecycle hook rather than from a
-tool. Pi's own documentation offers this as a use case, with a confirm before a destructive
-command as its example. reproduced live: an extension that confirms on each shell call opens a
-dialog, waits forever, and Pi reports `idle` throughout.
+- **not in the factory.** Pi's documentation lets command line extensions take part in its
+  `project_trust` event, so their factory can run before the trust question. `session_start`
+  comes after it.
+- **the negative test.** Pi's `session_start` stayed absent for 45 seconds with a trust dialog
+  on screen, and fired 1.2 seconds after the dialog was answered. this was measured on Pi 0.85.1,
+  through herdr's Pi integration, which publishes at the same event. over the same period herdr's
+  start response, its status and its interactive flag all reported the agent as ready.
+- **a message sent before launch** was delivered 1.2 seconds after launch.
 
-no launch argument prevents this. it is not a tool, so a tool flag cannot reach it, and a bundled
-extension cannot be unloaded at all.
+### delivery
 
-orchestratr accepts this rather than working around it. a person running Pi with a confirming
-extension has to clear the dialog with [`orcr agent attach`](/docs/cli#orcr-agent-attach).
+messages are handed over one at a time, in id order. each becomes one Pi message whose body is
+its [`<agent-message>`](/docs/messaging#what-the-model-sees) block.
 
-## readiness
+**busy from the hand-over.** when the extension hands a message to an idle agent, it marks the
+agent busy at once, and clears the mark at a real `agent_settled`. while the mark is set, a
+message goes as `deliverAs: "steer"` (or `"followUp"`), never as the first prompt, and an
+`immediate` aborts. so several steers sent moments apart start one turn, and the rest join it.
+the mark does not wait for a turn-start event.
 
-```text
-the backend's bound agent session for the pane, once it is not empty
+| mode | call |
+|---|---|
+| wake, at rest | `pi.sendMessage({customType: "agent-message", content, display: true, details: {id}}, {deliverAs: "steer", triggerTurn: true})` |
+| first message of a fresh session | `pi.sendUserMessage(content, {deliverAs: "steer"})` |
+| `steer` | the same `sendMessage`, with `deliverAs: "steer"`. it reaches the model after the running tool batch, before the next model call. |
+| `followUp` | the same `sendMessage`, with `deliverAs: "followUp"`. it runs when the turn has no tool calls and no steers left. |
+| `immediate` | at rest, a wake. while working, `ctx.abort()`, then deliver at the first `agent_settled` where `ctx.signal` is unset. |
+| empty `immediate` | an interrupt only. it never starts a turn, and is never handed over again. at rest, or when its `sent_at` is more than 10 seconds old as the extension takes it, write `.accepted` and `.delivered` at once and do nothing else, so a stale interrupt never aborts a later turn. while working, `ctx.abort()` and write `.accepted`, then `.delivered` at the first `agent_settled` where `ctx.signal` is unset. |
+
+**check the file first.** before every hand-over, including a re-hand, the extension checks that
+`<msgId>.json` still exists. [`orcr agent stop`](/docs/cli#orcr-agent-stop) deletes undelivered
+messages before it interrupts, so this check keeps a stop from starting a new turn.
+
+**a watch ending** is a message from `orcr` with a `watch` field. the extension renders it as an
+[`<agent-watch>`](/docs/messaging#watches) block, with `<last-text>` and `<screen>` children,
+instead of `<agent-message>`. it is handed over like any other message.
+
+**never await the call.** at rest, its promise lasts the whole turn. a call made inside an
+`agent_settled` handler is deferred by Pi until the settle ends, so it is safe there.
+
+**why the first message is a user prompt.** a turn started by `triggerTurn` skips
+`before_agent_start`, the only place extensions add their per turn system prompt sections. Pi's
+base system prompt is still built in 1.0.0. so the first message to a session with no user
+message on its branch, at rest, goes as a prompt, and the person's extensions see a normal turn.
+
+| marker | written at |
+|---|---|
+| `.accepted` | the `sendMessage` or `sendUserMessage` call returns |
+| `.delivered` | `message_start` for a message with `role: "custom"` and `customType: "agent-message"`: the id in `details.id`. for the first message, `message_start` for the `role: "user"` message whose text equals the prompt sent. |
+
+measured:
+
+| case | result |
+|---|---|
+| wake, idle session with history | `.delivered` after 0.9 seconds |
+| `steer` during `bash sleep 15` | sent at 6.7 seconds, `.delivered` at 17.6 seconds, when the tool returned. no abort. |
+| `followUp` during `sleep 8` | `.delivered` 1.5 seconds after the turn's reply, and answered as its own turn |
+| `immediate` during a streaming reply | the reply was cut mid word, and the message was `.delivered` 1 second later |
+| `.delivered`, then a provider failure | the marker stays. it means "in context", not "answered". |
+
+### recovery after an interrupt
+
+`ctx.abort()`, and a person's Esc, clear all of Pi's queues. every queued custom steer and
+followUp is dropped, from any extension, and never reaches `message_start`. measured: a steer
+queued behind `sleep 30`, then an `immediate`. the steer was gone until the extension sent it
+again.
+
+the extension keeps a set of every message it handed to Pi that has not reached
+`message_start`: steers, and follow-ups that Pi queued itself. after a `/reload`, it rebuilds the
+set from the markers on disk: `.accepted` without `.delivered`. at a real `agent_settled`, Pi's
+queues are empty, because Pi keeps running while anything is queued. so anything still in the
+set was dropped. the extension hands each one over again, in id order and in its own mode, if its
+file still exists. the first starts the next turn, and the rest follow the busy rule. a held
+`immediate` is not in the set: it is delivered at that same settle, as above. measured: the
+dropped steer was handed over again as a steer, together with the `immediate`, and both were
+answered.
+
+`ctx.hasPendingMessages()` cannot replace the set: it counts text steers only, not custom
+messages.
+
+### tools
+
+`orcr_send`, `orcr_list`, `orcr_read`, `orcr_start` and `orcr_stop`, registered with
+`pi.registerTool` at `session_start`, with the parameters in [tools](/docs/integrations#tools).
+each one calls the [socket API](/docs/socket-api) (`message.send`, `agent.list`, `agent.read`,
+`agent.new`, `agent.stop`) with `from` set to `ORCR_AGENT_ID`. `orcr_send` waits at most 5
+seconds for the markers. `orcr_start` returns as soon as the agent is launched, in state
+`starting`. a reply to `orcr` is allowed, and the server writes it already delivered.
+
+- **the `orcr_` prefix is required.** two extensions that register one tool name make Pi exit
+  with status 1 at startup. measured: an extension that registered `agent_send` beside pi-herd
+  killed Pi. pi-herd's tools are `agent_*`.
+- **the reply hint names `orcr_send`.** with a hint that named a tool the model also saw from
+  pi-herd, the model called pi-herd's `agent_send` first, which failed.
+- **the workflow brief goes in `promptGuidelines`** of `orcr_send`. it lands in the base system
+  prompt, so turns started by `triggerTurn` have it too.
+
+### dialogs
+
+Pi emits `ui_prompt_start` and `ui_prompt_end` around every extension dialog: `select`,
+`confirm`, `input`, `editor` and `custom` (since 0.84.4). the extension turns them into herdr's
+own event:
+
+```ts
+pi.on("ui_prompt_start", (e) => pi.events.emit("herdr:blocked", { active: true, label: e.title ?? e.kind }));
+pi.on("ui_prompt_end", () => pi.events.emit("herdr:blocked", { active: false }));
 ```
 
-the herdr integration for Pi publishes this at its session start event. the
-[negative test](/docs/readiness-and-delivery#readiness) passes cleanly: the value stayed absent
-for 45 seconds with a trust dialog on screen, and appeared 1.2 seconds after the dialog was
-answered. over that same period the backend's start response, its status and its interactive
-flag all reported the agent as ready.
+herdr's Pi integration counts these events, so they must pair. Pi already pairs them across
+nested dialogs. measured with the bridge:
 
-the published value is the transcript path itself, not an identifier. Pi is the only kind where
-orchestratr knows the transcript location at readiness, before the file exists.
+| dialog | herdr | a message sent meanwhile |
+|---|---|---|
+| opened by a command, at rest | `blocked` | starts a turn behind the dialog, which stays open. the reply was sent. |
+| opened by a `tool_call` hook, mid turn | `blocked` | no `.delivered` while the dialog was open. delivered once it was answered. |
 
-## delivery
+### traps
 
-Pi has no separate record of an accepted message. the transcript is the only source, and this is
-the one kind where orchestratr must wait for the work rather than poll for a fixed time.
-
-take a byte watermark on the transcript. after submitting, poll every 200 milliseconds and accept
-the first new entry whose source is `interactive` and whose text equals the submitted text.
-
-| case | delay |
-|---|---|
-| from rest | 0.44 to 0.54 seconds |
-| mid turn | until the running tool call returns |
-
-the mid turn delay is not a constant. measured at 39.6 seconds behind a 60 second command, it is
-bounded by the tool's own runtime and nothing else. Pi records the message when it acts on it,
-not when it accepts it.
-
-two consequences, both carried into the
-[shared send procedure](/docs/implementation#sending-a-message) rather than hidden here:
-
-- a message sent to a working Pi agent is confirmed late. use a `--timeout` that allows for the
-  work in progress, or send after the agent is `idle`.
-- orchestratr stops waiting as soon as the agent becomes `idle` without the record appearing,
-  and reports `possibly_delivered`. waiting for the full timeout would tell it nothing more.
-
-two identical messages are distinguishable, by the watermark and by the unique identifier on each
-entry.
+- **a false `agent_settled`.** it can fire while a run is still going, when a prompt collided
+  with it. ignore any settle where `ctx.signal` is set.
+- **`/reload`** loads a new copy of the module. keep the taken ids on `globalThis`, close the old
+  watch, and on `session_shutdown` release the ids not yet delivered, so the new copy takes them
+  again, and rebuild the re-hand set from the markers. measured: a message sent after `/reload`
+  was delivered once, with no duplicates. a `/reload` with a message in flight was not measured.
+- **a session switch** (`/new`, `/resume`, `/fork`) fires `session_shutdown`, then `session_start`
+  with a new id. rewrite `session`. the inbox stays. reading `ctx.signal` on a stale `ctx` can
+  throw, so guard it.
+- **compaction.** `sendMessage` with `triggerTurn` does not check for a manual `/compact` that is
+  running at rest. hold delivery while `!ctx.isIdle() && !ctx.signal`.
+- **a prompt that throws before any event.** without credentials, the first prompt threw "No API
+  key found": no turn, no `message_start`, no `.delivered`. Pi reports this to the screen only,
+  never to an extension. the sender never sees `delivered`. the auth variables of the person's
+  launcher must survive the launch line.
 
 ## state
 
 | state | source |
 |---|---|
-| `working`, `idle` | the kind's own integration, pushed with full lifecycle authority |
-| `blocked` | not available |
+| `working`, `idle` | herdr's Pi integration (`~/.pi/agent/extensions/herdr-agent-state.ts`, installed by herdr), pushed from Pi's lifecycle events. herdr does not read the screen for Pi. |
+| `blocked` | the orcr extension's bridge, above. |
 
-Pi is the only kind whose working state is pushed rather than inferred. its backend detection
-skips the screen entirely and records that it is doing so.
-
-Pi is also the only kind that can never report `blocked`. it has no blocked screen rules, and the
-blocked event that the herdr integration for Pi listens for is emitted by nothing in Pi: the
-name does not appear anywhere in the binary.
-
-<Callout type="warn" title="a Pi agent stuck on a dialog reports idle">
-orchestratr cannot report that a Pi agent is waiting for a person. two things limit the damage.
-orchestratr suppresses the only dialog it knows how to provoke, with `--approve`. it also
-confirms every message against the transcript, so a message that went nowhere is reported as a
-failure rather than as a success. see [limitations: Pi](/docs/limitations#pi).
-</Callout>
-
-## interrupt
-
-one escape key press. an escape at rest is harmless here.
-
-one behavior matters for the send procedure: after an interrupt, Pi returns the unsent text to
-the composer. orchestratr clears the composer before every send, which makes this harmless.
-without that clear, the next message is submitted joined to the restored text as a single
-message.
+Pi's own built-in selectors, such as `/model`, `/resume` and `/tree`, do not go through the
+extension dialog interface and are not reported. a non-blocking `ctx.ui.custom()` overlay is
+reported as `blocked`.
 
 ## transcript
 
 ```text
-$PI_CODING_AGENT_DIR/sessions/<mangled working directory>/<timestamp>_<uuid>.jsonl
+$PI_CODING_AGENT_DIR/sessions/<mangled working directory>/<timestamp>_<session id>.jsonl
 ```
 
-the path is published at readiness. the file does not exist until the first assistant message is
-written, measured between 1.65 and 3.83 seconds after the first submission.
+`PI_CODING_AGENT_DIR` defaults to `~/.pi/agent`. the reader finds the file by the glob
+`sessions/*/*_<session id>.jsonl`, or takes `session.transcript` from the record. never derive a
+working directory from the path: the mangling is lossy. the file appears with the first
+assistant message, 1.65 to 3.83 seconds after the first submission (0.85.1).
 
-never derive a working directory from this path. the directory name is mangled, and the mangling
-is lossy.
+- **it is a tree.** every entry has an `id` and a `parentId`. after a person moves back with
+  `/tree` or forks, the abandoned branch stays in the file, interleaved. read the branch from the
+  last entry up through `parentId`, which is what Pi's `buildSessionPath` does.
+- **agent messages** are `custom_message` entries with `customType: "agent-message"`. the first
+  one in a session is a `role: "user"` message whose text starts with `<agent-message`. show both
+  as messages from the sender named in the block.
+- **skip** thinking blocks, `toolResult` messages, and entries that are neither `message` nor an
+  agent message. an assistant message with `stopReason: "error"` is an error, not an answer.
+
+## session identity
+
+orchestratr chooses the first session id: the agent's id, through `--session-id`. Pi prints
+`No project session found with id …; creating a new session with that id.` so the transcript
+path is known before launch, and pi-herd, which keys its agents by session id, uses the same id.
+`/new`, `/resume` and `/fork` change it later. the extension rewrites `session`, and the inbox
+stays at `inbox/<agent id>/`. relaunching with the same `--session-id` resumes the session:
+after a kill and a relaunch, only the messages without `.delivered` were delivered again.
 
 ## model catalogue
 
@@ -187,31 +259,52 @@ is lossy.
 pi --list-models
 ```
 
-about two seconds, no server, no billed turn.
+about two seconds, no billed turn (0.85.1). it is a full startup: it fills the configuration
+folder, refreshes the catalogue over the network unless `--offline` is passed, and runs every
+extension it discovers. orchestratr runs it with the agents' `PI_CODING_AGENT_DIR`, and without
+`ORCR_AGENT_ID`, so the orcr extension stays inert.
 
-it is not free of side effects. it performs a full startup: it populates the configuration
-directory, refreshes the catalogue over the network unless `--offline` is passed, and runs every
-extension it discovers. orchestratr runs it with the same isolated configuration directory it
-uses to start an agent, so those side effects land where the rest of orchestratr's state lives.
+thinking levels are per model, and one model accepts only the lowest. the full answer needs one
+process per model, so `orcr models` lists the models and whether each supports reasoning, and
+asks for levels only for a named model. the model record's thinking level map is an override map
+onto provider names, not the allowed values. ask Pi, do not resolve it.
 
-the effort values are per model, and the complete answer needs one short lived process per
-model. with 30 models that is 30 processes. `orcr models` therefore reports the model list and
-whether each model supports reasoning at all, and runs the single targeted probe only when a
-specific model is named.
+## what is not used, and why
 
-the model record carries a thinking level map. it is not the list of allowed values. it is an
-override map onto provider names, and a null entry suppresses a value. do not reimplement that
-resolution. ask Pi.
+| not used | why |
+|---|---|
+| `--no-extensions` (`-ne`), or a tool exclusion list | both break the person's setup. `-ne` keeps only `-e` files, and an exclusion list must guess tool names in a person's extensions. |
+| `defaultProjectTrust` in `settings.json`, or `trust.json` | a launch argument does the same and writes nothing. |
+| `deliverAs: "nextTurn"` | it adds context to the next user prompt and starts no turn. |
+| `pi.registerMcpServer` with `orcr mcp` | native tools need no second process, and carry `promptGuidelines`. |
+| wrapping `ctx.ui` to see dialogs | Pi already emits `ui_prompt_start` and `ui_prompt_end` for every extension. |
+| typing into the pane and matching the transcript | the old design. `message_start` is an exact delivery event, and typing races the person. |
 
-## steering
+### pi-herd
 
-a message sent while the agent is working reaches the model at the next tool call. if the turn
-makes no further tool call, it runs as a separate turn afterwards. Pi's screen calls this
-steering, and its input event reports which of the two happened.
+pi-herd, if the person installed it, also loads in an orcr agent. no flag unloads one package. the
+two coexist: different tool names, different folders. pi-herd registers the agent in
+`~/.pi/agent/pi-herd/agents/`, so it shows on the person's `/agents` dashboard, and the model also
+sees pi-herd's `agent_send`, which reaches pi-herd agents only. future work: pi-herd reads and
+writes the shared bus, and becomes the Pi integration.
 
 ## not verified
 
-- whether the published transcript path changes when a session is resumed.
-- what a Pi approval dialog looks like. one could not be reached during testing, so the claim
-  that Pi never reports `blocked` is proved for the trust dialog and inferred for everything
-  else.
+- the negative test with the orcr extension itself on 1.0.0. the evidence is herdr's Pi
+  integration on 0.85.1, at the same event.
+- `.accepted` timing. the tested extension wrote `.delivered` only.
+- the sender's outcome after a prompt that throws: `queued` if `.accepted` was written, `pending`
+  if not.
+- the compaction guard. it comes from pi-herd's source.
+- the empty `immediate`, the 10 second rule, the busy mark and the file check before a
+  hand-over. none was in the tested extension. how Pi takes a steer handed over between the wake
+  call and the turn's start was not measured.
+- a `/reload` while a message is handed over and not delivered, and the rebuild from markers.
+- re-handing a dropped follow-up. the measured case dropped a steer.
+- tools that call the socket API, and `orcr_read`, `orcr_start`, `orcr_stop`. the tested
+  extension had `send` and `list` only, and wrote the bus directly.
+- that `--session-id` accepts a UUIDv7. the tests passed a random UUID.
+- whether the transcript path changes on resume, and every transcript entry type not named above.
+- the 0.84.4 floor, where `ui_prompt_*` arrived. the tests ran on 1.0.0 only.
+- that the factory runs before the trust question. it is inferred from Pi's documentation.
+- the command that lists the thinking levels for one model.

@@ -2,16 +2,16 @@
   "title": "orchestratr",
   "pages": [
     "index",
-    "purpose",
+    "---the design---",
+    "messaging",
+    "integrations",
+    "how-it-works",
+    "agents",
+    "limitations",
     "---reference---",
     "cli",
     "socket-api",
     "configuration",
-    "---design---",
-    "readiness-and-delivery",
-    "implementation",
-    "agents",
-    "limitations",
     "---beyond the first version---",
     "future"
   ]
