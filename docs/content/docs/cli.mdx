@@ -43,7 +43,7 @@ bare number means seconds.
 | 1 | internal failure | `internal` |
 | 2 | the command was used wrongly | `invalid_request` |
 | 3 | the agent does not exist | `not_found` |
-| 4 | the agent cannot do this now. `details.state` says why. | `not_ready` |
+| 4 | the agent cannot do this now. `details.state` or `details.reason` says why. | `not_ready` |
 | 5 | the action did not finish in time | `timeout` |
 | 6 | herdr or the orcr server is missing, stopped, or speaks a different protocol | `backend_unavailable`, `unsupported_protocol` |
 | 7 | the orcr integration for this kind is not installed, failed a check, or did not register | `integration_missing` |
@@ -257,6 +257,7 @@ the full procedure is in [sending](/docs/messaging#sending).
 - **`failed` exits with the code of its cause:**
   - `not_found` (3);
   - `not_ready` with `details.state: "exited"` (4);
+  - `not_ready` with `details.reason: "loop"`, after 12 messages to one agent in 10 minutes (4);
   - `invalid_request` for text that is too long (2).
 
   nothing was written, so a retry is safe.

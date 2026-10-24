@@ -148,8 +148,8 @@ starts on home, and the TUI half moves it to the session: on 2.x with
 
 ### delivery
 
-`<block>` is the [rendered message](/docs/messaging#what-the-model-sees): `<agent-message>`, or
-`<agent-watch>` for a message with `watch`. on 1.x the part carries `metadata: {orcr: <msgId>}`,
+`<block>` is the [rendered message](/docs/messaging#what-the-model-sees): `<orcr-message>`, or
+`<orcr-watch>` for a message with `watch`. on 1.x the part carries `metadata: {orcr: <msgId>}`,
 which OpenCode persists. one call per message, in id order. before every call, the plugin checks
 that `<msgId>.json` still exists: `stop` deletes undelivered messages before it interrupts. from
 the moment it hands a message to an idle agent, the plugin treats the agent as busy, so a second

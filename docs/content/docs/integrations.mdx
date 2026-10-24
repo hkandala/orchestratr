@@ -57,9 +57,10 @@ integration.
    still exists: steers, and follow-ups the agent queued itself. messages the integration still
    holds are not affected. an empty `immediate` is never handed over again. `stop` removes undelivered files before it interrupts, so a stop never restarts the
    agent.
-8. **render the blocks.** wrap a message in `<agent-message>`, with the reply hint that names the
+8. **render the blocks.** wrap a message in `<orcr-message>`, with the reply hint that names the
    tool as this kind shows it to the model. render a message with a `watch` field as
-   `<agent-watch>`. see [what the model sees](/docs/messaging#what-the-model-sees) and
+   `<orcr-watch>`. escape `<orcr-` and `</orcr-` inside every field, with one shared function and
+   one fixture test. see [what the model sees](/docs/messaging#what-the-model-sees) and
    [watches](/docs/messaging#watches).
 9. **report a dialog where herdr cannot see it.** if the kind has an event for "a dialog is open"
    that herdr's own integration does not use, emit herdr's `blocked` signal. today this applies to

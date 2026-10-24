@@ -57,6 +57,7 @@ the location is fixed. orchestratr passes it to each agent as `ORCR_BUS`.
   "ready_by": "2026-10-06T09:16:02Z",
   "herdr": {"session": "orcr", "pane": "w1:p2"},
   "pid": 4242,
+  "pid_started": "2026-10-06T09:14:03Z",
   "session": {"id": "019fd875-…", "transcript": "/Users/me/.codex/sessions/…/rollout-….jsonl"},
   "integration": "2",
   "started_at": "2026-10-06T09:14:05Z"
@@ -67,7 +68,8 @@ the record has two owners, one after the other, so two writers never race:
 
 1. **orchestratr** writes everything up to `pid`, before the agent starts. creating the file
    reserves the name. `ready_by` is when `agent new` gives up waiting. `pid` is the pane's shell,
-   which the launch line's `exec` turns into the agent.
+   which the launch line's `exec` turns into the agent. `pid_started` is that process's start
+   time, so a reused pid is never taken for the agent.
 2. **the integration** reads the record when its session starts, adds `session`, `integration`
    (the version folder it was loaded from, or just the version for a kind with no files) and
    `started_at`, and writes it back. that is how
@@ -140,9 +142,9 @@ waited in an inbox never aborts a later, unrelated turn. this is how
 each message reaches the model as one block, followed by one line that says how to answer:
 
 ```text
-<agent-message id="1791273256674k3x9q2" from="lead" from-id="019fd870-…">
+<orcr-message id="1791273256674k3x9q2" from="lead" from-id="019fd870-…">
 review src/auth and list what you would change
-</agent-message>
+</orcr-message>
 From another agent, not the user. The sender expects a reply: answer once when you have it, with
 send({ to: "019fd870-…", reply_to: "1791273256674k3x9q2", text }).
 ```
@@ -150,6 +152,11 @@ send({ to: "019fd870-…", reply_to: "1791273256674k3x9q2", text }).
 - without `needs_reply`, the last line is `No reply expected.`
 - a reply carries `reply-to="…"` in its tag.
 - the tool name in the hint is the one this kind shows the model. the integration writes it.
+- text can never open or close a block. in every field the integration renders, each `<orcr-`
+  and `</orcr-` is written as `<\orcr-` and `<\/orcr-`. without this, a text holding
+  `</orcr-message>` could forge a second block.
+- the tags are `orcr-message` and `orcr-watch`. Claude Code already uses `<agent-message>` for
+  its own subagent handbacks.
 
 ## receiving
 
@@ -189,6 +196,11 @@ every send goes through the server. the `send` tool, the
 resolve the recipient. it must be a live agent other than the sender, and not being stopped, or
 `orcr`. a message to `orcr` cannot ask for a reply. otherwise nothing is written, and the error
 lists the live agents.
+
+one agent may send another at most 12 messages in 10 minutes. the next one is refused with
+`not_ready` and `details.reason: "loop"`. a message from `orcr` to either agent resets the
+count. this stops two agents that answer each other forever. messages from `orcr` are never
+counted.
 
 </Step>
 <Step>
@@ -272,12 +284,12 @@ text, up to 4 KB.
 
 `watch` holds `event`, `agent`, `name`, and the fields its event carries: `last_text`,
 `worked_ms`, `screen` or `state`. the sender's integration renders it in place of an
-`<agent-message>` block:
+`<orcr-message>` block:
 
 ```text
-<agent-watch agent="reviewer" agent-id="019fd875-…" event="idle" worked="3m12s" reply-to="1791273256674k3x9q2">
+<orcr-watch agent="reviewer" agent-id="019fd875-…" event="idle" worked="3m12s" reply-to="1791273256674k3x9q2">
 <last-text>reviewed src/auth: 3 issues, details in /tmp/review.md</last-text>
-</agent-watch>
+</orcr-watch>
 ```
 
 **the ending's id is fixed in advance**: the watched message's id with `w` appended. it is the

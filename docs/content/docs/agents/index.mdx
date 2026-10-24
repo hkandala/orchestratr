@@ -82,7 +82,7 @@ the table above is notes for the integration's author, which the core never read
 |---|---|
 | `kind` | the kind value, also herdr's integration name and the process name herdr detects |
 | `binary` | the default program name, overridden by `kind.<k>.binary` |
-| `versions` | the supported range, and how to read the version from `<binary> --version`. where a kind has two lines (OpenCode), the entry says which line a version belongs to, and orchestratr records it as `kind_version`. |
+| `versions` | the supported range, and how to read the version from `<binary> --version`. where a kind has two lines (OpenCode), the entry says which line a version belongs to, and orchestratr records it as `kind_version`. where a launcher can run another build, the agent page says how the running build is read. |
 | `home` | the variable that `kind.<k>.home` sets, or none |
 | `markers` | the session variables to remove at launch |
 | `integration` | the version, and the embedded files, if any |

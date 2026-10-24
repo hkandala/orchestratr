@@ -16,7 +16,7 @@ exec env -u CLAUDECODE -u CLAUDE_PID -u CLAUDE_EFFORT -u CLAUDE_CODE_SESSION_ID 
   /abs/claude --dangerously-skip-permissions \
     --session-id <id> \
     [--model <model>] [--effort <effort>] \
-    --settings '{"skipDangerousModePermissionPrompt":true,"permissions":{"deny":["AskUserQuestion","ExitPlanMode","EnterPlanMode","Workflow"]}}' \
+    --settings '{"skipDangerousModePermissionPrompt":true,"crossSessionInbound":"refuse","permissions":{"deny":["AskUserQuestion","ExitPlanMode","EnterPlanMode","Workflow"]}}' \
     --mcp-config '{"mcpServers":{"orcr":{"command":"/abs/orcr","args":["mcp"],"env":{"ORCR_AGENT_ID":"<id>"}}}}' \
     --plugin-dir <version folder>/claude-mod \
     <config args>
@@ -30,7 +30,7 @@ exec env -u CLAUDECODE -u CLAUDE_PID -u CLAUDE_EFFORT -u CLAUDE_CODE_SESSION_ID 
 | `--dangerously-skip-permissions` | permission bypass. Claude Code refuses it as root. |
 | `--session-id <id>` | the agent id doubles as the session id, so the transcript name is known at launch. it must be a valid UUID. |
 | `--model`, `--effort` | passed through. `--effort` takes the values [`orcr models`](/docs/cli#orcr-models) reports for the model. a model that reports none gets no `--effort`. |
-| `--settings` | inline JSON, no file. removes the bypass warning, and denies the four tools that wait for a person. |
+| `--settings` | inline JSON, no file. removes the bypass warning, denies the four tools that wait for a person, and refuses Claude Code's own cross-session messages ([why](#native-messages-are-refused)). |
 | `--mcp-config` | the [tools](/docs/integrations#tools), from `orcr mcp`. `ORCR_AGENT_ID` sets `from`. the flag is variadic, so it never comes last. |
 | `--plugin-dir` | loads the mod for this session only. |
 | `<config args>` | `kind.claude.args`, always last. |
@@ -70,6 +70,21 @@ second variadic flag. `askUserQuestionTimeout` and `dialogExpiry` only bound the
 
 **stall environment.** the shared one. nothing specific to Claude Code.
 
+### native messages are refused
+
+Claude Code has its own cross-session messages: every session listens on a socket, and any
+process of the same user can write to it. orchestratr does not use them, and turns them off with
+`"crossSessionInbound": "refuse"` in `--settings`, which outranks the person's user settings.
+without it:
+
+- under bypass, a message from one of the person's ordinary sessions waits behind a modal dialog
+  in the agent's pane, with Deny as the default. reproduced on 2.1.310. the agent stalls.
+- an accepted message starts a turn that no watch and no marker knows about.
+
+the mod's own submits are not peer messages, so the setting does not touch them: Claude Code does
+not gate the plugin origin (bundle strings). `SendMessage` stays allowed, because subagents use it
+too.
+
 ## integration
 
 ### mechanism
@@ -104,6 +119,9 @@ in `session.start`:
    validator lists env reads statically.
 2. read `agents/<id>.json`, and add `session` (`{"id": await $.session.id(), "transcript":
    null}`), `integration` (the version folder name, such as `4-1a2b3c4d`) and `started_at`.
+   orchestratr then sets `kind_version` to the build that runs: `version` in the
+   `<config>/sessions/*.json` entry with this session id. a wrapping launcher can run another
+   build than `claude --version` reports: 2.1.310 against 2.1.309, measured.
    orchestratr recorded `pid` itself at launch.
 3. if the record file still exists, write a temporary file with `$.fs.write`, then rename it with
    `$.process.run(['mv', …])`. `$.fs.write` is not atomic. the same rule applies to every
@@ -154,9 +172,9 @@ own `UserPromptSubmit` settings hooks, 12 of them on that machine, which run on 
 message: … Address the message above." the screen shows `› Prompt from the orcr plugin`. a steer
 is read as `<system-reminder>tool.call hook additional context: …</system-reminder>`. the reply
 hint names `mcp__orcr__send`. a message with a `watch` field, a watch ending from `orcr`, is
-rendered as `<agent-watch agent="<name>" agent-id="<id>" event="…" worked="3m12s"
+rendered as `<orcr-watch agent="<name>" agent-id="<id>" event="…" worked="3m12s"
 reply-to="<msgId>">` with `<last-text>` and `<screen>` children instead. the block always starts
-with `<agent-`, so a message text that begins with `/` or `!` is never run as a command.
+with `<orcr-`, so a message text that begins with `/` or `!` is never run as a command.
 
 ### markers
 
@@ -230,7 +248,7 @@ reader rules:
 | record | reads as |
 |---|---|
 | `user` with text blocks | the person's message |
-| `user` with `origin.kind` `plugin` and `origin.name` `orcr` | an agent message. take the `<agent-message>` block out of Claude Code's frame. |
+| `user` with `origin.kind` `plugin` and `origin.name` `orcr` | an agent message. take the `<orcr-message>` block out of Claude Code's frame. |
 | `attachment`, `attachment.type` `hook_additional_context`, `hookName` `tool.call` | a steered agent message |
 | `attachment`, `attachment.type` `queued_command` | a message a person typed mid turn |
 | `assistant` | the answer and tool calls |
@@ -281,7 +299,7 @@ OAuth or the keychain, so it breaks a subscription sign-in.
 | not used | why |
 |---|---|
 | typing into the composer | design rule: [nothing is typed](/docs/messaging). it also needed delivery records and interrupt keys, and two escapes at rest open rewind. |
-| the native peer socket (`cc-socks/<pid>.sock`, `--messaging-socket-path`) | wake and steer only: no followUp, no immediate, no receipt. it drops identical repeats. under bypass, a message from an unattested sender waits behind a modal dialog unless `crossSessionInbound` is `accept`. |
+| the native peer socket (`cc-socks/<pid>.sock`, `--messaging-socket-path`) | it has steer, followUp and immediate (`next`, `later`, `now`, measured on 2.1.310), but: no interrupt without text; no receipt for an accepted message; nothing kept on disk; silent drops on a rate limit, an identical text within 30 s, and 50 queued messages; every message framed as from "another Claude session", with a warning not to treat it as the user; a repo's settings can make its gate stricter; Claude Code only. see [native messages are refused](#native-messages-are-refused). |
 | channels | measured: `channels are not available on third-party providers`. Vertex and gateway sign-ins cannot use them. |
 | `asyncRewake` settings hooks | they can wake, and nothing more. a timeout per firing, a re-arm on every Stop, and a misleading "Stop hook blocking error" frame. |
 | `$.tool.register` | it works: the tool was visible after 204 milliseconds. `orcr mcp` is one implementation for three kinds. |
@@ -312,4 +330,7 @@ OAuth or the keychain, so it breaks a subscription sign-in.
 - **trust inheritance from a parent folder**, from 2.1.285 strings only.
 - **whether `CLAUDECODE` alone stops a nested start** on the current version.
 - **whether a project `.mcp.json` opens an approval dialog** under bypass.
+- **`crossSessionInbound: "refuse"` live.** the dialog without it was reproduced. that refuse
+  removes it, and leaves `$.prompt.submit` working, comes from the bundle. the check: a plain
+  `claude` session sends to the agent, and the agent's screen shows no dialog.
 - **whether the Bash shell snapshot restores `EDITOR`** from the person's rc files, as Codex's does.

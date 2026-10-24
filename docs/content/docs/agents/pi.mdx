@@ -91,7 +91,7 @@ extension registers its tools, opens the inbox watch and scans once.
 ### delivery
 
 messages are handed over one at a time, in id order. each becomes one Pi message whose body is
-its [`<agent-message>`](/docs/messaging#what-the-model-sees) block.
+its [`<orcr-message>`](/docs/messaging#what-the-model-sees) block.
 
 **busy from the hand-over.** when the extension hands a message to an idle agent, it marks the
 agent busy at once, and clears the mark at a real `agent_settled`. while the mark is set, a
@@ -101,7 +101,7 @@ the mark does not wait for a turn-start event.
 
 | mode | call |
 |---|---|
-| wake, at rest | `pi.sendMessage({customType: "agent-message", content, display: true, details: {id}}, {deliverAs: "steer", triggerTurn: true})` |
+| wake, at rest | `pi.sendMessage({customType: "orcr-message", content, display: true, details: {id}}, {deliverAs: "steer", triggerTurn: true})` |
 | first message of a fresh session | `pi.sendUserMessage(content, {deliverAs: "steer"})` |
 | `steer` | the same `sendMessage`, with `deliverAs: "steer"`. it reaches the model after the running tool batch, before the next model call. |
 | `followUp` | the same `sendMessage`, with `deliverAs: "followUp"`. it runs when the turn has no tool calls and no steers left. |
@@ -113,8 +113,8 @@ the mark does not wait for a turn-start event.
 messages before it interrupts, so this check keeps a stop from starting a new turn.
 
 **a watch ending** is a message from `orcr` with a `watch` field. the extension renders it as an
-[`<agent-watch>`](/docs/messaging#watches) block, with `<last-text>` and `<screen>` children,
-instead of `<agent-message>`. it is handed over like any other message.
+[`<orcr-watch>`](/docs/messaging#watches) block, with `<last-text>` and `<screen>` children,
+instead of `<orcr-message>`. it is handed over like any other message.
 
 **never await the call.** at rest, its promise lasts the whole turn. a call made inside an
 `agent_settled` handler is deferred by Pi until the settle ends, so it is safe there.
@@ -127,7 +127,7 @@ message on its branch, at rest, goes as a prompt, and the person's extensions se
 | marker | written at |
 |---|---|
 | `.accepted` | the `sendMessage` or `sendUserMessage` call returns |
-| `.delivered` | `message_start` for a message with `role: "custom"` and `customType: "agent-message"`: the id in `details.id`. for the first message, `message_start` for the `role: "user"` message whose text equals the prompt sent. |
+| `.delivered` | `message_start` for a message with `role: "custom"` and `customType: "orcr-message"`: the id in `details.id`. for the first message, `message_start` for the `role: "user"` message whose text equals the prompt sent. |
 
 measured:
 
@@ -238,8 +238,8 @@ assistant message, 1.65 to 3.83 seconds after the first submission (0.85.1).
 - **it is a tree.** every entry has an `id` and a `parentId`. after a person moves back with
   `/tree` or forks, the abandoned branch stays in the file, interleaved. read the branch from the
   last entry up through `parentId`, which is what Pi's `buildSessionPath` does.
-- **agent messages** are `custom_message` entries with `customType: "agent-message"`. the first
-  one in a session is a `role: "user"` message whose text starts with `<agent-message`. show both
+- **agent messages** are `custom_message` entries with `customType: "orcr-message"`. the first
+  one in a session is a `role: "user"` message whose text starts with `<orcr-message`. show both
   as messages from the sender named in the block.
 - **skip** thinking blocks, `toolResult` messages, and entries that are neither `message` nor an
   agent message. an assistant message with `stopReason: "error"` is an error, not an answer.

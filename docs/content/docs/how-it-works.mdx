@@ -37,6 +37,12 @@ starts the session itself when it is not running (`herdr --session orcr server`,
 orchestratr creates and manages only that session. it never closes a pane, tab or session it did
 not create.
 
+orchestratr finds that session's socket itself, and never takes it from an inherited
+`HERDR_SOCKET_PATH`. it starts the herdr server without any inherited `HERDR_*` variable or
+[session marker](#session-markers). a `ping` reply with a `server` field other than `herdr` is
+refused as `backend_unavailable`. tuios answers herdr's API on its own socket with
+`"server": "tuios"`, and points `HERDR_SOCKET_PATH` at it in its panes.
+
 ## launching an agent
 
 ### the launch line
@@ -86,6 +92,7 @@ launch, because orchestratr is often run from inside an agent of any kind:
 | Codex | `CODEX_SESSION_ID`, `CODEX_THREAD_ID`, `CODEX_VERSION`, `CODEX_PERMISSION_PROFILE`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`, `CODEX_NETWORK_PROXY_ACTIVE`, `CODEX_EXEC_SERVER_URL` |
 | Pi | `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL`, `PI_REASONING_LEVEL`, `PI_CODING_AGENT`, `AI_AGENT`, `PI_HERD_PARENT` |
 | OpenCode | `OPENCODE_TERMINAL`, `OPENCODE_ROUTE`, `OPENCODE_PTY_HANDOFF`, `OPENCODE_PASSWORD`, `OPENCODE_SERVER_PASSWORD` |
+| tuios, a terminal host | `TUIOS_ENV`, `TUIOS_PANE_ID`, `TUIOS_SESSION`, `TUIOS_SOCKET`, `TUIOS_PANE_TOKEN`, `TUIOS_AGENT`, `TUIOS_WINDOW_ID`. with `TUIOS_ENV` set, tuios's global hooks report an orcr agent into the person's tuios pane, and tell the agent it runs there. |
 
 the lists start from the ones amx measured (`src/vendor/*.rs`, `not_inherited`). they live in
 the kind table, so a new marker is a one-line change. `CLAUDE_EFFORT` matters beyond identity: it
@@ -193,7 +200,8 @@ detection rules and does not read the terminal to second-guess herdr.
 orchestratr adds four rules on top:
 
 1. **`starting`** until the integration registers.
-2. **`exited`** when the record's `pid` is not running, or the pane is gone. liveness is checked
+2. **`exited`** when the record's `pid` is not running, or runs with another start time than
+   `pid_started`, or the pane is gone. liveness is checked
    before herdr's answer. if herdr restarts and restores a pane by relaunching the agent itself,
    the new process has a new pid and none of orchestratr's launch settings. orchestratr treats it
    as `exited`.

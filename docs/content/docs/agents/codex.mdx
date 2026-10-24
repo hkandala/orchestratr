@@ -181,7 +181,7 @@ text_elements: []}]}`, one message per call, in id order. it returns the turn's 
 `turnId` for `turn/interrupt`. the bridge treats the thread as working from the moment it calls
 `turn/start` on an idle thread, not from `turn/started`, so a second message moments later is a
 steer into the starting turn, or a held `followUp`.
-`<block>` is the `<agent-message>` block, or the `<agent-watch>` block for a message that has a
+`<block>` is the `<orcr-message>` block, or the `<orcr-watch>` block for a message that has a
 `watch` field.
 
 **before every hand-over**, including a held `followUp` and a re-hand, the bridge checks that
