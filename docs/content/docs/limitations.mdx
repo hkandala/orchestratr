@@ -107,9 +107,8 @@ sequence.
   an agent id. a steer can never land inside a subagent.
 - **an abort leaves a running shell command in the background.** it may later produce a
   notification turn.
-- **orchestratr writes one key into `.claude.json`** in the Claude Code configuration folder, the
-  folder trust for the working
-  directory, under Claude Code's own lock. see
+- **orchestratr writes one key into `.claude.json`** in the Claude Code configuration folder:
+  folder trust for the working directory, under Claude Code's own lock. see
   [writing a person's configuration](/docs/how-it-works#writing-a-persons-configuration).
 - **permission bypass fails under root.** Claude Code refuses `--dangerously-skip-permissions`
   with user id zero. do not run orchestratr as root.

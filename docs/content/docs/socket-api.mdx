@@ -13,10 +13,9 @@ the server's life cycle (start, upgrade, restart) is under
 ## transport
 
 the server listens on a UNIX domain stream socket at `~/.local/state/orcr/run/orcr.sock`. the
-path is fixed. it follows neither `XDG_STATE_HOME` nor `XDG_RUNTIME_DIR`, which can differ
-between a desktop session and an SSH login. every client and every agent's tools must find the
-same server without asking. the folder is created with mode
-`0700`, because any process that can connect can start agents with permissions bypassed.
+path is fixed, so every client and every agent's tools find the same server without asking. the
+folder is created with mode `0700`, because any process that can connect can start agents with
+permissions bypassed.
 
 the framing is newline-delimited JSON: one compact JSON object per line, UTF-8, terminated by
 `\n`. a connection carries many requests, and their responses can come in any order. a response
@@ -137,7 +136,8 @@ agents as `{id, name}`.
 every method that acts on one agent requires `agent`: a name or an id. every method that sends,
 starts, interrupts or stops takes `from`: an agent id, or `"orcr"`, the default. the CLI and the
 tools set `from` from `ORCR_AGENT_ID` (see [the sender](/docs/cli#the-sender)). the tables below
-leave these two out. an agent may stop only its descendants. `orcr` may stop any agent.
+leave these two out. an agent may stop only its descendants (`not_permitted`). `orcr` may stop
+any agent.
 
 times are RFC 3339 strings in UTC, with milliseconds. durations are in milliseconds.
 
@@ -300,5 +300,4 @@ an event frame has no `id`, because it answers no request. every `message.*` eve
 ## schema
 
 the server generates its JSON Schema from the same method table it dispatches on, so the schema
-cannot drift from the code. every `$ref` uses the standard root `#/$defs/`.
-`orcr serve --schema` prints it.
+cannot drift from the code. `orcr serve --schema` prints it.

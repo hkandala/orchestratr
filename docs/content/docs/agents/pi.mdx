@@ -76,10 +76,10 @@ outside the interactive mode (`ctx.mode !== "tui"`), so `-p`, json and rpc runs 
 
 at `session_start`, the extension reads `agents/<id>.json` and adds `session` (`id` from
 `ctx.sessionManager.getSessionId()`, `transcript` from `getSessionFile()`) and `started_at`, and
-sets `integration` (its version folder name). it writes the record back only if the file still exists,
-so a stopped agent is never re-created. orchestratr records `pid` itself, at launch. on the
-first `session_start` of this module copy, the extension registers its tools. it then opens the
-inbox watch and scans once.
+sets `integration` (its version folder name). it writes the record back only if the file still
+exists, so a stopped agent is never re-created. orchestratr records `pid` itself, at launch. on
+the first `session_start` of this module copy, the extension registers its tools. it then opens
+the inbox watch and scans once.
 
 it also writes `context_window` from `ctx.model.contextWindow`, at registration and again on
 `model_select`. the transcript names the model, not its window.
@@ -117,8 +117,6 @@ the mark does not wait for a turn-start event. a wake call that throws clears th
 
 **check the file first.** before every hand-over, including a message handed over again, the
 extension checks that `<msgId>.json` still exists and that `agents/<id>.stopping` does not.
-[`orcr agent stop`](/docs/cli#orcr-agent-stop) removes the agent's message files before it
-interrupts, so a stop never starts a new turn.
 
 **never await the call.** at rest, its promise lasts the whole turn. a call made inside an
 `agent_settled` handler is deferred by Pi until the settle ends, so it is safe there.
@@ -156,9 +154,9 @@ rebuilds the set from the markers on disk: `.accepted` without `.delivered`. at 
 `agent_settled`, Pi's queues are empty, because Pi keeps running while anything is queued. so
 anything still in the set was dropped. the extension hands each one over again, in id order and
 in its own mode, if its file still exists. the first starts the next turn, and the rest follow
-the busy rule. a held `immediate` is not in the set: it is delivered at that same settle, as above. measured: the
-dropped steer was handed over again as a steer, together with the `immediate`, and both were
-answered.
+the busy rule. a held `immediate` is not in the set: it is delivered at that same settle, as
+above. measured: the dropped steer was handed over again as a steer, together with the
+`immediate`, and both were answered.
 
 `ctx.hasPendingMessages()` cannot replace the set: it counts text steers only, not custom
 messages.
@@ -169,9 +167,8 @@ messages.
 `pi.registerTool` at the first `session_start` of the module copy, with the parameters in
 [tools](/docs/integrations#tools). each one calls the [socket API](/docs/socket-api)
 (`message.send`, `agent.list`, `agent.read`, `agent.new`, `agent.stop`) with `from` set to
-`ORCR_AGENT_ID`. `orcr_send` waits at most 5
-seconds for the markers. `orcr_start` returns as soon as the agent is launched, in state
-`starting`. the results use the [texts](/docs/integrations#what-the-model-reads) shared by every
+`ORCR_AGENT_ID`. `orcr_send` waits at most 5 seconds for the markers. `orcr_start` returns as
+soon as the agent is launched, in state `starting`. the results use the [texts](/docs/integrations#what-the-model-reads) shared by every
 kind. a reply to `orcr` is allowed, and the server writes it already delivered.
 
 - **the `orcr_` prefix is required.** two extensions that register one tool name make Pi exit

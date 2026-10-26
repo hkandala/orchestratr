@@ -304,7 +304,7 @@ object unchanged, with the fields of [watches](/docs/messaging#watches).
 
 | `reply.event` | exit |
 |---|---|
-| `reply` or `idle` | 0. `idle` means the agent stopped working without replying, and `last_text` is its last assistant text. |
+| `reply` or `idle` | 0. `idle` means the agent stopped working without replying. `last_text` is its last answer, or `error` its failed turn. |
 | `blocked` or `exited` | 4 |
 | `timeout` | 5. `result` holds the watched message's outcome now, so a caller knows that sending again makes a duplicate. |
 
@@ -351,7 +351,8 @@ orcr agent stop <agent>… | --all [--json]
 ```
 
 `--all` stops the caller's children, so every descendant. run outside an agent, the caller is
-`orcr`, and `--all` stops every agent.
+`orcr`, and `--all` stops every agent. an agent may stop only its descendants
+(`invalid_request`, `not_permitted`).
 
 stopping an agent stops every agent below it too: its descendants, from the `parent` links.
 several agents stop in parallel. the same agent given twice, by name or by id, fails the call

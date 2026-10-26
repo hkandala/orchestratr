@@ -23,8 +23,7 @@ this is the one send path for every kind. nothing is ever typed into an agent.
   inbox/orcr/                            the inbox of people and programs
 ```
 
-the location is fixed, and does not follow `XDG_STATE_HOME`. orchestratr passes it to each agent
-as `ORCR_BUS`.
+the location is fixed. orchestratr passes it to each agent as `ORCR_BUS`.
 
 ### rules for every file
 
@@ -135,7 +134,7 @@ the record has two owners, one after the other, so two writers never race:
 | `text` | at most 32768 bytes of UTF-8. a larger one is refused (`text_too_long`) with "write it to a file and send the path". empty text is allowed only with `immediate` (`text_empty`). |
 | `reply_to` | the id of the message this one answers, or null. it must match the id pattern. the server does not check that the original exists. the original is at `inbox/<this sender>/<reply_to>.json`, or, for a watch ending, at `inbox/<watch.agent>/<reply_to>.json`. |
 | `needs_reply` | the sender wants an answer. the server watches the recipient for the sender. |
-| `reply_by` | when the watch gives up. none for messages from agents' tools: their watch ends on `reply`, `idle`, `blocked` or `exited`. the CLI's `--reply` sets 30 minutes, because a script needs a bound. |
+| `reply_by` | when the watch gives up. none for messages from agents' tools: their watch ends on `reply`, `idle`, `blocked` or `exited`. the CLI's `--reply` sets 30 minutes through `reply_timeout_ms`, because a script needs a bound. |
 | `delivery` | when the message reaches the model. see below. |
 | `watch` | only on a [watch ending](#watches). |
 | `model_text` | what the model sees, rendered by the server when it writes the file. integrations hand it over unchanged. see [what the model sees](#what-the-model-sees). |
@@ -174,7 +173,8 @@ From another agent, not the user. The sender expects a reply: answer once when y
 send({ to: "019fd870-…", reply_to: "1791273256674k3x9q2", text }).
 ```
 
-- for a message from `orcr`, the first line is `From orcr: a person or a script, through orchestratr.`
+- for a message from `orcr`, the hint starts `From orcr: a person or a script, through
+  orchestratr.` in place of `From another agent, not the user.`
 - without `needs_reply`, the last line is `No reply expected.`
 - a reply carries `reply-to="…"` in its tag.
 - the tool name in the hint is the recipient's `send_tool`, from its
@@ -232,7 +232,7 @@ resolve the recipient. it must be `orcr`, or a live agent that is not the sender
 stopped. if it is not, nothing is written: `not_found`, which lists the live agents;
 `not_ready` with `details.state: "exited"` or `details.reason: "stopping"`; or
 `invalid_request` with `details.reason: "self"`. a message to `orcr` cannot ask for a reply
-(`reply_from_orcr`). every reason is in [error response](/docs/socket-api#error-response).
+(`reply_from_orcr`). every reason is in [reasons](/docs/socket-api#reasons).
 
 one agent may send another at most 12 messages in 10 minutes, counted per direction: A to B and
 B to A are counted apart. the next one is refused with `not_ready` and
@@ -376,9 +376,7 @@ a web client can show `inbox/orcr/` as a conversation, and subscribe to
   in the order sent. across modes, an `immediate` overtakes, and a `followUp` waits for the end
   of the turn. messages from two senders arrive in id order, which is send time to the
   millisecond.
-- **no exactly-once delivery.** a reload of the integration between `.accepted` and
-  `.delivered` can hand a message over twice. each kind's page says how its integration narrows
-  this.
+- **no exactly-once delivery.** see [receiving](#receiving).
 - **no recall.** a message stays in its recipient's inbox when its sender stops, and is still
   delivered. a reply to it is refused with `not_found`.
 - **no access control** beyond file permissions. the bus is mode `0700`. any process of the same

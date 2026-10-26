@@ -58,21 +58,23 @@ integration.
 6. **handle an empty `immediate`** exactly as [delivery modes](/docs/messaging#delivery-modes)
    says. it never starts a turn itself.
 7. **recover after an interrupt, where the kind needs it.** an interrupt is an `immediate`, or
-   the person pressing Esc. on Pi and on Codex it drops messages that the agent accepted and did
-   not yet deliver (measured). on Claude Code and OpenCode 2.x it does not. 2.x still hands each
-   one over again with the same id, which only wakes the session. on OpenCode 1.x it was not
-   measured. where the kind drops messages, or may drop them:
-   - when a turn ends interrupted (on Pi, at every real settle), hand over again every message
-     the integration handed to the agent that has no `.delivered` and whose file still exists.
-     this covers steers, and `followUp` messages the agent queued itself.
-   - on Codex, also hand over again the steers of that turn that the model did not answer, and
-     the message that started the turn when it has no `item/started`. see
+   the person pressing Esc. what it drops differs per kind:
+   - **Pi** (measured): every message the agent accepted and did not yet deliver. at every real
+     settle, hand over again each message the integration handed to Pi that has no `.delivered`
+     and whose file still exists: steers, and `followUp` messages Pi queued itself.
+   - **Codex** (measured): steers not yet in history. steers already in history stay unanswered.
+     hand over again the steers of that turn that the model did not answer, and the message that
+     started the turn when it has no `item/started`. see
      [Codex](/docs/agents/codex#recovery-after-an-interrupt).
-   - on OpenCode 1.x, after an aborted turn, hand over again only the messages whose id the
-     session history does not hold (not verified).
-   - never hand over again an empty `immediate`, or a message the integration still holds. a kind
-     that holds `followUp` messages releases the oldest when no turn starts, so an interrupt
-     never strands them.
+   - **OpenCode 1.x** (not verified): after an aborted turn, hand over again only the messages
+     whose id the session history does not hold.
+   - **Claude Code and OpenCode 2.x**: nothing. Claude Code's steers wait in the mod's memory, and
+     a 2.x steer is a durable inbox row. the 2.x plugin still hands each undelivered message over
+     again with the same id. OpenCode keeps the first copy of an id, so this only wakes the
+     session.
+   - **every kind:** never hand over again an empty `immediate`, or a message the integration
+     still holds. a kind that holds `followUp` messages releases the oldest when no turn starts,
+     so an interrupt never strands them.
 
    `stop` removes the agent's message files, delivered or not, before it interrupts, so a stop
    never starts a new turn.
@@ -104,10 +106,10 @@ Claude Code):
 | tool | does |
 |---|---|
 | `send` | `{to, text, reply_to?, needs_reply?, delivery?}`. sends a message, waits up to 5 seconds for the markers, and returns the id and the [outcome](/docs/messaging#outcomes). |
-| `list` | the live agents, as [agent objects](/docs/cli#output). |
+| `list` | the live agents, as [agent objects](/docs/cli#output), each with its `undelivered` count. |
 | `read` | `{agent, last?}`. another agent's recent conversation. |
 | `start` | `{kind, text, name?, cwd?, model?, effort?}`. starts an agent with the caller as its parent, and sends it `text` with `needs_reply`. `cwd` defaults to the caller's, and a relative one resolves against it. it returns as soon as the agent is launched. the watch reports the reply, or why there is none. |
-| `stop` | `{agents}`: a list of the caller's descendants, or `"all"` for every agent it started. stopping an agent stops its descendants first. returns one outcome per agent. |
+| `stop` | `{agents}`: a list of the caller's descendants, or `"all"` for its children. stopping an agent stops its descendants first, so `"all"` stops every descendant. returns one outcome per agent. |
 
 each tool's description is its row above. parameter types are those of the matching
 [method](/docs/socket-api#methods). `list` and `read` return the method's result as JSON. without

@@ -100,8 +100,8 @@ not create.
 orchestratr finds that session's socket itself, and never takes it from an inherited
 `HERDR_SOCKET_PATH`. it starts the herdr server without any inherited `HERDR_*` variable or
 [session variable](#session-variables). a `ping` reply with a `server` field other than `herdr` is
-refused as `backend_unavailable`, `details.reason: "not_herdr"`. tuios answers herdr's API on its own socket with
-`"server": "tuios"`, and points `HERDR_SOCKET_PATH` at it in its panes.
+refused as `backend_unavailable`, `details.reason: "not_herdr"`. tuios answers herdr's API on its
+own socket with `"server": "tuios"`, and points `HERDR_SOCKET_PATH` at it in its panes.
 
 ## launching an agent
 
@@ -168,10 +168,6 @@ the lists start from the ones amx, another agent launcher, measured (`src/vendor
 `not_inherited`). each kind's list is the `session_vars` field of its
 [kind entry](/docs/agents#the-kind-entry), so a new variable is a one-line change. the tuios list
 belongs to no kind: it is a fixed host list in the core.
-
-`CLAUDE_EFFORT` matters beyond identity: it silently overrides effort when `--effort` is not
-passed. `PI_HERD_PARENT` makes pi-herd stop the
-new agent when that parent ends.
 
 the list is exact, not a prefix. removing every `CLAUDE_CODE_*` would also remove
 `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` and the OAuth token, which some people need
@@ -280,10 +276,9 @@ orchestratr adds four rules on top:
 
 1. **`starting`** until the integration registers. a record with no `pid` yet is `starting`.
 2. **`exited`** when the record's `pid` is not running, or runs with another start time than
-   `pid_started`, or the pane is gone. liveness is checked
-   before herdr's answer. if herdr restarts and restores a pane by relaunching the agent itself,
-   the new process has a new pid and none of orchestratr's launch settings. orchestratr treats it
-   as `exited`.
+   `pid_started`, or the pane is gone. liveness is checked before herdr's answer. if herdr
+   restarts and restores a pane by relaunching the agent itself, the new process has a new pid and
+   none of orchestratr's launch settings. orchestratr treats it as `exited`.
 3. **herdr's `done` is `idle`.** herdr reports `done` for a finished agent in a pane nobody has
    focused, which is almost every orchestratr pane.
 4. **`blocked` passes through.** where herdr cannot see a kind's dialogs, the integration reports
@@ -298,10 +293,9 @@ is used for reporting, for watches, and for `--wait`.
 ## sending, interrupting and stopping
 
 - **sending** writes a file. see [sending](/docs/messaging#sending).
-- **interrupting** sends an `immediate` message with no text. the integration aborts the turn
-  from inside the agent. no key is ever pressed, so no key can open a view that a second escape
-  would open. messages that wait for the agent are not withdrawn: they start the next turn. to
-  stop an agent for good, use `stop`.
+- **interrupting** sends an `immediate` message with no text, and the integration aborts the
+  turn from inside. no key is pressed, so none can open a view that a second escape would open.
+  see [`orcr agent interrupt`](/docs/cli#orcr-agent-interrupt).
 - **stopping** follows the order in [`orcr agent stop`](/docs/cli#orcr-agent-stop): refuse new
   files into the inbox, end the watches, withdraw the agent's messages, interrupt, close the pane,
   delete the files. it stops the agent's descendants too.

@@ -188,8 +188,6 @@ clears that mark and writes `.failed`. `<block>` is the message's `model_text`, 
 
 **before every hand-over**, including a held `followUp` and a message handed over again, the
 bridge checks that `<msgId>.json` still exists and that `agents/<id>.stopping` does not.
-`orcr agent stop` removes the agent's message files before it interrupts, so a stop never starts
-a new turn.
 
 - **`.accepted`** when `turn/start` returns, or when the bridge holds a `followUp`.
 - **`.delivered`** at `item/started` on the followed thread with `item.type == "userMessage"` and

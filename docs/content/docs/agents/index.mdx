@@ -86,7 +86,7 @@ the table above is notes for the integration's author, which the core never read
 | `versions` | the supported range, and how to read the version from `<binary> --version`. where a kind has two lines (OpenCode), the entry says which line a version belongs to, and orchestratr records it as `kind_version`. |
 | `home` | the variable that `kind.<k>.home` sets, or none |
 | `session_vars` | the [session variables](/docs/how-it-works#session-variables) to remove at launch. the tuios list is a core constant, not a kind's. |
-| `integration` | the version, and the embedded files, if any. a kind with no files names its bridge, built into the binary and run as `orcr bridge <kind>`. |
+| `integration` | the version, and the embedded files, if any. a kind with no files names its sidecar, `orcr bridge <kind>` (see [adding a kind](/docs/integrations#adding-a-kind)). |
 | `send_tool` | the send tool's name as the model sees it (`mcp__orcr__send`, `orcr_send`). the server puts it in the reply hint of the message's `model_text`. |
 | `checks` | the kind's install and start checks |
 | `prepare(cwd)` | settings written before launch. only Claude Code has one: the trust key. |

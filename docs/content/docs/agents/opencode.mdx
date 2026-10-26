@@ -158,7 +158,7 @@ starts on home, and the TUI half moves it to the session: on 2.x with
 [block](/docs/messaging#what-the-model-sees) the server rendered. on 1.x the part carries
 `metadata: {orcr: <msgId>}`, which OpenCode persists. one call per message, in id order. before
 every call, the plugin checks that `<msgId>.json` still exists and that `agents/<id>.stopping`
-does not: `stop` removes the agent's message files before it interrupts. from the moment it
+does not. from the moment it
 hands a message to an idle agent, the plugin treats the agent as busy, so a second message
 moments later steers into the starting turn. a call that fails clears that mark and writes
 `.failed`.

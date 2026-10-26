@@ -24,7 +24,7 @@ exec env -u CLAUDECODE -u CLAUDE_PID -u CLAUDE_EFFORT -u CLAUDE_CODE_SESSION_ID 
 
 | part | why |
 |---|---|
-| `env -u …` | the [session variables](/docs/how-it-works#session-variables). an inherited `CLAUDE_CODE_CHILD_SESSION` turns off session persistence for an interactive session: no transcript, no prompt history, no resume (2.1.276). an inherited `CLAUDE_EFFORT` silently overrides effort when `--effort` is absent. the list is exact. a `CLAUDE_CODE_*` prefix would also remove `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` and the OAuth token. |
+| `env -u …` | the [session variables](/docs/how-it-works#session-variables). an inherited `CLAUDE_CODE_CHILD_SESSION` turns off session persistence for an interactive session: no transcript, no prompt history, no resume (2.1.276). an inherited `CLAUDE_EFFORT` silently overrides effort when `--effort` is absent. |
 | `ORCR_AGENT_ID`, `ORCR_BUS` | the mod reads them with `$.env.get`. without them it does nothing. |
 | `CLAUDE_CONFIG_DIR` | only when `home` is set. it moves `.claude.json`, `settings.json`, `projects/` and `sessions/`. |
 | `--dangerously-skip-permissions` | permission bypass. Claude Code refuses it as root. |
@@ -50,10 +50,9 @@ Claude Code shows up to four screens before it takes input. permission bypass re
   the theme picker, and the security notes then wait on `Press Enter to continue`. any value of
   `lastOnboardingVersion` works. anyone who has run Claude Code once has both.
 - **the trust key** follows [writing a person's
-  configuration](/docs/how-it-works#writing-a-persons-configuration). the file is `.claude.json`
-  in the configuration folder: `~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json` when `home`
-  is set. the lock is that path plus `.lock`. the key is the resolved real path: on macOS `/tmp/x`
-  is `/private/tmp/x`, and any other form was silently ignored (2.1.276).
+  configuration](/docs/how-it-works#writing-a-persons-configuration). the key is the resolved
+  real path: on macOS `/tmp/x` is `/private/tmp/x`, and any other form was silently ignored
+  (2.1.276).
 - **trust is inherited from a parent folder** on 2.1.285, up to the git root or `/` (binary
   strings). orchestratr checks the ancestors first.
 
@@ -146,8 +145,6 @@ an `immediate` waiting for `turn.start` then runs as at rest.
 
 one message per hand-over call, in id order. before every hand-over, including a held steer, the
 mod checks that `<msgId>.json` still exists and that `agents/<id>.stopping` does not.
-[`orcr agent stop`](/docs/cli#orcr-agent-stop) removes the agent's message files before it
-interrupts, so a stop never starts a turn.
 
 | mode | at rest | while working |
 |---|---|---|
