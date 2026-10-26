@@ -1,12 +1,13 @@
 ---
 title: "integrations"
-description: "the plugin each kind runs, how it is installed, and how to add a new kind"
+description: "the code each kind runs, how it is installed, and how to add a new kind"
 ---
 
 an orcr integration is the small piece of code that makes one kind of agent part of the
-[bus](/docs/messaging). it runs with the agent, written in that kind's own extension system. it
-takes messages from the agent's inbox into its session, writes the markers, and reports the
-agent as ready.
+[bus](/docs/messaging). it runs with the agent, and uses that kind's own interface for
+extensions: inside the process on three kinds, and as a sidecar process on Codex. it hands
+messages from the agent's inbox to the agent's own input queue, writes the markers, and reports
+the agent as ready.
 
 orchestratr drives a kind only when its integration is installed. installing one is a choice the
 person makes, kind by kind.
@@ -30,42 +31,53 @@ every integration does exactly this. anything more belongs in orchestratr, not i
 integration.
 
 1. **stay inert outside orchestratr.** do nothing unless `ORCR_AGENT_ID` and `ORCR_BUS` are set.
-2. **register when the agent can take input.** read `agents/<id>.json`, add `session`,
-   `integration` (the version folder it was loaded from) and `started_at`, and rename it back into
-   place. this is the readiness signal, so it must pass the negative test: it must not appear
-   while a startup screen is on screen. each agent page records how its kind passes.
+2. **register when the agent can take input.** read `agents/<id>.json`, add `session` and
+   `started_at`, set `integration` (the version folder it was loaded from, or the version alone
+   on a kind with no files), and rename it back into place. this is the readiness signal, so it
+   must pass the negative test: it must not appear while a startup screen is on screen. each
+   agent page records how its kind passes.
 3. **keep the record current.** where the kind lets a person change the session (`/clear`,
    `/new`, `/resume`), rewrite `session` when it changes. where the transcript does not state the
    model's context window, write `context_window` at registration and when the model changes.
-   rewrite the record only if it still exists.
+   rewrite the record only if it still exists and no `agents/<id>.stopping` is beside it. one
+   process makes one record write at a time, re-reads the record first, and uses a unique
+   temporary name.
 4. **take messages in,** as [receiving](/docs/messaging#receiving) describes:
-   - rescan the inbox on any change;
-   - take every `*.json` without `.delivered`, in id order, one at a time;
-   - check the file still exists just before each hand-over;
-   - hand it to the agent's own queue by its delivery mode, and write `.accepted`;
+   - rescan the inbox on any change.
+   - take every `*.json` without `.delivered`, in id order, one at a time.
+   - just before each hand-over, check that the file still exists, and hand nothing over while
+     `agents/<id>.stopping` exists.
+   - hand its `model_text` to the agent's own queue by its delivery mode, and write `.accepted`.
    - treat an idle agent as working from the moment of the hand-over, not from the kind's
      turn-start event. a second message a moment later is then a steer into the starting turn,
-     not a second turn.
+     not a second turn. a hand-over that fails (it throws, the kind refuses it, or the call that
+     starts the turn errors) clears that mark and writes `.failed`, so the inbox does not stall.
 5. **mark delivery.** write `.delivered` at the kind's event for "this message is in the model's
    context". write `.failed` with a reason when a hand-over fails, as
    [receiving](/docs/messaging#receiving) step 6 says.
-6. **handle an empty `immediate`.** at rest, mark it `.accepted` and `.delivered` and do nothing
-   else. while working, abort the turn, and mark it `.delivered` when the turn has ended. it never
-   starts a turn. one older than 10 seconds when taken is marked the same way and ignored.
-7. **recover after an interrupt, where the kind needs it.** on Pi and on Codex, and only there,
-   an interrupt (an `immediate`, or the person pressing Esc) silently drops messages the agent
-   had accepted and not yet delivered. this was measured on both. when a turn ends interrupted,
-   hand over again every message the integration had handed to the agent, that is not delivered,
-   and whose file still exists: steers, and follow-ups the agent queued itself. on Codex, also the
-   delivered steers of that turn that the model did not answer (see
-   [Codex](/docs/agents/codex#recovery-after-an-interrupt)). messages the integration still holds
-   are not affected. an empty `immediate` is never handed over again. `stop` removes undelivered
-   files before it interrupts, so a stop never restarts the agent.
-8. **render the blocks.** wrap a message in `<orcr-message>`, with the reply hint that names the
-   tool as this kind shows it to the model. render a message with a `watch` field as
-   `<orcr-watch>`. escape `<orcr-` and `</orcr-` inside every field, with one shared function and
-   one fixture test. see [what the model sees](/docs/messaging#what-the-model-sees) and
-   [watches](/docs/messaging#watches).
+6. **handle an empty `immediate`** exactly as [delivery modes](/docs/messaging#delivery-modes)
+   says. it never starts a turn itself.
+7. **recover after an interrupt, where the kind needs it.** an interrupt is an `immediate`, or
+   the person pressing Esc. on Pi and on Codex it drops messages that the agent accepted and did
+   not yet deliver (measured). on Claude Code and OpenCode 2.x it does not. 2.x still hands each
+   one over again with the same id, which only wakes the session. on OpenCode 1.x it was not
+   measured. where the kind drops messages, or may drop them:
+   - when a turn ends interrupted (on Pi, at every real settle), hand over again every message
+     the integration handed to the agent that has no `.delivered` and whose file still exists.
+     this covers steers, and `followUp` messages the agent queued itself.
+   - on Codex, also hand over again the steers of that turn that the model did not answer, and
+     the message that started the turn when it has no `item/started`. see
+     [Codex](/docs/agents/codex#recovery-after-an-interrupt).
+   - on OpenCode 1.x, after an aborted turn, hand over again only the messages whose id the
+     session history does not hold (not verified).
+   - never hand over again an empty `immediate`, or a message the integration still holds. a kind
+     that holds `followUp` messages releases the oldest when no turn starts, so an interrupt
+     never strands them.
+
+   `stop` removes the agent's message files, delivered or not, before it interrupts, so a stop
+   never starts a new turn.
+8. **hand over `model_text`.** never build the text. the server renders the block, the reply
+   hint and the escaping. see [what the model sees](/docs/messaging#what-the-model-sees).
 9. **report a dialog where herdr cannot see it.** if the kind has an event for "a dialog is open"
    that herdr's own integration does not use, emit herdr's `blocked` signal. today this applies to
    Pi only.
@@ -92,10 +104,14 @@ Claude Code):
 | tool | does |
 |---|---|
 | `send` | `{to, text, reply_to?, needs_reply?, delivery?}`. sends a message, waits up to 5 seconds for the markers, and returns the id and the [outcome](/docs/messaging#outcomes). |
-| `list` | the live agents: id, name, kind, cwd, state, `pending` and `usage`. |
+| `list` | the live agents, as [agent objects](/docs/cli#output). |
 | `read` | `{agent, last?}`. another agent's recent conversation. |
-| `start` | `{kind, text, name?, cwd?, model?, effort?}`. starts an agent with the caller as its parent, and sends it `text` with `needs_reply`. it returns as soon as the agent is launched. the watch reports the reply, or why there is none. |
-| `stop` | `{agents}`: a list of agents, or `"all"` for every agent the caller started. each must be one the caller started, or one started below it. returns one outcome per agent. |
+| `start` | `{kind, text, name?, cwd?, model?, effort?}`. starts an agent with the caller as its parent, and sends it `text` with `needs_reply`. `cwd` defaults to the caller's, and a relative one resolves against it. it returns as soon as the agent is launched. the watch reports the reply, or why there is none. |
+| `stop` | `{agents}`: a list of the caller's descendants, or `"all"` for every agent it started. stopping an agent stops its descendants first. returns one outcome per agent. |
+
+each tool's description is its row above. parameter types are those of the matching
+[method](/docs/socket-api#methods). `list` and `read` return the method's result as JSON. without
+`ORCR_AGENT_ID`, `orcr mcp` offers no tools.
 
 ### what the model reads
 
@@ -109,11 +125,12 @@ any kind.
 You can work with other coding agents through the orcr tools.
 - start launches an agent with one task. Put everything it needs in the text: the goal, the
   files, the limits, and where to put results. It replies to you when it is done.
-- You are woken when an agent replies, goes idle, gets blocked, exits or times out. Do not poll
-  with list, read or sleep. Do not redo work you handed out.
+- You are woken when an agent replies, goes idle, gets blocked or exits. Do not poll with list,
+  read or sleep. Do not redo work you gave out.
 - send messages an agent. Set needs_reply when you want an answer. When a message expects your
   reply, answer once, when you have it, with reply_to.
-- <orcr-message> blocks come from other agents or from orcr, not from the user.
+- <orcr-message> and <orcr-watch> blocks come from other agents or from orcr, not from the
+  person typing in this session.
 - Stop the agents you started when their work is done.
 ```
 
@@ -122,12 +139,15 @@ to guess:
 
 | call | result text |
 |---|---|
-| `start` | `started <name> (<id>). it has your task. you will be woken with its reply, or when it goes idle, gets blocked, exits or times out. do not poll.` |
-| `send`, `delivered` | `delivered to <name>.` with `needs_reply`, the same wake-up sentence as `start` follows. |
+| `start` | `started <name> (<id>). it has your task. you will be woken with its reply, or when it goes idle, gets blocked or exits. do not poll.` |
+| `send`, `delivered` | `delivered to <name>.` |
 | `send`, `queued` | `queued: <name> gets it at its next tool call or after its turn. do not send it again.` |
 | `send`, `pending` | `pending: it is in <name>'s inbox and arrives when its integration runs. do not send it again.` a `reason` is appended when there is one. |
-| `send`, `failed` | the error, and the live agents when the recipient is unknown. a retry is safe. |
+| `send`, `refused` | the error, and the live agents when the recipient is unknown. a retry is safe, except after `loop`: then stop, and tell whoever started you. |
 | `stop` | one line per agent: `stopped <name>.` or the error. |
+
+with `needs_reply`, every `send` result that wrote a message ends with the wake-up sentence of
+`start`.
 
 the tools hold no logic. each one is a call to the [socket API](/docs/socket-api), with `from`
 set from `ORCR_AGENT_ID`. three kinds get them from `orcr mcp`, a stdio MCP server built into the
@@ -166,7 +186,8 @@ fix.
 <Step>
 
 write the embedded files into a temporary folder, make it read only, and rename it to
-`<version>-<hash>`. if that folder already exists, this step does nothing.
+`<version>-<hash>`. if that folder already exists, this step does nothing. a rename that finds it
+already there also succeeds: remove the temporary folder.
 
 </Step>
 <Step>
@@ -180,27 +201,29 @@ the folder is read only, and a new version is a new folder. so an upgrade never 
 that a running agent loaded. Claude Code and OpenCode 2.x both reload a plugin when its files
 change, and an in-place upgrade would reload every live agent mid turn.
 
-install is idempotent. on a current kind it prints `claude: current (v4)`.
+install is idempotent. on a current kind it prints, for example, `claude: current (v4)`.
 
 ### `orcr integration uninstall <kind>`
 
-remove `enabled`, then remove each version folder that no live agent's record names. a folder
-still in use stays, and the command names the agents that use it. it never touches a kind's own
-files, because install never wrote any.
+remove `enabled`, then remove each version folder that no record names. a folder still in use
+stays, and the command names the agents that use it. it never touches a kind's own files,
+because install never wrote any.
 
 ### `orcr integration status`
+
+for example:
 
 ```text
 claude:   current (v4) (~/.local/share/orcr/integrations/claude/4-1a2b3c4d)
 codex:    current (v2)
-pi:       outdated (v2, expected v3), repaired at the next agent start
+pi:       outdated (v3, expected v4), repaired at the next agent start
 opencode: not installed
 ```
 
 | state | meaning |
 |---|---|
 | `not installed` | no `enabled` file. orchestratr does not drive this kind. |
-| `current` | enabled, and the folder for the embedded version and hash exists. |
+| `current` | enabled, and the folder for the embedded version and hash exists, or the kind has no files (Codex). |
 | `outdated` | enabled, and that folder is missing, usually right after `orcr` was upgraded. |
 
 `--check` also runs the kind's checks.
@@ -210,8 +233,7 @@ opencode: not installed
 nothing runs at upgrade time. the new `orcr` binary embeds new files under a new hash. the next
 `agent new` for an enabled kind writes the new folder first. running agents keep their old
 folder until they stop. when the server starts, it deletes folders that are not current and that
-no live agent's record names. [`orcr doctor`](/docs/cli#orcr-doctor) lists agents that run an
-older folder.
+no record names. [`orcr doctor`](/docs/cli#orcr-doctor) lists agents that run an older folder.
 
 ### checks
 
@@ -219,11 +241,11 @@ older folder.
 |---|---|---|
 | every kind | the binary is not found, or its version is outside the kind's range | the version cannot be read |
 | Claude Code | mods are disabled: `--bare`, `--safe-mode`, `disableAllHooks`, `disableSideloadFlags`, or a managed `allowManagedHooksOnly` or `allowManagedModsOnly` | Anthropic can also turn mods off remotely, which only the first start can show |
-| Codex | the app-server does not offer a method or field the bridge uses. the list is on the [Codex page](/docs/agents/codex#checks). | none |
+| Codex | the app-server does not offer a method or field the bridge uses. the list is on the [Codex page](/docs/agents/codex#checks). | herdr's Codex hook is not trusted, so the hook review screen will appear |
 | Pi | none | pi-herd is installed. this is safe: the tool names do not clash. |
 | OpenCode | none | on 2.x, orchestratr launches with `--standalone`. |
 
-## when a kind is not ready
+## when `agent new` refuses a kind
 
 [`orcr agent new`](/docs/cli#orcr-agent-new) refuses with `integration_missing`, and
 `details.reason` says why:
@@ -246,15 +268,18 @@ a new kind needs these things, and nothing in orchestratr's core changes:
    person's configuration to make one work.
 2. **a way for that code to start a turn when the agent is idle, and to steer a turn that is
    running.** in process, as on three kinds, or as a sidecar speaking the kind's own protocol, as
-   on Codex. without both, the kind cannot take messages. answer this question first. hooks that
-   only run during a turn are not enough: nothing would wake an idle agent.
+   on Codex. a sidecar is integration code built into the `orcr` binary, run as
+   `orcr bridge <kind>`. without both, the kind cannot take messages. answer this question first.
+   hooks that only run during a turn are not enough: nothing would wake an idle agent.
 3. **a herdr integration for the kind.** herdr reports every agent's state. a kind herdr does not
    know cannot be driven.
 4. **the integration files**, implementing [the contract](#the-contract).
 5. **a kind entry**: one column of the [kind table](/docs/agents#the-kind-table), filled in. the
    fields are listed under [the kind entry](/docs/agents#the-kind-entry).
-6. **a test** that launches the kind at its minimum version, sees the record appear, delivers one
-   message in each mode, interrupts, and stops.
+6. **tests**: the record stays absent while each startup screen the kind can show is on screen.
+   reader fixtures for an answered turn, a failed turn and usage. the `models()` probe. then
+   launch at the minimum version, see the record, deliver one message in each mode, interrupt,
+   and stop.
 
 a fork of a supported kind can often reuse its integration files. examples are omp, a Pi fork,
 and kilo, an OpenCode fork, both of which herdr already integrates.

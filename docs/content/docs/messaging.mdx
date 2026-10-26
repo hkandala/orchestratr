@@ -5,8 +5,8 @@ description: "the bus, message files, delivery modes, replies and watches"
 
 agents talk through files. every agent has an inbox, which is a folder. a sender writes one file
 per message into the recipient's inbox. the recipient's [integration](/docs/integrations), which
-runs with the agent, takes the message into the agent's own session, and writes a marker when
-the model has seen it. a reply is a new message that names the message it answers.
+runs with the agent, hands the message to the agent's own input queue, and writes a marker when
+the model has it. a reply is a new message that names the message it answers.
 
 this is the one send path for every kind. nothing is ever typed into an agent.
 
@@ -15,35 +15,40 @@ this is the one send path for every kind. nothing is ever typed into an agent.
 ```text
 ~/.local/state/orcr/bus/                 mode 0700
   agents/<id>.json                       one record per agent
+  agents/<id>.stopping                   the agent is being stopped. written by the server
   inbox/<id>/<msgId>.json                one message, written once by the server
-  inbox/<id>/<msgId>.accepted            the integration has handed it to the agent's own queue
+  inbox/<id>/<msgId>.accepted            the agent's own queue has it, or the integration holds it
   inbox/<id>/<msgId>.delivered           the message is in the model's context
-  inbox/<id>/<msgId>.failed              why the last hand-over failed. for people only
+  inbox/<id>/<msgId>.failed              why the last hand-over failed. it never changes delivery
   inbox/orcr/                            the inbox of people and programs
 ```
 
-the location is fixed. orchestratr passes it to each agent as `ORCR_BUS`.
+the location is fixed, and does not follow `XDG_STATE_HOME`. orchestratr passes it to each agent
+as `ORCR_BUS`.
 
 ### rules for every file
 
-- **a message is written to a dot-prefixed temporary file in the same folder, linked into place
-  with `link`, and the temporary file is removed.**
-  - a reader only reads names that end in `.json`, so it never sees a half-written message.
+- **a message is written to a temporary file in the same folder, linked into place with `link`,
+  and the temporary file is removed.**
+  - a temporary file is named `.<name>.<random>.tmp`, and every reader skips names that start
+    with `.`. so no reader sees a half-written message.
   - `link` fails when the name exists, where `rename` would replace it. so writing the same id
     twice is a no-op, never a silent overwrite. a client can retry a send with the same id, and
     the server writes each watch ending exactly once.
-  - when `link` finds the name taken, the server compares the stored message. the same sender and
-    text is a retry, and returns the current outcome. anything else is refused with
-    `invalid_request` and `details.reason: "id_in_use"`.
-  - OpenCode 2.x's own inbox works the same way: the caller picks the id, and the first
-    admission wins.
-- **an agent record is written to a temporary file and renamed into place.** it is rewritten
-  when it changes.
+  - when `link` finds the name taken, the server compares the stored message. the same sender,
+    recipient and text is a retry, and returns the current outcome. anything else is refused
+    with `invalid_request` and `details.reason: "id_in_use"`.
+  - OpenCode 2.x's own inbox works the same way: the caller picks the id, and OpenCode keeps
+    the first copy of an id.
+- **only `agent new` creates an agent's inbox folder.** a write into a missing inbox fails, and
+  the writer drops it, so a late write never brings back a stopped agent's inbox.
 - **a message file is never changed.** its state lives in the markers beside it.
-- **a marker is an empty file, or a small JSON object** such as `{"at": "2026-10-06T09:22:10Z"}`.
-  its existence is what counts. one exception: a message handed over again after an interrupt
-  and delivered again gets a new `.delivered`, written to a temporary file and renamed into
-  place. its `at` is the latest delivery.
+- **a marker is an empty file, or a small JSON object** such as
+  `{"at": "2026-10-06T09:22:10.412Z"}`. its existence is what counts.
+- **records, and markers that can be written again, go to a temporary file and are renamed into
+  place.** `.delivered` is written again when a message handed over again is delivered
+  again, with the latest `at`. `.failed` is written again on each failure.
+- **every time** in a record, message or marker is UTC with milliseconds, from the writer's clock.
 - **unknown fields are ignored.** every message and record carries `"v": 1`.
 
 ## agent records
@@ -59,32 +64,37 @@ the location is fixed. orchestratr passes it to each agent as `ORCR_BUS`.
   "model": null,
   "effort": "high",
   "parent": "019fd870-0c2e-7b41-9b0a-1f3c2a6d9e11",
-  "created_at": "2026-10-06T09:14:02Z",
-  "ready_by": "2026-10-06T09:16:02Z",
-  "herdr": {"session": "orcr", "pane": "w1:p2"},
+  "created_at": "2026-10-06T09:14:02.118Z",
+  "ready_by": "2026-10-06T09:16:02.118Z",
+  "pane": "w1:p2",
   "pid": 4242,
-  "pid_started": "2026-10-06T09:14:03Z",
+  "pid_started": "2026-10-06T09:14:03.000Z",
   "session": {"id": "019fd875-…", "transcript": "/Users/me/.codex/sessions/…/rollout-….jsonl"},
   "integration": "2",
-  "started_at": "2026-10-06T09:14:05Z",
+  "started_at": "2026-10-06T09:14:05.530Z",
   "context_window": null
 }
 ```
 
 the record has two owners, one after the other, so two writers never race:
 
-1. **orchestratr** writes everything up to `pid`, before the agent starts. creating the file
-   reserves the name. `ready_by` is when `agent new` gives up waiting. `pid` is the pane's shell,
-   which the launch line's `exec` turns into the agent. `pid_started` is that process's start
-   time, so a reused pid is never taken for the agent.
-2. **the integration** reads the record when its session starts, adds `session`, `integration`
-   (the version folder it was loaded from, or just the version for a kind with no files) and
-   `started_at`, and writes it back. that is how
-   orchestratr knows the agent is ready. after that, only the integration writes the record, for
-   example when a person runs `/clear` and the session id changes. on kinds whose transcript does
-   not state the model's context window (Pi, OpenCode), it also writes `context_window` at
-   registration and when the model changes. it rewrites the record only if
-   the file still exists, so a late write cannot bring back a stopped agent.
+1. **orchestratr** writes everything up to `pid_started`, and `integration`, before the agent
+   starts. the server's name lock reserves the name, and the record keeps it after a restart.
+   orchestratr writes the record at the start of `agent new`, and again with `pane`, `pid` and
+   `pid_started` once the tab exists. `ready_by` is when `agent new` gives up waiting. `pid` is
+   the pane's shell, which the launch line's `exec` turns into the agent. `pid_started` is that
+   process's start time as the OS reports it, cut to whole seconds and compared exactly, so a
+   reused pid is never taken for the agent. `integration` names the folder the launch loads, so
+   no clean-up deletes it while the agent starts.
+2. **the integration** reads the record when its session starts, adds `session` and
+   `started_at`, sets `integration` (the version folder it was loaded from, or the version alone
+   on a kind with no files), and writes it back. that is how orchestratr knows the agent is
+   ready. after that, only the integration writes the record, for example when a person runs
+   `/clear` and the session id changes. on kinds whose transcript does not state the model's
+   context window (Pi, OpenCode), it also writes `context_window` at registration and when the
+   model changes. it rewrites the record only if the file still exists and no `.stopping` file is
+   beside it. `stop` waits for the agent's process to end before it deletes the record, so a
+   late write cannot bring back a stopped agent.
 
 **a record lives from `agent new` to `agent stop`.** an agent whose process ended reads
 `exited`. its record stays, and its name stays taken, until `stop` removes it.
@@ -95,8 +105,8 @@ the record has two owners, one after the other, so two writers never race:
   kind's session id. the session id changes on `/clear` and `/new`, and the inbox must not move
   when it does.
 - **the name** is for people. it matches `[a-z][a-z0-9_-]{0,31}`, which is also herdr's rule, and
-  it is unique among agents that have a record. without `--name`, orchestratr picks the kind, a
-  hyphen, and the lowest number not taken: `codex-1`.
+  it is unique among agents that have a record. `orcr` is reserved (`name_reserved`). without
+  `--name`, orchestratr picks the kind, a hyphen, and the lowest number not taken: `codex-1`.
 - every command, tool and API method accepts either one.
 - **a live agent** is one with a record that is not `exited`.
 
@@ -106,49 +116,55 @@ the record has two owners, one after the other, so two writers never race:
 {
   "v": 1,
   "id": "1791273256674k3x9q2",
-  "from": {"id": "019fd870-…", "name": "lead", "kind": "claude"},
+  "from": {"id": "019fd870-…", "name": "lead"},
   "to": "019fd875-…",
   "text": "review src/auth and list what you would change",
   "reply_to": null,
   "needs_reply": true,
   "delivery": "steer",
-  "sent_at": "2026-10-06T09:20:31Z"
+  "sent_at": "2026-10-06T09:20:31.674Z",
+  "model_text": "<orcr-message id=\"1791273256674k3x9q2\" from=\"lead\" …>…"
 }
 ```
 
 | field | meaning |
 |---|---|
-| `id` | 13 digits of epoch milliseconds, then 6 random lowercase base36 characters: letters and digits only. it is the file name, so an inbox sorts by send time. some kinds take it as their own message id (OpenCode 2.x uses `msg_<id>`). the client may choose it, to make a retry safe. |
+| `id` | 13 digits of epoch milliseconds, then 6 random lowercase base36 characters: `^[0-9]{13}[0-9a-z]{6}$`. it is the file name, so an inbox sorts by send time. the client may choose it, to make a retry safe. an id is unique per sender across every inbox: reusing one for another message is refused with `id_in_use`, and any other form with `id_format`. some kinds take it as their own message id (OpenCode 2.x uses `msg_<id>`). |
 | `from` | the sender. people and programs send as `{"id": "orcr", "name": "orcr"}`. |
 | `to` | the recipient's id. |
-| `text` | at most 32 KB. a larger message is refused with "write it to a file and send the path". |
-| `reply_to` | the id of the message this one answers, or null. the original is at `inbox/<this sender>/<reply_to>.json`. |
+| `text` | at most 32768 bytes of UTF-8. a larger one is refused (`text_too_long`) with "write it to a file and send the path". empty text is allowed only with `immediate` (`text_empty`). |
+| `reply_to` | the id of the message this one answers, or null. it must match the id pattern. the server does not check that the original exists. the original is at `inbox/<this sender>/<reply_to>.json`, or, for a watch ending, at `inbox/<watch.agent>/<reply_to>.json`. |
 | `needs_reply` | the sender wants an answer. the server watches the recipient for the sender. |
-| `reply_by` | with `needs_reply`: when the watch gives up. 30 minutes after sending by default. |
+| `reply_by` | when the watch gives up. none for messages from agents' tools: their watch ends on `reply`, `idle`, `blocked` or `exited`. the CLI's `--reply` sets 30 minutes, because a script needs a bound. |
 | `delivery` | when the message reaches the model. see below. |
 | `watch` | only on a [watch ending](#watches). |
+| `model_text` | what the model sees, rendered by the server when it writes the file. integrations hand it over unchanged. see [what the model sees](#what-the-model-sees). |
 
 ### delivery modes
 
-| mode | at rest | while working |
-|---|---|---|
-| `steer` (default) | starts a turn at once | reaches the model at its next tool call. if the turn makes no further tool call, it runs as the next turn. |
-| `followUp` | starts a turn at once | runs as its own turn, after the current one ends |
-| `immediate` | starts a turn at once | aborts the current turn, then starts a turn |
+at rest, every mode starts a turn at once. while the agent works, the modes differ:
 
-all four kinds support all three modes. where a kind has no native follow-up, its integration
-holds the message until the turn ends. see the table on [agent kinds](/docs/agents).
+| mode | while working |
+|---|---|
+| `steer` (default) | reaches the model at its next tool call. if the turn makes no further tool call, it runs as the next turn. |
+| `followUp` | runs as its own turn, after the current one ends. |
+| `immediate` | aborts the current turn, then starts a turn. |
+
+all four kinds support all three modes. where a kind has no queue of its own for a mode, its
+integration holds the message until the turn ends. see the table on [agent kinds](/docs/agents).
 
 **an `immediate` with empty text only interrupts.** at rest it does nothing, and is marked
-`.accepted` and `.delivered` at once. while working, it aborts the turn, and is marked
-`.delivered` when the turn has ended. it never starts a turn. one that is more than 10 seconds
+`.accepted` and `.delivered` at once. while working, it is marked `.accepted`, it aborts the
+turn, and it is marked `.delivered` when the turn has ended. it never starts a turn itself, but
+messages still waiting for the agent can start the next one. one that is more than 10 seconds
 old when the integration takes it is marked the same way and ignored, so an interrupt that
 waited in an inbox never aborts a later, unrelated turn. this is how
 [`orcr agent interrupt`](/docs/cli#orcr-agent-interrupt) works.
 
 ### what the model sees
 
-each message reaches the model as one block, followed by one line that says how to answer:
+the server renders each message into `model_text` once, when it writes the file: one block,
+followed by one line that says how to answer:
 
 ```text
 <orcr-message id="1791273256674k3x9q2" from="lead" from-id="019fd870-…">
@@ -158,12 +174,16 @@ From another agent, not the user. The sender expects a reply: answer once when y
 send({ to: "019fd870-…", reply_to: "1791273256674k3x9q2", text }).
 ```
 
+- for a message from `orcr`, the first line is `From orcr: a person or a script, through orchestratr.`
 - without `needs_reply`, the last line is `No reply expected.`
 - a reply carries `reply-to="…"` in its tag.
-- the tool name in the hint is the one this kind shows the model. the integration writes it.
-- text can never open or close a block. in every field the integration renders, each `<orcr-`
-  and `</orcr-` is written as `<\orcr-` and `<\/orcr-`. without this, a text holding
-  `</orcr-message>` could forge a second block.
+- the tool name in the hint is the recipient's `send_tool`, from its
+  [kind entry](/docs/agents#the-kind-entry).
+- text can never open or close a block. in every field it renders, the server writes each
+  `<orcr-` and `</orcr-` as `<\orcr-` and `<\/orcr-`. without this, a text holding
+  `</orcr-message>` could forge a second block. a reader turns them back when it shows the text.
+- one function in the server renders every block, tested against one fixture file of inputs and
+  expected output. integrations never build the text.
 - the tags are `orcr-message` and `orcr-watch`. Claude Code already uses `<agent-message>` for
   its own subagent handbacks.
 
@@ -177,18 +197,20 @@ the integration does this, and nothing more:
    not yet delivered", not "every message newer than my start". it covers a message sent before
    the agent started, and one sent during a reload. keep the ids already taken in memory, so each
    is handed over once.
-3. **hand messages over one at a time**, never in batches. steers to an idle agent do not start
-   several turns: the first starts one, and the rest join it as steers. just before each
-   hand-over, check that the file still exists. `stop` removes undelivered messages before it
-   interrupts, and this check keeps a stop from starting a turn.
+3. **hand messages over one at a time**, never in batches. to hand over a message is to pass its
+   `model_text` to the agent's own input queue. steers to an idle agent do not start several
+   turns: the first starts one, and the rest join it as steers. just before each hand-over,
+   check that the file still exists and that `agents/<id>.stopping` does not. `stop` removes the
+   agent's message files before it interrupts, and this check keeps a stop from starting a turn.
 4. **write `.accepted`** when the message is in the agent's own queue, or held by the
    integration.
 5. **write `.delivered`** when the message is in the model's context. each kind has a precise
-   event for this; see the table on [agent kinds](/docs/agents).
-6. **write `.failed`** when a hand-over throws, or the kind refuses the message or ends its turn
-   with an error before `.delivered`: `{"v": 1, "at": "…", "reason": "…"}`, rewritten on each
-   failure. it is for people only. it changes nothing about what happens next: no retry, no new
-   state. a later `.delivered` makes it stale, and readers ignore it then.
+   event for this. see the table on [agent kinds](/docs/agents).
+6. **write `.failed`** when a hand-over throws, or when the kind refuses the message or ends its
+   turn with an error before `.delivered`. the marker is `{"v": 1, "at": "…", "reason": "…"}`.
+   it is information only: it never changes delivery, and causes no retry and no new state.
+   `send`, `orcr agent list` and `orcr inbox` report its `reason`. readers ignore it whenever
+   `.delivered` exists.
 
 delivery is at least once. if the agent reloads its integration after `.accepted` and before
 `.delivered`, the message is handed over again. an agent that has exited is not restarted, so its
@@ -206,14 +228,17 @@ every send goes through the server. the `send` tool, the
 <Steps>
 <Step>
 
-resolve the recipient. it must be a live agent other than the sender, and not being stopped, or
-`orcr`. a message to `orcr` cannot ask for a reply. otherwise nothing is written, and the error
-lists the live agents.
+resolve the recipient. it must be `orcr`, or a live agent that is not the sender and is not being
+stopped. if it is not, nothing is written: `not_found`, which lists the live agents;
+`not_ready` with `details.state: "exited"` or `details.reason: "stopping"`; or
+`invalid_request` with `details.reason: "self"`. a message to `orcr` cannot ask for a reply
+(`reply_from_orcr`). every reason is in [error response](/docs/socket-api#error-response).
 
-one agent may send another at most 12 messages in 10 minutes. the next one is refused with
-`not_ready` and `details.reason: "loop"`. a message from `orcr` to either agent resets the
-count. this stops two agents that answer each other forever. messages from `orcr` are never
-counted.
+one agent may send another at most 12 messages in 10 minutes, counted per direction: A to B and
+B to A are counted apart. the next one is refused with `not_ready` and
+`details.reason: "loop"`. a message from `orcr` without a `watch` field, sent to either agent,
+resets the pair's count. watch endings never reset it. messages from `orcr` are never counted,
+and neither is a retry with an existing id. this stops two agents that answer each other forever.
 
 </Step>
 <Step>
@@ -243,15 +268,17 @@ held for long.
 |---|---|---|
 | `delivered` | `.delivered` appeared. the model has the message. | 0 |
 | `queued` | `.accepted` appeared, and `.delivered` has not yet. the agent holds the message, and will deliver it at its next tool call or after its turn. | 0 |
-| `pending` | the file was written, and nothing took it within the timeout. the integration is not running, or the agent is stuck. | 5 |
-| `failed` | nothing was written, for a reason orchestratr can name. | 2, 3 or 4 |
+| `pending` | the file was written, and nothing took it within the timeout. | 5 |
+| `refused` | nothing was written, for a reason orchestratr can name. | 2, 3 or 4 |
 
-a `queued` or `pending` result carries `reason` when the message has a `.failed` marker. without
-one, `pending` means no integration took the message: it is not running, or the agent is stuck.
+a `queued` or `pending` result carries `reason` when the message has a `.failed` marker. a
+`pending` result with no `reason` means that no integration took the message: the integration is
+not running, or the agent is stuck.
 
-**never re-send after `queued` or `pending`.** the file stays in the inbox, and is delivered when
-the integration takes it. a second copy would be a duplicate. after `failed`, a retry is safe. a
-client that lost its connection mid send retries with the same `id`, which is safe in every case.
+**never send again after `queued` or `pending`.** the file stays in the inbox, and is delivered
+when the integration takes it. a second copy would be a duplicate. after `refused`, a retry is
+safe. a client that lost its connection mid-send retries with the same `id`, which is safe in
+every case.
 
 `queued` is normal for a `steer` sent while the agent runs a long tool call. `.delivered` follows
 when the tool returns.
@@ -277,16 +304,20 @@ it ends with the first of these:
 | ending | when | carries |
 |---|---|---|
 | `reply` | a message from the recipient arrives with `reply_to` set to the watched message | nothing extra. the reply itself wakes the sender. |
-| `idle` | the watched message is delivered, the recipient has been idle for 2 seconds, and its transcript holds an assistant message, or a failed-turn record, written after the latest delivery | `last_text` (or the error), and `worked_ms` |
-| `blocked` | the recipient has waited for a person for 2 seconds | `screen`: what its pane shows |
-| `exited` | the recipient's process ended, or `stop` removed it | `last_text` |
+| `idle` | the recipient has been idle for 2 seconds, and either the watched message is delivered and the reader reports an answer or a failed turn written after the latest delivery, or the message has `.failed` and no `.delivered`. an aborted turn is neither an answer nor a failed turn. | `last_text` and `worked_ms`. after a failed turn or a `.failed` message, `error` in place of `last_text`. |
+| `blocked` | the recipient has waited for a person for 2 seconds | `screen` |
+| `exited` | the recipient's process ended, or `stop` removed it | `last_text`. for an agent that never registered: `screen` and `reason` (`not_registered` or `exited_at_start`). |
 | `timeout` | `reply_by` passed | `state`, and `last_text` |
 
 `idle` waits for delivery, and for an answer written after it. a `followUp` reaches the model
 only after the turn in progress, and an `immediate` leaves the agent briefly idle after its
 abort. neither must end the watch. the transcript check makes the rule the same before and after
-a server restart: it needs nothing the server remembers. `last_text` is that assistant message's
-text, up to 4 KB.
+a server restart: it needs nothing the server remembers.
+
+`last_text` is that answer's text. `worked_ms` runs from the watched message's `.delivered` to
+the start of the 2-second idle window. `screen` is the last 40 lines of the pane. `last_text`,
+`error` and `screen` are each at most 4096 bytes of UTF-8, cut at a character boundary, keeping
+the start, with `…` appended.
 
 **an ending other than `reply` is a message from `orcr`** into the sender's inbox, with
 `reply_to` set to the watched message and a `watch` field:
@@ -294,30 +325,37 @@ text, up to 4 KB.
 ```json
 {"v": 1, "id": "1791273256674k3x9q2w", "from": {"id": "orcr", "name": "orcr"},
  "to": "019fd870-…", "reply_to": "1791273256674k3x9q2", "delivery": "steer", "text": "",
+ "sent_at": "2026-10-06T09:23:43.920Z",
  "watch": {"event": "idle", "agent": "019fd875-…", "name": "reviewer", "worked_ms": 192000,
-           "last_text": "reviewed src/auth: 3 issues, details in /tmp/review.md"}}
+           "last_text": "reviewed src/auth: 3 issues, details in /tmp/review.md"},
+ "model_text": "<orcr-watch agent=\"reviewer\" …>…</orcr-watch>"}
 ```
 
-`watch` holds `event`, `agent`, `name`, and the fields its event carries: `last_text`,
-`worked_ms`, `screen` or `state`. the sender's integration renders it in place of an
-`<orcr-message>` block:
+`watch` holds `event`, `agent`, `name`, and the fields its event carries: `last_text`, `error`,
+`worked_ms`, `screen`, `reason` or `state`. its `model_text` is an `<orcr-watch>` block in place
+of `<orcr-message>`. the body is the ending's one text (`last_text`, `error` or `screen`), and
+the other fields are attributes, such as `state="working"` on a `timeout`:
 
 ```text
 <orcr-watch agent="reviewer" agent-id="019fd875-…" event="idle" worked="3m12s" reply-to="1791273256674k3x9q2">
-<last-text>reviewed src/auth: 3 issues, details in /tmp/review.md</last-text>
+reviewed src/auth: 3 issues, details in /tmp/review.md
 </orcr-watch>
 ```
 
 **the ending's id is fixed in advance**: the watched message's id with `w` appended. it is the
-one id outside the usual format, and it sorts right after the message it ends. the server keeps
-no list of watches. on restart, it finds them again: every message with `needs_reply` is still
-watched, unless the sender's inbox holds its ending, or a reply to it from the recipient. a
-watch whose sender has been stopped is dropped. its deadline is the message's `reply_by`. an
-ending written twice, before and after a crash, still exists once, because a message is created
-with `link`. this is the outbox pattern OpenCode 2.x uses for subagent results.
+one id outside the usual format, and it sorts by the watched message's send time. a message is
+created with `link`, so an ending written twice, before and after a crash, still exists once.
+OpenCode 2.x uses the same outbox pattern for subagent results.
 
-**cycles.** two agents that watch each other wait until their timeouts. the defaults avoid this:
-`needs_reply` is false unless asked for, and the reply hint does not ask for one.
+**the server keeps no list of watches.** after a restart, it finds every watch again from the
+bus. a message with `needs_reply` is still watched, unless the sender's inbox holds its ending or
+a reply to it from the recipient. the deadline is the message's `reply_by`. before it writes an
+ending, the server checks again for a reply. a watch whose sender is being stopped, or has been,
+is dropped, and no ending is written for it.
+
+**cycles.** two agents that watch each other do not wait forever: each goes idle while it waits,
+and that ends the other's watch. `needs_reply` is false unless asked for, and the reply hint does
+not ask for one.
 
 ## people and programs
 
@@ -332,12 +370,17 @@ a web client can show `inbox/orcr/` as a conversation, and subscribe to
 ## what the bus does not do
 
 - **no queue in orchestratr.** the kinds queue natively. an integration holds a message only
-  where its kind has no native follow-up.
+  where its kind has no queue of its own for that mode: `followUp` on Codex and OpenCode 1.x,
+  and `steer` on Claude Code.
 - **ordering only within one sender and one mode.** messages from one sender, in one mode, arrive
-  in the order sent. across modes, an `immediate` or a follow-up can overtake. messages from two
-  senders arrive in id order, which is send time to the millisecond.
-- **no exactly-once delivery.** a reload between the model seeing a message and the marker being
-  written delivers it again. the window is one write.
+  in the order sent. across modes, an `immediate` overtakes, and a `followUp` waits for the end
+  of the turn. messages from two senders arrive in id order, which is send time to the
+  millisecond.
+- **no exactly-once delivery.** a reload of the integration between `.accepted` and
+  `.delivered` can hand a message over twice. each kind's page says how its integration narrows
+  this.
+- **no recall.** a message stays in its recipient's inbox when its sender stops, and is still
+  delivered. a reply to it is refused with `not_found`.
 - **no access control** beyond file permissions. the bus is mode `0700`. any process of the same
   user can read and write it. that is the same trust level as the herdr socket, through which any
   such process can already type into every agent.

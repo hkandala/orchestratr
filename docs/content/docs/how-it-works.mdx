@@ -1,9 +1,10 @@
 ---
 title: "how it works"
-description: "the layers, launching an agent, readiness, state, transcripts and the shared procedures"
+description: "the layers, the server, launching an agent, readiness, state, transcripts and herdr"
 ---
 
-this page names no kind. everything specific to one kind is in the
+this page describes what is the same for every kind. it names a kind only as an example, or where
+one kind needs an exception. the details for each kind are in the
 [kind table](/docs/agents#the-kind-table) and on the [agent pages](/docs/agents).
 
 ## layers
@@ -18,59 +19,128 @@ this page names no kind. everything specific to one kind is in the
            herdr socket          the bus (files)
           panes, state           agents/, inbox/
                 |                     |
-          agent processes ◄── orcr integration inside each agent
+          agent processes ◄── orcr integration (in or beside each agent)
 ```
 
 - **clients** parse arguments and print results. every decision happens in the server.
-- **the server** holds no state that the bus and herdr cannot rebuild. how it starts, upgrades
-  and recovers is under [the server](/docs/socket-api#the-server).
-- **integrations** move messages between the bus and the agent's own session. they make no
+- **the server** holds no state that the bus and herdr cannot rebuild. see
+  [the server](#the-server).
+- **integrations** move messages from the bus into the agent's own input queue. they make no
   decisions.
 - **herdr** hosts the panes, and reports state through its own integration for each kind.
+
+## the server
+
+the server is the one long-lived orchestratr process. it does four things that must happen in
+one place:
+
+- it answers requests from every client.
+- it runs the [watches](/docs/messaging#watches).
+- it pushes [events](/docs/socket-api#events) to subscribed clients.
+- it deletes integration folders that nothing uses.
+
+agents, messages and markers are files on the [bus](/docs/messaging#the-bus), and agent state
+comes from herdr. the server follows state with herdr's `events.subscribe` for its panes, and
+reads a fresh snapshot whenever that connection drops.
+
+**starting.** a client that finds no server takes `flock` on `run/.start.lock`, tries the socket
+again, and otherwise runs `orcr serve` detached: in a new process session, with no terminal, in
+`/`, and with the client's environment minus every kind's [session variables](#session-variables)
+and every `HERDR_*` and `ORCR_*` variable. a server started by a tool inside an agent must not die
+with that agent's pane, and must not act in that agent's herdr session. the client waits up to 10
+seconds for `hello`, else it fails with `backend_unavailable`, `details.reason: "server_start"`.
+the server holds a non-blocking `flock` on `bus/.server.lock` for its whole life, so a second
+server on the same bus exits with code 6. it removes a stale `orcr.sock`, binds, and logs to
+`~/.local/state/orcr/server.log`.
+
+the herdr `orcr` session, and so every pane shell, inherits the server's environment, which is
+that of whichever client started it. a variable that a kind needs to sign in must therefore come
+from the person's shell startup files, not from one terminal's environment.
+
+**upgrading.** a client that finds an **older** server asks it to exit with
+[`server.exit`](/docs/socket-api#methods), and starts its own. a client that finds a newer or
+equal server uses it, as long as it speaks the client's `protocol`. long-lived old clients, such
+as an agent's `orcr mcp` from before an upgrade, therefore never replace a newer server.
+
+`server.exit` answers `{}`, stops accepting connections, and refuses new requests with
+`backend_unavailable` and `details.reason: "exiting"`. it lets each running `agent.new` and
+`agent.stop` finish, closes held requests and subscriptions, and exits. a client whose request
+was closed reconnects and repeats it. the CLI and the tools always choose the `id` of a
+`message.send`, so a repeated send is safe.
+
+**restarting.** on start, the server reconciles:
+
+- a record whose `pid` is not running, or started at another time than `pid_started`, is
+  `exited`.
+- an `agents/<id>.stopping` file means a stop was cut short. the server runs that stop again from
+  step 2, on whatever is left. see [`orcr agent stop`](/docs/cli#orcr-agent-stop).
+- watches are found again from the bus. see [watches](/docs/messaging#watches).
+- temporary files on the bus older than one hour are removed.
+
+**`ready_by`.** a record that is still `starting` when its process ends, or after its `ready_by`,
+is stopped by the [stop order](/docs/cli#orcr-agent-stop). the server checks this whenever it
+runs, and again after a restart. this covers an `agent new` that returned early with
+`wait_ready: false`, and one that a crash cut short. the agent's watches end `exited`, with
+`screen` (the last 40 lines of its pane) and `reason`: `exited_at_start` when the process ended,
+else `not_registered`.
+
+**while it is down,** integrations still deliver what is already in their inboxes. a new send
+starts the server first.
 
 ## placement
 
 there is one herdr session, named `orcr`. it has one workspace per distinct working directory,
-labelled with that directory, and one tab per agent, labelled with the agent's name. orchestratr
-starts the session itself when it is not running (`herdr --session orcr server`, detached).
+labeled with that directory, and one tab per agent, labeled with the agent's name. orchestratr
+starts the session itself when it is not running (`herdr --session orcr server`, detached). it
+closes a workspace when its last tab is gone.
 
 orchestratr creates and manages only that session. it never closes a pane, tab or session it did
 not create.
 
 orchestratr finds that session's socket itself, and never takes it from an inherited
 `HERDR_SOCKET_PATH`. it starts the herdr server without any inherited `HERDR_*` variable or
-[session marker](#session-markers). a `ping` reply with a `server` field other than `herdr` is
-refused as `backend_unavailable`. tuios answers herdr's API on its own socket with
+[session variable](#session-variables). a `ping` reply with a `server` field other than `herdr` is
+refused as `backend_unavailable`, `details.reason: "not_herdr"`. tuios answers herdr's API on its own socket with
 `"server": "tuios"`, and points `HERDR_SOCKET_PATH` at it in its panes.
 
 ## launching an agent
 
 ### the launch line
 
-orchestratr creates the tab with `tab.create`, then sends one line to the new pane's shell with
-`pane.send_input`, followed by Enter. this is what `herdr pane run` does. the pane is one
+orchestratr writes the agent's launch script to `~/.local/state/orcr/run/<id>.sh`, in a folder
+of mode `0700`. it creates the tab with `tab.create`, then sends one line to the new pane's shell
+with `pane.send_input`, followed by Enter. this is what `herdr pane run` does. the pane is one
 orchestratr just created, so the line goes to a fresh shell, never to an agent:
 
 ```sh
-exec env -u <session markers> \
+exec /bin/sh '<script path>'
+```
+
+the script holds the real command:
+
+```sh
+exec env -u <session variables> \
   ORCR_AGENT_ID=<id> ORCR_BUS=<bus> <home variable> <stall environment> <kind variables> \
   <absolute binary> <kind arguments> <integration loading> <config args>
 ```
 
-- **`exec`** makes the agent the pane's process, so the pane closes when the agent exits. no
-  shell is left behind for a stray message to run in.
+- **a script, not a typed command.** the typed line means the same in sh, bash, zsh, fish and
+  nu, so the person's login shell does not matter. the shell's history keeps only that line, not
+  the ids and inline JSON. `stop` deletes the script.
+- **`exec`**, at both steps, makes the agent the pane's process, so the pane closes when the agent
+  exits. no shell is left behind for a stray message to run in.
 - **`env`** runs after the pane shell has read its startup files. those files cannot undo the
   stall environment. on one test machine, line 1 of `~/.zshrc` was `export EDITOR=nvim`.
 - **`env -u`** removes variables. herdr's `env` parameter can only set them.
 - **the absolute binary** is the one `orcr doctor` checked. it is resolved once, through
   orchestratr's own `PATH`.
-- **one line, every kind.** Codex is the one kind whose binary slot is a short script, because
-  it runs three processes. the script's last command is `exec codex`, so the rules below still
-  hold. see [Codex](/docs/agents/codex#launch).
+- **one script shape, every kind.** Codex's script is longer, because it runs three processes.
+  its last command is `exec codex`, so the rules below still hold. see
+  [Codex](/docs/agents/codex#launch).
 - **the pid is the shell's.** after `tab.create` and before it sends the line, orchestratr reads
-  `shell_pid` from `pane.process_info` and writes it, with the pane, into the record. `exec`
-  keeps that pid, so it is the agent's own. orchestratr's last write to the record happens before
-  the agent starts, so it never races the integration's registration.
+  `shell_pid` from `pane.process_info`. it writes `pane`, `pid`, `pid_started` and `integration`
+  into the record before the agent starts, so it never races the integration's registration. each
+  `exec` keeps that pid, so it is the agent's own.
 - **the process name must match the kind.** herdr recognizes an agent by its process name. a
   launcher that runs the real program under another name (`pi.real`) leaves herdr reporting
   `unknown`. call the program by its usual name, or through a link that has that name.
@@ -79,14 +149,14 @@ why not herdr's own `agent start`: it runs the kind's default executable only, a
 environment. it also waits on herdr's own readiness, which was measured as early (see
 [readiness](#readiness)).
 
-### session markers
+### session variables
 
 every kind leaves variables in the environment of the processes it starts. an agent started
 from inside another agent would inherit them and believe it is a child session. on one kind
-that silently turns off the transcript. orchestratr removes the markers of every kind, on every
-launch, because orchestratr is often run from inside an agent of any kind:
+that silently turns off the transcript. orchestratr removes the session variables of every kind,
+on every launch, because orchestratr is often run from inside an agent of any kind:
 
-| kind | markers removed |
+| kind | variables removed |
 |---|---|
 | Claude Code | `CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_EFFORT`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN` |
 | Codex | `CODEX_SESSION_ID`, `CODEX_THREAD_ID`, `CODEX_VERSION`, `CODEX_PERMISSION_PROFILE`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`, `CODEX_NETWORK_PROXY_ACTIVE`, `CODEX_EXEC_SERVER_URL` |
@@ -94,9 +164,13 @@ launch, because orchestratr is often run from inside an agent of any kind:
 | OpenCode | `OPENCODE_TERMINAL`, `OPENCODE_ROUTE`, `OPENCODE_PTY_HANDOFF`, `OPENCODE_PASSWORD`, `OPENCODE_SERVER_PASSWORD` |
 | tuios, a terminal host | `TUIOS_ENV`, `TUIOS_PANE_ID`, `TUIOS_SESSION`, `TUIOS_SOCKET`, `TUIOS_PANE_TOKEN`, `TUIOS_AGENT`, `TUIOS_WINDOW_ID`. with `TUIOS_ENV` set, tuios's global hooks report an orcr agent into the person's tuios pane, and tell the agent it runs there. |
 
-the lists start from the ones amx measured (`src/vendor/*.rs`, `not_inherited`). they live in
-the kind table, so a new marker is a one-line change. `CLAUDE_EFFORT` matters beyond identity: it
-silently overrides effort when `--effort` is not passed. `PI_HERD_PARENT` makes pi-herd stop the
+the lists start from the ones amx, another agent launcher, measured (`src/vendor/*.rs`,
+`not_inherited`). each kind's list is the `session_vars` field of its
+[kind entry](/docs/agents#the-kind-entry), so a new variable is a one-line change. the tuios list
+belongs to no kind: it is a fixed host list in the core.
+
+`CLAUDE_EFFORT` matters beyond identity: it silently overrides effort when `--effort` is not
+passed. `PI_HERD_PARENT` makes pi-herd stop the
 new agent when that parent ends.
 
 the list is exact, not a prefix. removing every `CLAUDE_CODE_*` would also remove
@@ -143,25 +217,29 @@ is the exception: folder trust has no launch form.
 
 orchestratr writes one key, for one kind: Claude Code's folder trust for the agent's working
 directory, in `.claude.json` in the Claude Code configuration folder (`~/.claude.json` by
-default, `$CLAUDE_CONFIG_DIR/.claude.json` when `home` is set). Claude Code itself prints the instruction to set it. the rules:
+default, `$CLAUDE_CONFIG_DIR/.claude.json` when `home` is set). this is the key that Claude Code's
+own trust dialog sets. the rules:
 
 - **check first.** Claude Code inherits trust from a parent folder. if an ancestor is trusted,
   write nothing.
 - **take Claude Code's own lock.** Claude Code rewrites this file often. take the file's path
-  plus `.lock`, the same lock Claude Code uses. retry briefly, and never break it. if
-  the lock stays held, `agent new` fails before launch.
+  plus `.lock`, the same lock Claude Code uses. retry every 50 ms for up to 5 seconds, and never
+  break it. if the lock stays held, `agent new` fails before launch with `not_ready` and
+  `details.reason: "config_locked"`.
 - **re-read under the lock**, add the one key, and write a temporary file beside the real file,
   then rename it. a rename alone stops a torn file. it does not stop a lost update, which is what
   the lock is for.
 - **resolve a symbolic link first**, and write beside the real file. a configuration file is
   often a link into a repository the person manages. renaming over the link would replace it
   with a plain file.
-- **write only when absent**, never create the file, and never rewrite a file that does not parse.
+- **write only when absent**, and never create the file. a file that does not parse is never
+  rewritten: `agent new` fails with `check_failed` and `details.check: "claude_json"`.
 - report what was done: written, already present, or skipped.
 
 the first-run screens that a fresh Claude Code configuration shows (theme, security notes) are
 not written. orchestratr checks for them, and if they would appear, `agent new` fails with "run
-`claude` once". anyone who has run Claude Code already has these keys.
+`claude` once" (`check_failed`, `details.check: "onboarding"`). anyone who has run Claude Code
+already has these keys.
 
 when orchestratr cannot apply a startup setting, `agent new` fails before launching. it does not
 start an agent that would stop on a dialog.
@@ -169,7 +247,8 @@ start an agent that would stop on a dialog.
 ## readiness
 
 **an agent is ready when its integration has registered.** the integration adds `session` and
-`started_at` to the agent's record. see [the contract](/docs/integrations#the-contract).
+`started_at` to the agent's record, and sets `integration`. see
+[the contract](/docs/integrations#the-contract).
 
 a readiness signal is usable only if it passes the negative test: it must stay absent while a
 startup screen is on screen. several obvious signals fail that test by more than a minute,
@@ -199,7 +278,7 @@ detection rules and does not read the terminal to second-guess herdr.
 
 orchestratr adds four rules on top:
 
-1. **`starting`** until the integration registers.
+1. **`starting`** until the integration registers. a record with no `pid` yet is `starting`.
 2. **`exited`** when the record's `pid` is not running, or runs with another start time than
    `pid_started`, or the pane is gone. liveness is checked
    before herdr's answer. if herdr restarts and restores a pane by relaunching the agent itself,
@@ -221,19 +300,27 @@ is used for reporting, for watches, and for `--wait`.
 - **sending** writes a file. see [sending](/docs/messaging#sending).
 - **interrupting** sends an `immediate` message with no text. the integration aborts the turn
   from inside the agent. no key is ever pressed, so no key can open a view that a second escape
-  would open.
+  would open. messages that wait for the agent are not withdrawn: they start the next turn. to
+  stop an agent for good, use `stop`.
 - **stopping** follows the order in [`orcr agent stop`](/docs/cli#orcr-agent-stop): refuse new
-  sends, end the watches, withdraw undelivered messages, interrupt, close the pane, delete the
-  files.
+  files into the inbox, end the watches, withdraw the agent's messages, interrupt, close the pane,
+  delete the files. it stops the agent's descendants too.
 
   the interrupt matters on one kind: OpenCode 2.x keeps a turn that a pane close ended marked as
   running, and its shared service would later resume that turn with no one watching.
 
 ## transcripts
 
-each kind writes its conversation differently. the kind's reader converts it into the one shape
-of [`orcr agent read`](/docs/cli#orcr-agent-read). the reader takes the whole session, not one
-line at a time, because:
+each kind writes its conversation differently. the kind's reader converts it into one shape,
+which `orcr agent read`, the agent object and the watches all use:
+
+| field | holds |
+|---|---|
+| `messages` | the entries of [`orcr agent read`](/docs/cli#orcr-agent-read), oldest first. |
+| `last_turn` | the newest answer or failed turn, or null: `{at, outcome, text, error}`. `outcome` is `answered` or `failed`. `at` has milliseconds. |
+| `usage` | `usage` of the [agent object](/docs/cli#output), or null. |
+
+the reader takes the whole session, not one line at a time, because:
 
 - Pi's transcript is a tree. after a person moves back in the conversation, abandoned branches
   stay in the file. the reader follows the branch that ends at the last entry.
@@ -246,27 +333,51 @@ rules for every reader:
   directory. every kind mangles the directory into its path, and the mangling is lossy. Claude
   Code, for one, replaces every character that is not a letter or a digit.
 - **tolerate a known path with no file.** some kinds report a path before the file exists.
-- **discard an incomplete final line.** a reader can see a line mid write.
+- **discard an incomplete final line.** a reader can see a line mid-write.
 - **skip what is not conversation**: tool output recorded as user records, injected context, and
   compaction summaries. the skip rules are on each agent page. an error record written in the
   assistant's place is not shown as an answer, but the reader reports it as a failed turn, which a
-  watch needs.
-- **usage comes from the records, never from a guess.** the reader reads a tail of the
-  transcript for the last model call. a value the kind does not state is null.
+  watch needs. an interrupted turn is not a failed turn.
+- **undo the escape.** show a bus message's text with `<\orcr-` and `<\/orcr-` turned back.
+- **usage comes from the records, never from a guess.** the reader reads backwards from the end,
+  in blocks, until it finds the last model call, and drops the incomplete first line of each
+  block. on a tree, it uses the branch that ends at the last entry. a value the kind does not
+  state is null.
+- **each reader ships fixtures** for an answered turn, a failed turn and usage.
 
 ## the model catalogue
 
-[`orcr models`](/docs/cli#orcr-models) runs one probe per installed kind, in parallel. no probe
+[`orcr models`](/docs/cli#orcr-models) runs one probe per enabled kind, in parallel. no probe
 starts a billed turn. the probes are on each agent page. they are slow, because each starts the
-kind's program, and they run only when someone asks.
+kind's program, and they run only when someone asks. each probe times out after 60 seconds.
 
-## herdr
+## talking to herdr
+
+orchestratr needs herdr 0.9.3 or later. an older `version` in `ping` is `backend_unavailable`
+with `details.reason: "herdr_version"`. the `orcr` session's socket is
+`~/.config/herdr/sessions/orcr/herdr.sock`, the path `herdr session list` prints. each call times
+out after 5 seconds. the method names below were checked against herdr 0.9.5's schema
+(`herdr api schema`).
+
+| purpose | method | orchestratr reads |
+|---|---|---|
+| check the server | `ping` | `version`, `protocol`, and `server`, which must be `herdr` |
+| find or open the workspace | `workspace.list`, `workspace.create` | the workspace id |
+| open the agent's tab | `tab.create`, with `workspace_id`, `cwd` and `label` | the pane id |
+| read the pid | `pane.process_info` | `shell_pid` |
+| send the launch line | `pane.send_input` | nothing |
+| follow state | `events.subscribe` for `pane.agent_status_changed`, and `pane.get` for a snapshot | `agent_status` |
+| read the screen | `pane.read`, with `source: "recent"` and `lines: 40` | the text |
+| close | `pane.close`, and `workspace.close` for an empty workspace | nothing |
+| the kind's herdr integration | `integration.list` | `state`: `not_installed`, `current` or `outdated` |
+
+`agent_status` is `idle`, `working`, `blocked`, `done` or `unknown`. `done` reads as `idle`. the
+others pass through.
 
 - orchestratr speaks herdr's socket directly. it shells out for two things only: starting the
   `orcr` herdr session, which has no socket method, and attaching a terminal.
 - every herdr call that targets a pane passes `pane_id`. one method, `pane.process_info`, silently
   answers for the focused pane when given a `target` instead.
-- herdr takes timeouts in milliseconds. orchestratr accepts a human duration and converts it.
 
 ## concurrency
 
@@ -274,29 +385,35 @@ kind's program, and they run only when someone asks.
 - the server creates every agent, so a lock inside the server is enough to keep two calls from
   picking the same name.
 - nothing else needs a lock:
-  - messages are separate files, created with `link`, so two senders never touch one file;
+  - messages are separate files, created with `link`, so two senders never touch one file.
   - an agent record has one writer at a time (see [agent records](/docs/messaging#agent-records)).
 
 ## errors
 
 eight error codes, closed, defined in [error response](/docs/socket-api#error-response).
-specifics go in `details`, not in new codes. every message says what orchestratr looked for.
+specifics go in `details`, not in new codes. the `details.reason` values are a closed list too,
+on the same page. every message says what orchestratr looked for.
 
 ## testing
 
-1. **reader and integration tests over captured files.** every measurement in these documents
-   came from a captured file. those files are the fixtures, kept with the version of the kind
-   that wrote them.
-2. **integration tests per kind, at the minimum version and the newest:**
-   - launch the kind;
-   - see the record appear;
-   - deliver one message in each mode;
-   - interrupt;
-   - stop.
+1. **tests over captured files, for readers and integrations.** every measurement in these
+   documents came from a captured file. those files are the fixtures, kept with the version of
+   the kind that wrote them.
+2. **live tests per kind, at the minimum version and the newest:**
+   - the negative test: the record stays absent while each startup screen is up.
+   - launch the kind, and see the record appear.
+   - deliver one message in each mode, interrupt, and stop.
+   - hand over again after an interrupt, where the kind needs it. a stale empty `immediate`.
 
-   run them in an isolated configuration folder, never against a person's real one.
+   run them in a prepared, signed-in configuration folder per kind, copied for each run, never in
+   a person's real one. use the cheapest model each kind offers.
 3. **a team test:** two agents of different kinds in one working directory, one asking the other
    for a reply, with a watch.
+4. **failure tests:** `kill -9` of the server, then a restart that finds the watches again with no
+   second ending. an upgrade during a held `--reply`. a retry with the same id, and `id_in_use`.
+   the loop cap. a stop mid-turn, which no later turn may resume, and a stop cut short by a crash.
+   an upgrade while an agent runs on the old folder. `/clear` and `/new`, which rewrite `session`.
+   the subagent filter. the trust-key writer against a held lock and through a symbolic link.
 
 backend tests run against a throwaway herdr session. never against a session orchestratr did not
 create.

@@ -3,54 +3,19 @@ title: "socket API"
 description: "the protocol every client is built on"
 ---
 
-the socket API is the product. the [`orcr` command line tool](/docs/cli), the agents'
+the socket API is the core of orchestratr. the [`orcr` command line tool](/docs/cli), the agents'
 [tools](/docs/integrations#tools) and any future client, such as a web interface, are all callers
 of it. every command maps to one method.
 
-## the server
-
-the server is the one long-lived orchestratr process. it does four things that must happen in
-one place:
-
-- it answers requests from every client;
-- it runs the [watches](/docs/messaging#watches);
-- it pushes [events](#events) to subscribed clients;
-- it deletes integration folders that nothing uses.
-
-it keeps no state of its own that cannot be rebuilt. agents, messages and markers are files on
-the [bus](/docs/messaging#the-bus), and agent state comes from herdr. it follows state with
-herdr's own `events.subscribe`, one subscription per agent pane, and reads a fresh snapshot
-whenever that connection drops.
-
-**starting.** any client starts the server when it is not running, under a lock on the socket
-folder, so two clients never start two servers. the server holds `bus/.server.lock` for its whole
-life, so a second server on the same bus refuses to start. the client starts it detached: in a
-new process session, with no terminal, and with the client's environment minus every kind's
-[session markers](/docs/how-it-works#session-markers) and every `HERDR_*` and `ORCR_*` variable. a
-server started by a tool inside an agent must not die with that agent's pane, and must not act in
-that agent's herdr session.
-
-**upgrading.** a client that finds an **older** server asks it to exit with
-[`server.exit`](#methods), and starts its own. a client that finds a newer or equal server uses
-it, as long as it speaks the client's `protocol`. long-lived old clients, such as an agent's
-`orcr mcp` from before an upgrade, therefore never replace a newer server.
-
-**restarting.** on start, the server reconciles:
-- a record that is still `starting` after its `ready_by` time belongs to an `agent new` that a
-  crash interrupted. the server stops it as `agent new` would have.
-- a record whose `pid` is not running, or started at another time than `pid_started`, is
-  `exited`.
-- watches are found again from the bus (see [watches](/docs/messaging#watches)).
-
-**while it is down,** integrations still deliver what is already in their inboxes. a new send
-starts the server first.
+the server's life cycle (start, upgrade, restart) is under
+[how it works](/docs/how-it-works#the-server).
 
 ## transport
 
-the server listens on a UNIX domain stream socket at `$XDG_STATE_HOME/orcr/run/orcr.sock`, which
-is `~/.local/state/orcr/run/orcr.sock` by default. the path is fixed, and does not depend on
-`XDG_RUNTIME_DIR`, which differs between a desktop session and an SSH login. every client and
-every agent's tools must find the same server without asking. the folder is created with mode
+the server listens on a UNIX domain stream socket at `~/.local/state/orcr/run/orcr.sock`. the
+path is fixed. it follows neither `XDG_STATE_HOME` nor `XDG_RUNTIME_DIR`, which can differ
+between a desktop session and an SSH login. every client and every agent's tools must find the
+same server without asking. the folder is created with mode
 `0700`, because any process that can connect can start agents with permissions bypassed.
 
 the framing is newline-delimited JSON: one compact JSON object per line, UTF-8, terminated by
@@ -59,7 +24,8 @@ carries the `id` of its request.
 
 a request frame larger than 8 MiB closes the connection. responses have no limit.
 
-the first frame on a connection must be [`hello`](#hello).
+the first frame on a connection must be [`hello`](#hello). any other first frame is refused with
+`unsupported_protocol` and `details.reason: "hello_required"`.
 
 ## request
 
@@ -79,6 +45,9 @@ the first frame on a connection must be [`hello`](#hello).
 {"id": "c1", "ok": true, "result": {"agents": []}}
 ```
 
+a send that wrote its message is a success, whatever its outcome: `delivered`, `queued`,
+`pending`, and every `reply.event`. `ok: false` on a send means nothing was written.
+
 ## error response
 
 ```json
@@ -97,7 +66,7 @@ the first frame on a connection must be [`hello`](#hello).
 | `unsupported_protocol` | the client's protocol is not supported. | 6 |
 | `not_found` | no agent has that name or id. | 3 |
 | `not_ready` | the agent cannot do this now. `details.state` or `details.reason` says why. | 4 |
-| `timeout` | the action did not finish in time. `details.result` says what is known. | 5 |
+| `timeout` | the action did not finish in time. `details.state` says what is known. | 5 |
 | `backend_unavailable` | herdr is missing, stopped, or incompatible. | 6 |
 | `integration_missing` | the kind's orcr integration is not usable. `details.reason` is `not_installed`, `check_failed` or `not_registered`. | 7 |
 | `internal` | anything else. | 1 |
@@ -106,154 +75,227 @@ the first frame on a connection must be [`hello`](#hello).
 `details` carries machine-readable specifics. a small code set stays usable only if specifics go
 in `details` and not into new codes.
 
+### reasons
+
+`details.reason` takes one of these values. the list is closed, like the codes.
+
+| reason | code | when |
+|---|---|---|
+| `frame` | `invalid_request` | the frame is not JSON, is over 8 MiB, or names no known method. |
+| `params` | `invalid_request` | a parameter is missing or has the wrong type. |
+| `id_format` | `invalid_request` | a client `id` is not in the [message id format](/docs/messaging#messages). |
+| `id_in_use` | `invalid_request` | the sender already used this id for another message. |
+| `name_invalid`, `name_taken`, `name_reserved` | `invalid_request` | `name` breaks the pattern, belongs to a record, or is `orcr`. |
+| `text_too_long`, `text_empty` | `invalid_request` | text is over 32768 bytes, or empty outside `immediate`. |
+| `self` | `invalid_request` | the recipient is the sender. |
+| `reply_from_orcr` | `invalid_request` | a message to `orcr` asks for a reply. |
+| `duplicate` | `invalid_request` | `agent.stop` names one agent twice, by name or by id. |
+| `not_permitted` | `invalid_request` | the caller may not stop this agent. |
+| `effort_needs_model` | `invalid_request` | the kind's `launch` refuses an effort with no model. |
+| `cwd` | `invalid_request` | `cwd` is missing, relative, or not a directory. |
+| `config` | `invalid_request` | `config.toml` does not parse, or a key has the wrong type. `details.line` says where. |
+| `run_path` | `invalid_request` | a socket path under `run/` would be over 103 bytes. |
+| `hello_required` | `unsupported_protocol` | the first frame is not `hello`. |
+| `protocol` | `unsupported_protocol` | the server does not speak the client's `protocol`. |
+| `stopping` | `not_ready` | the agent is being stopped. |
+| `loop` | `not_ready` | the [loop cap](/docs/messaging#sending). |
+| `exited_at_start` | `not_ready` | the process ended before its integration registered. |
+| `config_locked` | `not_ready` | Claude Code's lock on `.claude.json` stayed held. |
+| `herdr_unavailable` | `backend_unavailable` | herdr is not installed, or cannot be started. |
+| `herdr_version` | `backend_unavailable` | herdr is older than the [minimum](/docs/how-it-works#talking-to-herdr). |
+| `not_herdr` | `backend_unavailable` | the socket answers as another server, such as tuios. |
+| `herdr_integration` | `backend_unavailable` | herdr's integration for the kind is not installed. |
+| `server_start` | `backend_unavailable` | a client started the server, and it did not answer within 10 seconds. |
+| `exiting` | `backend_unavailable` | the server is exiting for an upgrade. |
+| `not_installed`, `check_failed`, `not_registered` | `integration_missing` | the orcr integration is not installed, failed a check (`details.check` names it), or did not register. |
+
+other details have fixed names. `not_ready` about an agent's state carries `details.state`, such
+as `"exited"`. `timeout` carries `details.state`. `not_found` carries `details.agents`, the live
+agents as `{id, name}`.
+
 ## methods
 
 | method | command |
 |---|---|
 | [`hello`](#hello) | none |
 | [`agent.new`](#agentnew) | [`orcr agent new`](/docs/cli#orcr-agent-new) |
-| `agent.list` | [`orcr agent list`](/docs/cli#orcr-agent-list) |
+| [`agent.list`](#agentlist) | [`orcr agent list`](/docs/cli#orcr-agent-list) |
 | [`agent.get`](#agentget) | [`orcr agent status`](/docs/cli#orcr-agent-status) |
 | [`agent.read`](#agentread) | [`orcr agent read`](/docs/cli#orcr-agent-read) |
-| `agent.interrupt` | [`orcr agent interrupt`](/docs/cli#orcr-agent-interrupt) |
+| [`agent.interrupt`](#agentinterrupt) | [`orcr agent interrupt`](/docs/cli#orcr-agent-interrupt) |
 | [`agent.stop`](#agentstop) | [`orcr agent stop`](/docs/cli#orcr-agent-stop) |
 | [`message.send`](#messagesend) | [`orcr agent message`](/docs/cli#orcr-agent-message) |
 | [`message.list`](#messagelist) | [`orcr inbox`](/docs/cli#orcr-inbox) |
 | [`models.list`](#modelslist) | [`orcr models`](/docs/cli#orcr-models) |
-| `integration.install`, `integration.uninstall`, `integration.status` | [`orcr integration`](/docs/cli#orcr-integration) |
+| [`integration.*`](#integration) | [`orcr integration`](/docs/cli#orcr-integration) |
 | [`events.subscribe`](#eventssubscribe) | none. for clients that show live state. |
-| `doctor` | [`orcr doctor`](/docs/cli#orcr-doctor) |
-| `server.exit` | none. a newer client asks an older server to exit. |
+| [`doctor`](#doctor) | [`orcr doctor`](/docs/cli#orcr-doctor) |
+| [`server.exit`](#serverexit) | none. a newer client asks an older server to exit. |
 
-`orcr agent attach` has no method, because it hands over a terminal.
+`orcr agent attach` has no method, because it gives the terminal to the person.
 
-every method that acts on an agent takes `agent`: a name or an id. every method that sends,
-starts or stops takes `from`: an agent id, or `"orcr"`. an agent may stop only the agents it
-started, and the agents they started. `orcr` may stop any agent. the CLI and the tools fill it in from `ORCR_AGENT_ID` (see
-[the sender](/docs/cli#the-sender)).
+every method that acts on one agent requires `agent`: a name or an id. every method that sends,
+starts, interrupts or stops takes `from`: an agent id, or `"orcr"`, the default. the CLI and the
+tools set `from` from `ORCR_AGENT_ID` (see [the sender](/docs/cli#the-sender)). the tables below
+leave these two out. an agent may stop only its descendants. `orcr` may stop any agent.
+
+times are RFC 3339 strings in UTC, with milliseconds. durations are in milliseconds.
 
 ### `hello`
 
-```json
-{"id": "c0", "method": "hello", "params": {"protocol": 1, "client": "orcr-cli", "version": "0.2.0"}}
-```
+| param | type | default | meaning |
+|---|---|---|---|
+| `protocol` | int | required | the protocol the client speaks. this version is `1`. |
+| `client` | string | required | the client's name, such as `orcr-cli`. |
+| `version` | string | required | the client's version. |
 
-```json
-{"id": "c0", "ok": true, "result": {"protocol": 1, "version": "0.2.0"}}
-```
-
-a server that does not speak the client's `protocol` answers `unsupported_protocol`. a client
-that sees an older `version` than its own asks the server to exit and starts a new one. see
-[upgrading](#the-server).
+result: the server's `{protocol, version}`. a client that sees an older `version` than its own
+asks the server to exit and starts a new one. see [upgrading](/docs/how-it-works#the-server).
 
 ### `agent.new`
 
-```json
-{"kind": "codex", "cwd": "/Users/me/code/p", "model": null, "effort": "high", "name": null,
- "message": null, "needs_reply": false, "wait_reply": false, "wait_ready": true,
- "timeout_ms": 120000, "from": "orcr"}
-```
+| param | type | default | meaning |
+|---|---|---|---|
+| `kind` | string | required | the kind. |
+| `cwd` | string | required | absolute. the server resolves it to its real path. |
+| `model`, `effort` | string | null | null takes `kind.<k>.model` or `kind.<k>.effort`, else the kind's own default. |
+| `name` | string | null | null picks `<kind>-<n>`. |
+| `message` | string | null | a first message, written into the inbox before launch. |
+| `needs_reply` | bool | false | with `message`: start a watch. |
+| `wait_ready` | bool | true | false returns as soon as the agent is launched, in state `starting`. |
+| `wait_reply` | bool | false | hold the response until the reply or the watch ending. implies `needs_reply`. |
+| `timeout_ms` | int | 120000 | the wait for registration. it sets `ready_by`. |
+| `reply_timeout_ms` | int | null | the watch's deadline, `reply_by`. null sets none. |
 
-`kind` is required. the result is one agent object, as in
-[`orcr agent new`](/docs/cli#orcr-agent-new).
+result: the [agent object](/docs/cli#output). with `message`, it carries `message`, the send
+result. with `wait_reply`, that result carries `reply`.
 
-- `message` is written into the inbox before launch, with `needs_reply` if set.
-- `wait_ready: false` returns as soon as the agent is launched, in state `starting`. the `start`
-  tool uses it. a failure to start then reaches the parent as the watch's `exited` ending.
-- `wait_reply` waits for the reply, as in `message.send`.
+the `start` tool sends `wait_ready: false`. when the model gives no `cwd`, it sends the caller's
+recorded `cwd`, and it resolves a relative path against that. a failure after the call returns
+reaches the parent as the watch's `exited` ending (see [`ready_by`](/docs/how-it-works#the-server)).
+
+### `agent.list`
+
+no params. result: `{agents: [<agent object>]}`, every agent with a record.
 
 ### `agent.get`
 
-```json
-{"agent": "codex-1", "wait": ["idle", "blocked"], "timeout_ms": null}
-```
+| param | type | default | meaning |
+|---|---|---|---|
+| `wait` | [state] | `[]` | return when the agent reaches one of these states. empty returns at once. |
+| `timeout_ms` | int | null | give up after this long, with `timeout` and `details.state`. |
 
-`wait` null or empty returns at once.
+result: the agent object. an `exited` agent that `wait` does not name returns at once, with
+`not_ready` and `details.state: "exited"`.
+
+### `agent.read`
+
+`last` (int, default 50) is how many messages. 0 returns all of them. result: `{name, messages}`,
+as in [`orcr agent read`](/docs/cli#orcr-agent-read).
+
+### `agent.interrupt`
+
+no other params. result: `{name, id, result, state}`, as in
+[`orcr agent interrupt`](/docs/cli#orcr-agent-interrupt).
 
 ### `agent.stop`
 
-```json
-{"agents": ["codex-1", "reviewer"]}
-```
+| param | type | default | meaning |
+|---|---|---|---|
+| `agents` | [string] or `"all"` | required | the agents to stop. each one's descendants stop too. `"all"` is the caller's children, so every descendant. for `orcr`, it is every agent. |
 
-`agents` is a list, or `"all"` for every agent the caller started. the result has one entry per
-agent, in the order given:
+result: one entry per agent, in the order given:
 
 ```json
 {"results": [{"agent": "codex-1", "stopped": true},
              {"agent": "reviewer", "error": {"code": "not_found", "message": "…"}}]}
 ```
 
-### `agent.read`
-
-```json
-{"agent": "codex-1", "last": 50}
-```
-
 ### `message.send`
 
-```json
-{"from": "orcr", "to": "codex-1", "text": "also check the tests", "delivery": "steer",
- "id": null, "reply_to": null, "needs_reply": false, "wait_reply": false, "timeout_ms": 30000}
-```
+| param | type | default | meaning |
+|---|---|---|---|
+| `to` | string | required | an agent, or `"orcr"`. |
+| `text` | string | required | at most 32768 bytes of UTF-8. empty only with `immediate`. |
+| `delivery` | string | `"steer"` | `steer`, `followUp` or `immediate`. |
+| `id` | string | null | null lets the server pick one. a client's id is in the [message id format](/docs/messaging#messages). |
+| `reply_to` | string | null | the id of the message this one answers. |
+| `needs_reply` | bool | false | start a watch. refused on a message to `orcr`. |
+| `wait_reply` | bool | false | hold the response until the reply or the watch ending, and put it in `reply`. implies `needs_reply`. |
+| `timeout_ms` | int | 30000 | the wait for the markers. |
+| `reply_timeout_ms` | int | null | the watch's deadline, `reply_by`. null sets none. |
 
-- `to` is an agent, or `"orcr"`. a message to `orcr` cannot ask for a reply.
-- `id` is optional, in the [message id format](/docs/messaging#messages). a client that may retry
-  chooses it. a retry with the same id, sender and text writes nothing new and returns the
-  current outcome. the same id with other content is refused with `invalid_request` and
-  `details.reason: "id_in_use"`.
-- `needs_reply` starts a watch.
-- `wait_reply` also holds the response until the reply or the watch ending, and puts it in
-  `reply`. it implies `needs_reply`. `timeout_ms` is then the watch's deadline.
+result: the [send result](/docs/cli#orcr-agent-message).
 
-the result is the [send result](/docs/cli#orcr-agent-message).
+- a retry with the same id, sender and text writes nothing new, and returns the current outcome.
+- the CLI and the tools always choose `id`. after a dropped connection, they reconnect and send
+  again with the same id, which is safe.
 
 ### `message.list`
 
-```json
-{"agent": null}
-```
-
-null lists the `orcr` inbox.
+`agent` is optional here. null lists the `orcr` inbox. result: `{inbox, messages}`, as in
+[`orcr inbox`](/docs/cli#orcr-inbox).
 
 ### `models.list`
 
-```json
-{"kind": null}
-```
+| param | type | default | meaning |
+|---|---|---|---|
+| `kind` | string | null | null probes every enabled kind. a named kind is probed whenever its binary is found. |
+| `model` | string | null | one model, for a kind that reports efforts per named model. |
+| `cwd` | string | required | absolute. some probes read the project's settings. |
+
+result: `{kinds}`, as in [`orcr models`](/docs/cli#orcr-models).
+
+### `integration.*`
+
+`integration.install` and `integration.uninstall` take `kinds`: a list, or `"all"`.
+`integration.status` takes `kinds` (default: every kind) and `check` (bool, default false), which
+also runs the kind's checks. each returns `{results: [{kind, state, folder, error}]}`, with the
+states of [`orcr integration status`](/docs/integrations#orcr-integration-status). `error` is
+present only on a failure.
 
 ### `events.subscribe`
 
-```json
-{"agents": null}
-```
-
-the response carries a snapshot of every agent (or the named ones), then events stream on the
-same connection until it closes:
+`agents` is a list, or null (the default) for every agent, including agents created later. the
+response carries a snapshot of the agents, then events stream on the same connection until it
+closes:
 
 ```json
 {"id": "c9", "ok": true, "result": {"subscription": "s1", "snapshot": {"agents": []}}}
 ```
 
 there is no replay. a client that reconnects subscribes again and takes a new snapshot. messages
-are files, so nothing durable lives only in the event stream.
+are files, so nothing durable lives only in the event stream. a subscriber more than 1000 frames
+behind is closed, and subscribes again.
+
+### `doctor`
+
+no params. result: the per-kind part of [`orcr doctor`](/docs/cli#orcr-doctor): `herdr`, `kinds`
+and `stale_agents`. the CLI checks the server itself.
+
+### `server.exit`
+
+no params. result: `{}`. see [upgrading](/docs/how-it-works#the-server).
 
 ## events
 
 ```json
 {"subscription": "s1", "event": {"type": "agent.state_changed", "agent": "019fd875-…",
- "name": "codex-1", "state": "working", "at": "2026-10-06T09:22:10Z"}}
+ "name": "codex-1", "state": "working", "at": "2026-10-06T09:22:10.412Z"}}
 ```
 
-an event frame has no `id`, because it answers no request.
+an event frame has no `id`, because it answers no request. every `message.*` event carries `id`,
+`from`, `to` and `at`.
 
 | type | when |
 |---|---|
+| `agent.added` | a record was created. carries the agent object. |
 | `agent.state_changed` | an agent's state changed, including from `starting` and to `exited`. |
-| `agent.removed` | `stop` removed an agent's record. |
-| `message.sent` | a message file was written. carries `id`, `from` and `to`. |
+| `agent.removed` | `stop`, or a failed `agent new`, removed an agent's record. |
+| `message.sent` | a message file was written. |
 | `message.accepted` | an integration wrote `.accepted`. |
 | `message.delivered` | an integration wrote `.delivered`. |
+| `message.failed` | an integration wrote `.failed`. carries `reason`. |
 
 ## schema
 

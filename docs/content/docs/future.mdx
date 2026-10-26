@@ -54,6 +54,12 @@ want those on the same team.
   shape. if pi-herd reads and writes orchestratr's bus, the person's own Pi agents join the team
   with no new integration.
 
+## inbox retention
+
+orchestratr never prunes `inbox/orcr/`, and an agent's inbox lives until `stop`. a long-lived
+setup collects messages, and every server start scans them to find watches again. a retention
+rule, such as removing delivered messages older than a week with no open watch, would bound both.
+
 ## headless agents
 
 every kind can run without a terminal, over its own protocol:
@@ -76,7 +82,7 @@ each item was considered and left out.
 
 | item | why it was dropped |
 |---|---|
-| typing messages into the composer | the first design pasted text into the terminal and confirmed delivery from per-kind records. it needed a composer clear with no safe key, bracketed paste, an Enter re-send, and four delivery records. it also typed into dialogs on one kind. every kind can now take a message from inside, so the typing path is gone. later spikes of other tools confirmed it: a typed message merged into a person's half-typed draft, a message starting with `!` ran as a shell command, and screen-read receipts were wrong both ways. |
+| typing messages into the composer | the first design pasted text into the terminal and confirmed delivery from per-kind records. it needed a composer clear with no safe key, bracketed paste, an Enter re-send, and four delivery records. it also typed into dialogs on one kind. every kind can now take a message from inside, so the typing path is gone. later prototypes of other tools confirmed it: a typed message merged into a person's half-typed draft, a message starting with `!` ran as a shell command, and screen-read receipts were wrong both ways. |
 | interrupt key sequences | two escapes open destructive views on two kinds. a steer sent as ESC ESC cancelled Claude Code's running tool, and one Ctrl+C neither interrupted a working Pi nor exited an idle one. the integration aborts from inside instead. |
 | completion by a result file the worker writes | a worker that fails, stalls or forgets never writes it, so the lead waits forever. measured: a provider error left a worker idle with no file. watches end on idle, blocked and exited too. |
 | Claude Code channels | not available through Vertex or company gateways, and a research preview. |
@@ -86,7 +92,8 @@ each item was considered and left out.
 | installing integrations into a kind's global configuration | see [people's own sessions](#peoples-own-sessions-on-the-bus). |
 | a queue in orchestratr | every kind queues natively. a second queue adds a place for messages to get lost. |
 | batching messages | the kinds already join steers into the running turn. handing messages over one at a time is simpler. |
-| watches inside each integration | four implementations of one rule. the server runs them once. |
+| watches, or rendering the model's text, inside each integration | four implementations of one rule, in two languages. the server does it once. |
+| per-token cost | agents bill against subscriptions. two kinds do not record it. |
 | classifying why an agent is blocked | it needs screen reading per kind. orchestratr reports `blocked` and shows the screen. |
 | an abstract effort vocabulary | the words do not line up across kinds, and a wrong mapping changes what a turn costs. `--effort` passes through. |
 | catalogue caching | the probes run in parallel when someone asks. a cache adds a staleness policy for no real gain. |

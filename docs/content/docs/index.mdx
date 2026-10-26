@@ -23,10 +23,10 @@ needs more than one:
 
 - a reviewer per concern
 - a worker under a verifier
-- a lead that splits a task and hands the parts out
+- a lead that splits a task and gives out the parts
 
 that work often needs agents of different kinds, because each kind has different strengths and
-its own subscription quota. the agents then need to talk to each other: hand over work, ask a
+its own subscription quota. the agents then need to talk to each other: pass on work, ask a
 question, reply to a specific message, and wake each other up when something is done.
 
 ## what orchestratr provides
@@ -43,11 +43,12 @@ question, reply to a specific message, and wake each other up when something is 
 
 ## how it works, in one paragraph
 
-orchestratr launches each agent with a small **integration**: a plugin that runs inside the agent,
-written in that kind's own extension system. every agent has an **inbox**, a folder of message
-files. the integration watches it, puts each new message into its own session as if it had
-arrived from the agent's own queue, and writes a marker when the model has seen it. the model
-gets tools to message other agents. nothing is ever typed into a terminal. see
+orchestratr launches each agent with a small **integration**: code that runs with the agent and
+uses that kind's own interface for extensions. it is a mod on Claude Code, a bridge to the
+app-server on Codex, an extension on Pi and a plugin on OpenCode. every agent has an **inbox**, a
+folder of message files. the integration watches the inbox, hands each new message to the agent's
+own input queue, and writes a **marker** file when the model has the message. the model gets
+tools to message other agents. nothing is ever typed into an agent. see
 [messaging](/docs/messaging) and [integrations](/docs/integrations).
 
 ## why interactive sessions
@@ -57,14 +58,15 @@ interactive sessions keep three properties that matter at this scale.
 
 1. **price.** an interactive session bills against a flat subscription plan. a non-interactive
    call bills per token. across many agents, this difference sets the total cost.
-2. **control.** a person can watch an interactive session, correct it mid turn, and take over the
-   terminal when it goes wrong.
+2. **control.** a person can watch an interactive session, correct it mid turn, and take over
+   the terminal when it goes wrong.
 3. **one surface.** each kind has a different non-interactive mode, with different flags and
    different output. the interactive session, plus its extension system, is what all four share.
 
 ## scope
 
-- orchestratr controls only the agents it starts. see [future work](/docs/future#peoples-own-sessions-on-the-bus).
+- orchestratr controls only the agents it starts. see
+  [future work](/docs/future#peoples-own-sessions-on-the-bus).
 - orchestratr starts every agent with permission prompts turned off. an agent it starts can run
   any command in its working directory without asking. see
   [future work](/docs/future#permissions) for what would replace this.
@@ -72,6 +74,32 @@ interactive sessions keep three properties that matter at this scale.
   integration for each kind, because herdr reports agent state through it.
 - orchestratr drives a kind only when its orcr integration is installed. see
   [integrations](/docs/integrations).
+- the first version supports macOS. Linux is not tested.
+
+## terms
+
+| term | meaning |
+|---|---|
+| kind | one of the agent programs: `claude`, `codex`, `pi` or `opencode`. |
+| agent | one running session of a kind, started by orchestratr. |
+| backend | herdr, which hosts every agent in a pane and reports its state. |
+| herdr integration | herdr's own plugin for a kind. it reports state to herdr. |
+| orcr integration | orchestratr's code for one kind: a mod, a bridge, an extension or a plugin. it delivers messages and registers the agent. "integration" alone means this one. |
+| bus | the folder of agent records and inboxes that every integration reads and writes. |
+| record | the JSON file that describes one agent: `agents/<id>.json` on the bus. |
+| live agent | an agent with a record whose state is not `exited`. |
+| inbox | one agent's folder of message files. |
+| marker | an empty or small file beside a message: `.accepted`, `.delivered` or `.failed`. |
+| take | an integration reads a message file from its inbox. |
+| hand over | an integration passes one message to the agent's own input queue. |
+| hand over again | an integration hands over a message a second time, after an interrupt dropped it. |
+| send again | a client sends a second copy. never do this after `queued` or `pending`. |
+| delivery mode | when a message reaches the model: `steer`, `followUp` or `immediate`. |
+| turn | the work an agent does in response to a message. |
+| at rest | the agent is `idle`: no turn is running. |
+| outcome | what a send reports: `delivered`, `queued`, `pending` or `refused`. |
+| watch | the server following an agent on a sender's behalf, until it replies or stops working. |
+| watch ending | the message from `orcr` that ends a watch without a reply. |
 
 ## design rules
 
@@ -91,23 +119,16 @@ these rules settle design arguments. read them before proposing a change.
 7. **say what is not known.** an honest gap is more useful than a confident guess. each page
    lists what was not verified, and those lists are part of the specification.
 
-## read in this order
+## reading order
+
+the design pages come first. the reference pages (CLI, socket API, configuration) are for lookup.
 
 <Cards>
   <Card title="messaging" href="/docs/messaging">
     the inbox, message files, delivery modes, replies and watches
   </Card>
   <Card title="integrations" href="/docs/integrations">
-    the plugin each kind runs, how to install it, and how to add a new kind
-  </Card>
-  <Card title="CLI" href="/docs/cli">
-    every `orcr` command, its flags, output and exit codes
-  </Card>
-  <Card title="socket API" href="/docs/socket-api">
-    the protocol every client is built on
-  </Card>
-  <Card title="configuration" href="/docs/configuration">
-    `config.toml`, and what is deliberately fixed
+    the code each kind runs, how to install it, and how to add a new kind
   </Card>
   <Card title="how it works" href="/docs/how-it-works">
     the server, launching, readiness, state, transcripts and the shared procedures
@@ -118,29 +139,24 @@ these rules settle design arguments. read them before proposing a change.
   <Card title="limitations" href="/docs/limitations">
     what does not work, and why
   </Card>
+  <Card title="CLI" href="/docs/cli">
+    every `orcr` command, its flags, output and exit codes
+  </Card>
+  <Card title="socket API" href="/docs/socket-api">
+    the protocol every client is built on
+  </Card>
+  <Card title="configuration" href="/docs/configuration">
+    `config.toml`, and what is deliberately fixed
+  </Card>
   <Card title="future work" href="/docs/future">
     what the first version leaves out, and why
   </Card>
 </Cards>
 
-## terms
-
-| term | meaning |
-|---|---|
-| kind | one of the agent programs: `claude`, `codex`, `pi` or `opencode`. |
-| agent | one running session of a kind, started by orchestratr. |
-| backend | herdr, which hosts every agent in a pane and reports its state. |
-| herdr integration | herdr's own plugin for a kind. it reports state to herdr. |
-| orcr integration | orchestratr's plugin for a kind. it delivers messages and gives the model its tools. "integration" alone means this one. |
-| bus | the folder of agent records and inboxes that every integration reads and writes. |
-| inbox | one agent's folder of message files. |
-| delivery mode | when a message reaches the model: `steer`, `followUp` or `immediate`. |
-| turn | the work an agent does in response to a message. |
-| watch | the server following an agent on a sender's behalf, until it replies or stops working. |
-
 ## measurements
 
 the latencies, paths and keys in these documents come from live runs on macOS. the first round
 drove Claude Code 2.1.276, Codex 0.154.0, Pi 0.85.1 and OpenCode 1.18.31 through herdr 0.9.1.
-the integration round ran Claude Code 2.1.289, Codex 0.159.3, Pi 1.0.0, and OpenCode 1.18.34 and
-2.0.24, through herdr 0.9.3. each agent page names the version behind each claim.
+the second round ran Claude Code 2.1.289, Codex 0.159.3, Pi 1.0.0, and OpenCode 1.18.34 and
+2.0.24, through herdr 0.9.3. later checks ran Claude Code up to 2.1.310 and Codex 0.163.0. each
+agent page names the version behind each claim.

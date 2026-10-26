@@ -4,7 +4,8 @@ description: "what does not work, and why"
 ---
 
 everything here is a known limit of the design, not a defect to fix during implementation. each
-entry states the limit, the evidence, and what a caller should do.
+entry states the limit and, where there is one, what a caller can do. the evidence is on the
+linked page.
 
 ## scope
 
@@ -18,14 +19,14 @@ setting that turns this off. start agents in directories where that is acceptabl
 
 **orchestratr removes what can stall an agent, but not everything.** it turns off each kind's
 question tools, prevents its startup screens, and sets an environment that stops programs inside
-shell commands from waiting for input. the tool denial was verified on all four kinds; the
-exceptions in its current form are listed on each agent page. these can still stop
-an agent, and none can be turned off:
+shell commands from waiting for input. the tool denial was verified on Codex and OpenCode, and on
+Claude Code in its `--disallowedTools` form. Pi has no such tools. these can still stop an agent,
+and none can be turned off:
 
-- a usage limit or quota dialog;
-- an authentication or sign-in flow when a token expires;
-- a dialog raised by an MCP server, including its consent flows;
-- a model migration or upgrade notice;
+- a usage limit or quota dialog.
+- an authentication or sign-in flow when a token expires.
+- a dialog raised by an MCP server, including its consent flows.
+- a model migration or upgrade notice.
 - a dialog from one of the person's own extensions, on Pi.
 
 a stalled agent reads `blocked`. orchestratr cannot clear it: attach with
@@ -64,14 +65,15 @@ it only for agents orchestratr starts.
 
 ## messaging
 
-**delivery is at least once.** a reload of the integration between the model seeing a message and
-the marker being written delivers the message again.
+**delivery is at least once.** a reload of the integration between `.accepted` and `.delivered`
+can deliver the message again. each kind's page says how its integration narrows this.
 
 **`.delivered` means the model has the message, not that it acted on it.** a provider error or an
 expired login can end the turn without an answer. a watch then ends `idle` with the last text,
 or the caller sees no reply.
 
-**`pending` and `queued` must not be re-sent.** see [outcomes](/docs/messaging#outcomes).
+**do not send a message again after `pending` or `queued`.** see
+[outcomes](/docs/messaging#outcomes).
 
 **an interrupt can cancel accepted steers.** on Pi and on Codex, an abort, including the person
 pressing Esc, silently drops steers the agent had accepted and not yet delivered. on Codex, a
@@ -89,9 +91,8 @@ command.
 **messages from different senders are ordered by send time to the millisecond**, not by a shared
 sequence.
 
-**the bus has no access control beyond file permissions.** any process of the same user can read
-and write it. that is the same trust level as the herdr socket, through which any such process
-can already type into every agent.
+**the bus has no access control beyond file permissions.** see
+[what the bus does not do](/docs/messaging#what-the-bus-does-not-do).
 
 ## per kind
 
@@ -106,7 +107,8 @@ can already type into every agent.
   an agent id. a steer can never land inside a subagent.
 - **an abort leaves a running shell command in the background.** it may later produce a
   notification turn.
-- **orchestratr writes one key into `~/.claude.json`**, the folder trust for the working
+- **orchestratr writes one key into `.claude.json`** in the Claude Code configuration folder, the
+  folder trust for the working
   directory, under Claude Code's own lock. see
   [writing a person's configuration](/docs/how-it-works#writing-a-persons-configuration).
 - **permission bypass fails under root.** Claude Code refuses `--dangerously-skip-permissions`
@@ -124,9 +126,8 @@ can already type into every agent.
 - **`--remote` refuses** `--add-dir`, `--worktree`, extra writable roots and `/cd`.
 - **an interrupt does not stop a running shell command.** that needs the agent's own stop
   command, typed by a person.
-- **the app-server socket has no authentication beyond its mode.** the path in orchestratr's
-  `0700` folder is a symbolic link to a `0600` socket in `/private/tmp/codex-daemon-<uid>/`, a
-  `0700` folder.
+- **the app-server socket has no authentication beyond file modes.** see
+  [Codex traps](/docs/agents/codex#traps).
 - **a hooks file in the Codex home shows a review screen.** herdr's Codex integration is such a
   hook. `orcr doctor` reports an untrusted herdr integration.
 
@@ -135,12 +136,15 @@ can already type into every agent.
 - **Pi's own built-in pickers are not reported as blocked.** `/model`, `/resume` and `/tree` do not
   go through the extension dialog events. extension dialogs are reported.
 - **the process must be named `pi`.** herdr does not recognize `pi.real`.
-- **an authentication failure leaves the message undelivered.** it reads `queued`, and the
-  extension writes the error to `.failed`, so `send` and `orcr agent list` show why.
+- **an authentication failure leaves the message undelivered.** Pi reports the error to its screen
+  only, so the sender sees `queued` or `pending` with no reason. see
+  [not verified](/docs/agents/pi#not-verified).
+- **a non-blocking `ctx.ui.custom()` overlay reads `blocked`**, so a watch can end `blocked`, and
+  `--reply` exit 4, while the agent works.
 - **pi-herd sees orchestratr's Pi agents.** pi-herd registers every Pi session in herdr, so they
   appear on its dashboard. the two sets of tools do not clash.
 - **the effort values need one probe per model.** [`orcr models`](/docs/cli#orcr-models) reports
-  them for a named model only.
+  them only with `--model`.
 
 ### OpenCode
 
@@ -155,7 +159,8 @@ can already type into every agent.
   at boot. `orcr agent stop` interrupts first. a crash cannot.
 - **do not open an orchestratr session in your own OpenCode.** two processes would execute one
   session.
-- **1.x has no idle rule in herdr**, so its idle is a default rather than an observation.
+- **1.x has no idle rule in herdr**, so its idle is a default rather than an observation. a watch
+  on a 1.x agent can end `idle` early.
 - **1.x does not tell the plugin which session the TUI shows.** the integration's TUI half
   reports it.
 
@@ -164,30 +169,31 @@ can already type into every agent.
 these are better fixed upstream than worked around here:
 
 1. **herdr:**
-   - bridge Pi's dialog events to `blocked` in herdr's own Pi integration;
-   - recognize `pi.real`;
-   - make `pane.process_info` with `target` answer for the target;
-   - add positive idle rules for the kinds that have none;
+   - map Pi's dialog events to `blocked` in herdr's own Pi integration.
+   - recognize `pi.real`.
+   - make `pane.process_info` with `target` answer for the target.
+   - add positive idle rules for the kinds that have none.
    - drive Claude Code and Codex state from hooks, not only the screen: `UserPromptSubmit`,
      `Stop`, `PermissionRequest`, `Notification` and `SessionEnd`, and `Interrupt` on Codex.
-     herdr's hook now handles `SessionStart` only. corgi shows the same entry point carries them;
+     herdr's hook now handles `SessionStart` only. corgi, another agent tool, shows that the same
+     entry point carries them.
    - read `background_tasks` from Claude Code's `Stop` payload, so an agent that a background
      shell or subagent will wake is not reported as plain idle.
 2. **Claude Code:**
-   - a steer option for `$.prompt.submit`;
-   - an event after `/clear` and `/resume` that carries the new session id;
+   - a steer option for `$.prompt.submit`.
+   - an event after `/clear` and `/resume` that carries the new session id.
    - a file watch in the mod API.
 3. **Codex:**
-   - a stable app-server protocol;
-   - fix: queued input stays stuck after an interrupt;
-   - fix: an interrupt drops another client's pending steer, and leaves a written one unanswered;
+   - a stable app-server protocol.
+   - fix: queued input stays stuck after an interrupt.
+   - fix: an interrupt drops another client's pending steer, and leaves a written one unanswered.
    - let a hook or MCP server enqueue input.
 4. **Pi:**
-   - keep or report custom messages when an abort clears the queues;
-   - report a failed `sendMessage`;
+   - keep or report custom messages when an abort clears the queues.
+   - report a failed `sendMessage`.
    - a duplicate tool name should be a diagnostic, not an exit.
 5. **OpenCode 2.x:**
-   - an owner on a turn's running mark, so a shared service never resumes another process's turn;
+   - an owner on a turn's running mark, so a shared service never resumes another process's turn.
    - per-client plugins and environment on the shared service.
 
 ## not verified
@@ -197,4 +203,5 @@ the gaps that touch more than one kind. the gaps specific to one kind are on its
 - two agents of one kind in one working directory, each receiving only its own messages.
 - delivery while the recipient is compacting its conversation.
 - a message of 32 KB, and messages with many lines, on every kind.
-- herdr restarting while agents run: whether each kind's restored pane is detected as `exited`.
+- herdr restarting while agents run: whether each kind's restored pane is detected as `exited`,
+  and whether a relaunched agent's integration stays inert.

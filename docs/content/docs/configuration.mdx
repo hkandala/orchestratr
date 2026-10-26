@@ -11,6 +11,11 @@ description: "config.toml, and what is deliberately fixed"
 
 the file is optional. orchestratr works with no configuration at all.
 
+the server reads it at each `agent.new` and `models.list`, so an edit needs no restart. a file
+that does not parse, or a key with the wrong type, fails that call with `invalid_request` and
+`details.reason: "config"`, with `details.line`. `orcr doctor` warns about unknown keys and
+kinds.
+
 ## keys
 
 ```toml
@@ -74,7 +79,8 @@ orchestratr writes to its own folders only:
 |---|---|
 | `~/.local/state/orcr/bus/` | agent records and inboxes. mode `0700`. see [the bus](/docs/messaging#the-bus). |
 | `~/.local/share/orcr/integrations/` | installed integrations. see [installing](/docs/integrations#installing). |
-| `~/.local/state/orcr/run/` | the socket, and each Codex agent's app-server socket. mode `0700`. |
+| `~/.local/state/orcr/run/` | the socket, each agent's launch script, and each Codex agent's app-server socket and log. mode `0700`. |
+| `~/.local/state/orcr/server.log` | the server's log. |
 
 the one exception is a person's Claude Code configuration. Claude Code has no launch argument for
 folder trust, so orchestratr writes that one key. see
@@ -90,15 +96,16 @@ these are deliberately fixed.
 | the backend | herdr is required. |
 | the herdr session name | always `orcr`. a name that varies makes reconciliation ambiguous. |
 | the bus and socket locations | every integration and every client must find them without asking. |
-| delivery and watch timeouts | `--timeout` covers a single call. the defaults are measured, and a guessed default is worse. |
+| delivery and watch timeouts | `--timeout` covers a single call. the defaults are measured, and a guessed default is worse. a watch started from an agent's tool has no deadline (see [watches](/docs/messaging#watches)). |
 | state names | a shared vocabulary that can be renamed is not shared. |
 
 ## environment
 
-orchestratr reads no environment variable for its own settings, apart from the standard
-`XDG_STATE_HOME` and `XDG_DATA_HOME` for its default paths.
+orchestratr reads no environment variable for its own settings. its paths are fixed, and do not
+follow `XDG_STATE_HOME` or `XDG_DATA_HOME`.
 
 it sets these variables for every agent: `ORCR_AGENT_ID`, `ORCR_BUS`, the
 [stall environment](/docs/how-it-works#the-stall-environment), and the `home` variable above. it
-removes the session markers of every kind, so an agent started from inside another agent does not
-inherit them. see [the launch line](/docs/how-it-works#the-launch-line).
+removes the [session variables](/docs/how-it-works#session-variables) of every kind, so an agent
+started from inside another agent does not inherit them. see
+[the launch line](/docs/how-it-works#the-launch-line).

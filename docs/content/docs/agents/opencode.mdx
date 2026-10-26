@@ -3,7 +3,7 @@ title: "OpenCode"
 description: "how orchestratr launches, drives and reads OpenCode 1.x and 2.x"
 ---
 
-**kind value:** `--kind opencode`
+**kind value:** `--kind opencode`. versions: 1.18.29 and later, on the 1.x and 2.x lines.
 
 OpenCode has two live lines: 1.x (`opencode-ai`) and 2.x (`@opencode/cli`). their flags, plugin
 APIs and tables differ. one orcr plugin folder serves both. measured on 1.18.34 and 2.0.24 unless
@@ -19,7 +19,7 @@ orchestratr takes the first `<major>.<minor>.<patch>` from `opencode --version`:
 | version | line |
 |---|---|
 | below 1.18.29 | refused. the herdr integration for OpenCode exports an entry point that older builds never call, so herdr's state reports would be silently absent. |
-| 1.18.29 up to 2.0 | 1.x |
+| 1.18.29 to below 2.0 | 1.x |
 | 2.0 and later | 2.x |
 
 it records the version in the agent's record, and the transcript reader branches on it. never
@@ -78,17 +78,21 @@ OpenCode calls an agent. it is not an orchestratr agent.
 <Callout type="warn" title="the order of permission rules matters">
 rules resolve by last match, on both lines. `"*": "allow"` must be the first key of the block, and
 the denies follow it. the block lands after OpenCode's own defaults (such as `external_directory:
-ask`), so it wins over them. put `"*"` last and it re-enables `question`.
+ask`), so it wins over them. put `"*"` last and it re-enables `question`. so build
+`OPENCODE_CONFIG_CONTENT` as a literal string, or with an encoder that keeps key order. a test
+asserts that `"*"` is the first key.
 </Callout>
 
 **effort** has no TUI flag: a third segment on `-m` joins the model id and breaks the run. three
 rules, each failing quietly (measured on 1.x):
 
 1. **`variant` needs `model`.** alone, the API reports the variant and the request carries no
-   `reasoning` field. orchestratr refuses `--effort` without `--model`.
+   `reasoning` field. orchestratr refuses `--effort` without `--model` (`invalid_request`,
+   `details.reason: "effort_needs_model"`).
 2. **the model must publish the variant.** an unknown name resolves to nothing.
    [`orcr models`](/docs/cli#orcr-models) lists them.
-3. **it is fixed for the life of the process.** a person who picks a model in the session outranks it.
+3. **it is fixed for the life of the process.** a person who picks a model in the session
+   outranks it.
 
 ## startup
 
@@ -133,14 +137,14 @@ one resolves against the working folder.
 
 | | 1.x | 2.x |
 |---|---|---|
-| at | server half init. it creates the session and selects it in the TUI with `client.tui.publish({body: {type: "tui.session.select", properties: {sessionID}}})`. | `setup`: `ctx.session.get`, else `ctx.session.create({id, location})`. the TUI creates a session only at the first typed prompt. |
+| at | server half init. if the record already names a session, it uses that one. otherwise it creates one. it selects the session in the TUI with `client.tui.publish({body: {type: "tui.session.select", properties: {sessionID}}})`. | `setup`: `ctx.session.get`, else `ctx.session.create({id, location})`. the TUI creates a session only at the first typed prompt. |
 | timing | not measured | 0.65 seconds after launch. the composer drew 1.0 seconds later. |
 
-the plugin adds `session` (`{id, transcript: null}`), `integration` and `started_at`, and only
-if the record file still exists. it also writes `context_window`: the model's `limit.context`
+the plugin adds `session` (`{id, transcript: null}`) and `started_at`, and sets `integration`,
+only if the record file still exists. it also writes `context_window`: the model's `limit.context`
 from OpenCode's model list (1.x `/config/providers`, 2.x `/api/model`), at registration and when
-the session's model changes. which event reports a model change was not verified. it writes no `pid`: orchestratr takes that from herdr, and on 2.x
-the plugin runs in a child process anyway.
+the session's model changes. which event reports a model change was not verified. it writes no
+`pid`: orchestratr takes that from herdr, and on 2.x the plugin runs in a child process anyway.
 
 the negative test: 2.x has no blocking startup screen, and the plugin registers about 1 second
 before the TUI draws (verified). messages go to the server, not the screen, so that is safe. on
@@ -150,22 +154,24 @@ starts on home, and the TUI half moves it to the session: on 2.x with
 
 ### delivery
 
-`<block>` is the [rendered message](/docs/messaging#what-the-model-sees): `<orcr-message>`, or
-`<orcr-watch>` for a message with `watch`. on 1.x the part carries `metadata: {orcr: <msgId>}`,
-which OpenCode persists. one call per message, in id order. before every call, the plugin checks
-that `<msgId>.json` still exists: `stop` deletes undelivered messages before it interrupts. from
-the moment it hands a message to an idle agent, the plugin treats the agent as busy, so a second
-message moments later steers into the starting turn.
+`<block>` is the message's `model_text`, unchanged: the
+[block](/docs/messaging#what-the-model-sees) the server rendered. on 1.x the part carries
+`metadata: {orcr: <msgId>}`, which OpenCode persists. one call per message, in id order. before
+every call, the plugin checks that `<msgId>.json` still exists and that `agents/<id>.stopping`
+does not: `stop` removes the agent's message files before it interrupts. from the moment it
+hands a message to an idle agent, the plugin treats the agent as busy, so a second message
+moments later steers into the starting turn. a call that fails clears that mark and writes
+`.failed`.
 
 | mode | 1.x | 2.x |
 |---|---|---|
 | wake, steer | `client.session.promptAsync({path: {id}, body: {parts: [{type: "text", text: <block>, metadata}]}})`. on a busy session it joins the running loop, and the model sees it at the next step. | `ctx.session.synthetic({sessionID, id: "msg_" + msgId, text: <block>, description: "agent message from <name>", metadata, delivery: "steer"})` |
-| followUp | held by the plugin until `session.idle` for the session, then `promptAsync` | the same call with `delivery: "queue"`. one queued item per turn. |
+| `followUp` | held by the plugin until `session.idle` for the session, then `promptAsync` | the same call with `delivery: "queue"`. one queued item per turn. |
 | immediate | `client.session.abort({path: {id}})`, which returns once idle, then `promptAsync` | at rest: a plain `synthetic` (`resume` true, the default). an interrupt on an idle session is a no-op, and `resume: false` would skip the wake. while working: `synthetic` with `resume: false`, then `ctx.session.interrupt({sessionID, resume: true})`, 170 ms end to end. |
-| empty immediate | at rest: nothing. working: `abort` | at rest: nothing. working: `interrupt({sessionID, resume})`, with `resume: true` when undelivered files other than empty immediates remain in the inbox, else `false`. after a `stop` none remain, so a stop always gets `false`. |
+| empty `immediate` | at rest: nothing. while working: `abort` | at rest: nothing. while working: `interrupt({sessionID, resume})`, with `resume: true` when undelivered files other than empty `immediate` messages remain in the inbox, else `false`. after a `stop` none remain, so a stop always gets `false`. |
 
 the plugin knows working from its own hand-overs and `session.status` on 1.x, and from
-`session.execution.*` on 2.x. an empty immediate older than 10 seconds (by `sent_at`) when the
+`session.execution.*` on 2.x. an empty `immediate` older than 10 seconds (by `sent_at`) when the
 plugin takes it is marked `.accepted` and `.delivered`, and ignored.
 
 a steer waits for the step: several tool calls in one step all finish first. a 2.x synthetic
@@ -173,30 +179,33 @@ reaches the model as a user message, and the TUI shows one collapsed row with it
 
 | marker | 1.x | 2.x |
 |---|---|---|
-| `.accepted` | `promptAsync` returns 204. a held followUp: when the plugin takes it into its hold. | `synthetic` returns |
+| `.accepted` | `promptAsync` returns 204. a held `followUp`: when the plugin takes it into its hold. | `synthetic` returns |
 | `.delivered` | `experimental.chat.messages.transform`, which runs with the full history before every model request: a user part with `metadata.orcr` | the `session.inbox.delivered` event from `ctx.event.subscribe()`. the bus id is `inboxID.slice(4)`. |
 | measured | 50 ms after `promptAsync` at rest, 70 ms after the tool returned when steering | 30 ms after enqueue at rest, 44 ms after the tool returned when steering |
-| empty immediate | at rest: both at once. working: `.accepted`, then `.delivered` when `abort` returns | at rest: both at once. working: `.accepted`, then `.delivered` at `session.execution.interrupted` |
+| empty `immediate` | at rest: both at once. while working: `.accepted`, then `.delivered` when `abort` returns | at rest: both at once. while working: `.accepted`, then `.delivered` at `session.execution.interrupted` |
 
-an empty immediate starts no turn of its own. after it, on 2.x, undelivered steers start the next
+an empty `immediate` starts no turn of its own. after it, on 2.x, undelivered steers start the next
 turn. on 1.x they are already in the history, and reach the model with the next turn.
 
 **2.x reconciles**, because the event stream can drop events: at setup, and whenever the
-subscription reconnects. for each message without `.delivered` whose file exists, except an empty immediate: if
-`msg_<msgId>` is in `ctx.session.context`, or in `session_message`, write `.delivered`. otherwise
-admit it again with the same id. the first admission wins, so this is a no-op that wakes the
-session.
+subscription reconnects. for each message without `.delivered` whose file exists, except an
+empty `immediate`: if `msg_<msgId>` is in `ctx.session.context`, write `.delivered`. otherwise
+hand it over again with the same id. OpenCode keeps the first copy of an id, so this is a no-op
+that wakes the session.
 
 ### recovery after an interrupt
 
-- **2.x:** after an interrupted turn, the plugin admits again every message it had handed over
-  that has no `.delivered` and whose file still exists, never an empty immediate. nothing is lost. a pending steer stays a row in `session_inbox` until a delivery
-  transaction moves it (source). the re-hand is a `synthetic` with the same id: the first
-  admission wins, so it only wakes the session. a person's double Esc also resumes pending steers
+- **2.x:** after an interrupted turn, the plugin hands over again every message it had handed
+  over that has no `.delivered` and whose file still exists, never an empty `immediate`. nothing
+  is lost: a pending steer stays a row in `session_inbox` until a delivery transaction moves it
+  (source). the second hand-over is a `synthetic` with the same id. OpenCode keeps the first copy
+  of an id, so it only wakes the session. a person's double Esc also resumes pending steers
   (`interrupt({resume: true})`).
-- **1.x:** no re-hand. it would put the text in the history a second time. `promptAsync` persists
-  a message at acceptance, so an abort should not remove it. if 1.x does drop an accepted message
-  on abort, it is not sent again.
+- **1.x:** `promptAsync` persists a message at acceptance, so an abort should not remove it.
+  after an aborted turn, for each message the plugin handed over that has no `.delivered` and
+  whose file exists, it lists the session's messages (`client.session.messages`). if no part
+  carries `metadata.orcr` equal to the id, it hands the message over again. so no text reaches
+  the history twice. not verified.
 
 ### tools
 
@@ -208,7 +217,7 @@ session.
 2.x  "mcp": {"servers": {"orcr": {"type": "local", "command": ["<orcr>", "mcp"], "codemode": false}}}
 ```
 
-the server inherits the process environment, so it sees `ORCR_AGENT_ID` (source; an `environment`
+the server inherits the process environment, so it sees `ORCR_AGENT_ID` (source. an `environment`
 field also exists). on 2.x `codemode` defaults to true, and the 1.x form cannot set it. a code mode
 tool is reachable only inside `execute`: a plugin tool without it failed with "No tool named … is
 currently available" (measured).
@@ -218,8 +227,8 @@ currently available" (measured).
 - **2.x: stop must interrupt first.** a pane close or SIGTERM keeps the turn's execution claim
   (`session_v2.time_suspended`), and the next shared service on that database resumes the turn
   headless: measured, a model turn 60 seconds after the stop. a `user` interrupt releases it
-  (verified). `stop` deletes undelivered files first, so its empty `immediate` uses
-  `resume: false`. a steer already admitted stays parked in `session_inbox` and starts no turn
+  (verified). `stop` removes the agent's message files first, so its empty `immediate` uses
+  `resume: false`. a steer already accepted stays parked in `session_inbox` and starts no turn
   before the pane closes. `ctx.session` exposes no cancel.
   a crash (SIGKILL) keeps the claim, and the plugin cannot help.
 - **2.x: two executors.** the sweep has no owner filter, so a person's own `opencode` opened on an
@@ -227,7 +236,8 @@ currently available" (measured).
   [`orcr agent attach`](/docs/cli#orcr-agent-attach).
 - **the plugin loads more than once:** 1.x ran init twice in its first 3 seconds, and 2.x re-runs
   `setup` 3 seconds after a plugin file changes. keep state on `globalThis`, close the previous
-  watcher, de-duplicate on the markers.
+  watcher, de-duplicate on the markers. on 1.x, a message with `.accepted` and no `.delivered`
+  at a second init is handed over again only if the history does not hold it, as after an abort.
 - **1.x:** a throw in a watcher callback can kill the TUI's backend, which shares the worker. the
   transform hook is `experimental`, and compaction calls it too: ignore the call after
   `experimental.session.compacting`. subagent sessions fire `session.created` and `chat.message`:
@@ -237,7 +247,8 @@ currently available" (measured).
 
 ## state
 
-from herdr. on 1.x herdr has no idle rule, so its idle is a default. its OpenCode plugin maps
+from herdr. on 1.x herdr has no idle rule, so its idle is a default, and a watch on a 1.x agent
+can end `idle` early. its OpenCode plugin maps
 `session.error` to `blocked`, so an `immediate` can show `blocked` for a moment. on 2.x herdr's
 TUI plugin maps `permission.asked` and `form.created` to `blocked`, and `execution.interrupted` to
 `idle`. it also maps `execution.failed` to `blocked`, so a provider failure reads as blocked.
@@ -258,7 +269,8 @@ open it with `mode=ro`.
 observed run had a 757 kilobyte main file and a 609 kilobyte log.
 </Callout>
 
-**1.x:** `part` joined to `message`, which alone has the role. `time_created` is acceptance, not delivery.
+**1.x:** `part` joined to `message`, which alone has the role. `time_created` is acceptance, not
+delivery.
 
 ```sql
 select p.time_created, m.data ->> '$.role', p.data
@@ -291,8 +303,10 @@ select seq, type, time_created, data from session_message where session_id = ? o
   delivering to it, and the TUI half navigates back.
 - **1.x:** the session the plugin created at init. after `/new`, the next root session becomes the
   agent's, and the record is rewritten. the server half is never told which session the TUI shows,
-  so the TUI half polls `api.route.current` (250 ms) and passes it through a file: the halves share
-  no `globalThis`.
+  so the TUI half polls `api.route.current` (250 ms) and passes it through
+  `~/.local/state/orcr/run/<id>.route`, `{"v": 1, "session": "ses_…", "at": "…"}`, written to a
+  temporary file and renamed. the halves share no `globalThis`. `stop` deletes it with the other
+  `run/<id>.*` files.
 
 ## model catalogue
 
@@ -302,7 +316,8 @@ select seq, type, time_created, data from session_message where session_id = ? o
 | 2.x | `OPENCODE_PASSWORD=<random> opencode serve --hostname 127.0.0.1 --port <free>`, then `GET /api/model?location[directory]=<cwd>` and `GET /api/model/default` with basic auth `opencode:<password>`, stop |
 
 efforts are the per-model variants (2.x: `variants[].id`), which only a server reports. a cold 2.x
-server answers `{"data": []}` (3 of 3): poll until it is not empty. plain `serve` is not the
+server answers `{"data": []}` (3 of 3): poll every 250 ms until it is not empty, within the
+probe's timeout. plain `serve` is not the
 shared service, and runs no resume sweep. `opencode models` has no structured output on 1.x, and
 printed nothing cold on 2.x, twice.
 
@@ -327,8 +342,14 @@ printed nothing cold on 2.x, twice.
 - when 1.x registers relative to `Connect a provider`, and 2.x relative to the migration overlay.
 - a message delivered before the 1.x TUI has drawn: whether `tui.session.select` is missed, and
   the TUI half must navigate.
-- whether an abort drops an accepted message on 1.x. if it does, that message is lost.
-- that `session.execution.interrupted` is the right moment for `.delivered` of an empty immediate
+- whether an abort drops an accepted message on 1.x, and the recovery rule above.
+- how 1.x marks a turn end and a failed turn (a `step-finish` reason?). the `idle` watch and the
+  reader need both.
+- a `msg_<bus id>` message id through OpenCode Zen and other providers. it is not OpenCode's own
+  id format.
+- how to tell a development build, which uses `opencode-local.db`, from a release build.
+- **usage:** which assistant fields give the context tokens on each line.
+- that `session.execution.interrupted` is the right moment for `.delivered` of an empty `immediate`
   on 2.x. the interrupt call acknowledges before cleanup settles (source).
 - that `question: deny` beats the `plan` agent's own allow on 2.x. it does for `build`.
 - both lines' startup with the person's own plugins loaded.
