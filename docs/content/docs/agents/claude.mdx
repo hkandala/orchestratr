@@ -242,6 +242,10 @@ $CLAUDE_CONFIG_DIR/projects/*/<session id>.jsonl      (~/.claude/projects/… by
 - **the file appears early in the first turn**, 4 to 8 seconds after the message, with the turn
   still running (2.1.276). its existence does not mean the turn finished.
 - **subagent transcripts** are separate files, and are not read.
+- **`system` `turn_duration` is not written for every turn.** a 2-second turn had none
+  (2.1.303). it is no turn-end marker.
+- **`cost-state`** (`totalCostUSD`, per-model usage) is written at session end, not per turn. so
+  `usage.cost_usd` is null.
 
 reader rules:
 
@@ -298,6 +302,7 @@ OAuth or the keychain, so it breaks a subscription sign-in.
 
 | not used | why |
 |---|---|
+| a status line in `--settings` | its JSON carries context, cost and rate limits, but a custom status line hides the `esc to interrupt` hint, which herdr's Claude Code rule reads to tell working from idle. the transcript gives the same usage. |
 | typing into the composer | design rule: [nothing is typed](/docs/messaging). it also needed delivery records and interrupt keys, and two escapes at rest open rewind. |
 | the native peer socket (`cc-socks/<pid>.sock`, `--messaging-socket-path`) | it has steer, followUp and immediate (`next`, `later`, `now`, measured on 2.1.310), but: no interrupt without text; no receipt for an accepted message; nothing kept on disk; silent drops on a rate limit, an identical text within 30 s, and 50 queued messages; every message framed as from "another Claude session", with a warning not to treat it as the user; a repo's settings can make its gate stricter; Claude Code only. see [native messages are refused](#native-messages-are-refused). |
 | channels | measured: `channels are not available on third-party providers`. Vertex and gateway sign-ins cannot use them. |
@@ -308,6 +313,8 @@ OAuth or the keychain, so it breaks a subscription sign-in.
 
 ## not verified
 
+- **whether `orcr mcp`'s `instructions` reach the model.** the
+  [brief](/docs/integrations#what-the-model-reads) depends on it.
 - **whether `session.start` fires behind the bypass warning or the onboarding screens.** only
   trust was tested. on 2.1.276 the settings `SessionStart` hook fired about 1 second after
   `sessions/<pid>.json`, which stayed absent through 71 seconds of bypass warning.
@@ -330,6 +337,13 @@ OAuth or the keychain, so it breaks a subscription sign-in.
 - **trust inheritance from a parent folder**, from 2.1.285 strings only.
 - **whether `CLAUDECODE` alone stops a nested start** on the current version.
 - **whether a project `.mcp.json` opens an approval dialog** under bypass.
+- **a new `home` and the sign-in.** on macOS the keychain item's name includes a hash of
+  `CLAUDE_CONFIG_DIR` (or `CLAUDE_SECURESTORAGE_CONFIG_DIR`), so a new folder may not find the
+  person's login. pi-cowboy pins `CLAUDE_SECURESTORAGE_CONFIG_DIR` to the default for this
+  (its code, not measured here).
+- **a custom API key consent screen in a new `home`.** with `ANTHROPIC_API_KEY` set, a new folder
+  asks once whether to use the key (`customApiKeyResponses`). the "run `claude` once"
+  precondition covers the default folder only.
 - **`crossSessionInbound: "refuse"` live.** the dialog without it was reproduced. that refuse
   removes it, and leaves `$.prompt.submit` working, comes from the bundle. the check: a plain
   `claude` session sends to the agent, and the agent's screen shows no dialog.

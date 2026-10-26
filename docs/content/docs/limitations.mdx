@@ -167,7 +167,12 @@ these are better fixed upstream than worked around here:
    - bridge Pi's dialog events to `blocked` in herdr's own Pi integration;
    - recognize `pi.real`;
    - make `pane.process_info` with `target` answer for the target;
-   - add positive idle rules for the kinds that have none.
+   - add positive idle rules for the kinds that have none;
+   - drive Claude Code and Codex state from hooks, not only the screen: `UserPromptSubmit`,
+     `Stop`, `PermissionRequest`, `Notification` and `SessionEnd`, and `Interrupt` on Codex.
+     herdr's hook now handles `SessionStart` only. corgi shows the same entry point carries them;
+   - read `background_tasks` from Claude Code's `Stop` payload, so an agent that a background
+     shell or subagent will wake is not reported as plain idle.
 2. **Claude Code:**
    - a steer option for `$.prompt.submit`;
    - an event after `/clear` and `/resume` that carries the new session id;

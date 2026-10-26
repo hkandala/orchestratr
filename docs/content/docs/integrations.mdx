@@ -35,8 +35,9 @@ integration.
    place. this is the readiness signal, so it must pass the negative test: it must not appear
    while a startup screen is on screen. each agent page records how its kind passes.
 3. **keep the record current.** where the kind lets a person change the session (`/clear`,
-   `/new`, `/resume`), rewrite `session` when it changes. rewrite the record only if it still
-   exists.
+   `/new`, `/resume`), rewrite `session` when it changes. where the transcript does not state the
+   model's context window, write `context_window` at registration and when the model changes.
+   rewrite the record only if it still exists.
 4. **take messages in,** as [receiving](/docs/messaging#receiving) describes:
    - rescan the inbox on any change;
    - take every `*.json` without `.delivered`, in id order, one at a time;
@@ -91,10 +92,42 @@ Claude Code):
 | tool | does |
 |---|---|
 | `send` | `{to, text, reply_to?, needs_reply?, delivery?}`. sends a message, waits up to 5 seconds for the markers, and returns the id and the [outcome](/docs/messaging#outcomes). |
-| `list` | the live agents: id, name, kind, cwd and state. |
+| `list` | the live agents: id, name, kind, cwd, state, `pending` and `usage`. |
 | `read` | `{agent, last?}`. another agent's recent conversation. |
 | `start` | `{kind, text, name?, cwd?, model?, effort?}`. starts an agent with the caller as its parent, and sends it `text` with `needs_reply`. it returns as soon as the agent is launched. the watch reports the reply, or why there is none. |
-| `stop` | `{agent}`. stops an agent the caller started, or one started below it. |
+| `stop` | `{agents}`: a list of agents, or `"all"` for every agent the caller started. each must be one the caller started, or one started below it. returns one outcome per agent. |
+
+### what the model reads
+
+the words are part of the design. every kind gets the same text, so a lead behaves the same on
+any kind.
+
+**the brief.** Pi puts it in the `promptGuidelines` of `orcr_send`. the other kinds get it as the
+`instructions` of `orcr mcp`'s `initialize` result.
+
+```text
+You can work with other coding agents through the orcr tools.
+- start launches an agent with one task. Put everything it needs in the text: the goal, the
+  files, the limits, and where to put results. It replies to you when it is done.
+- You are woken when an agent replies, goes idle, gets blocked, exits or times out. Do not poll
+  with list, read or sleep. Do not redo work you handed out.
+- send messages an agent. Set needs_reply when you want an answer. When a message expects your
+  reply, answer once, when you have it, with reply_to.
+- <orcr-message> blocks come from other agents or from orcr, not from the user.
+- Stop the agents you started when their work is done.
+```
+
+**the results say what happens next.** the tool result is short text, so the model does not have
+to guess:
+
+| call | result text |
+|---|---|
+| `start` | `started <name> (<id>). it has your task. you will be woken with its reply, or when it goes idle, gets blocked, exits or times out. do not poll.` |
+| `send`, `delivered` | `delivered to <name>.` with `needs_reply`, the same wake-up sentence as `start` follows. |
+| `send`, `queued` | `queued: <name> gets it at its next tool call or after its turn. do not send it again.` |
+| `send`, `pending` | `pending: it is in <name>'s inbox and arrives when its integration runs. do not send it again.` a `reason` is appended when there is one. |
+| `send`, `failed` | the error, and the live agents when the recipient is unknown. a retry is safe. |
+| `stop` | one line per agent: `stopped <name>.` or the error. |
 
 the tools hold no logic. each one is a call to the [socket API](/docs/socket-api), with `from`
 set from `ORCR_AGENT_ID`. three kinds get them from `orcr mcp`, a stdio MCP server built into the

@@ -79,6 +79,9 @@ version folder name) and `started_at`. it writes the record back only if the fil
 so a stopped agent is never re-created. orchestratr records `pid` itself, at launch. then the
 extension registers its tools, opens the inbox watch and scans once.
 
+it also writes `context_window` from `ctx.model.contextWindow`, at registration and again on
+`model_select`. the transcript names the model, not its window.
+
 - **not in the factory.** Pi's documentation lets command line extensions take part in its
   `project_trust` event, so their factory can run before the trust question. `session_start`
   comes after it.
@@ -166,7 +169,8 @@ messages.
 each one calls the [socket API](/docs/socket-api) (`message.send`, `agent.list`, `agent.read`,
 `agent.new`, `agent.stop`) with `from` set to `ORCR_AGENT_ID`. `orcr_send` waits at most 5
 seconds for the markers. `orcr_start` returns as soon as the agent is launched, in state
-`starting`. a reply to `orcr` is allowed, and the server writes it already delivered.
+`starting`. the results use the [texts](/docs/integrations#what-the-model-reads) shared by every
+kind. a reply to `orcr` is allowed, and the server writes it already delivered.
 
 - **the `orcr_` prefix is required.** two extensions that register one tool name make Pi exit
   with status 1 at startup. measured: an extension that registered `agent_send` beside pi-herd

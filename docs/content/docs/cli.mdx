@@ -154,6 +154,8 @@ one agent object:
   "state": "idle",
   "pending": 0,
   "failed": null,
+  "usage": {"model": "gpt-6.1-sol", "context": {"tokens": 41200, "window": 258400, "percent": 16},
+            "cost_usd": null, "at": "2026-10-06T09:22:31Z"},
   "session": "019fd875-…",
   "transcript": "/Users/me/.codex/sessions/2026/10/06/rollout-….jsonl",
   "created_at": "2026-10-06T09:14:02Z"
@@ -163,6 +165,13 @@ one agent object:
 `pending` counts the agent's messages without `.delivered`. `failed` is the `reason` of the newest
 of them that has a `.failed` marker, or null. both come from the inbox, so `orcr agent list` shows
 at a glance an agent that is not taking its messages.
+
+`usage` is what the agent's own records say about its last model call. the reader takes it
+from the tail of the transcript each time the object is built. `model` is the model that
+answered. `context.tokens` is the input of the last call, not a lifetime sum. `window` and
+`percent` are null unless the kind states the window. `cost_usd` is the session's cost where the
+kind records it per message, otherwise null. nothing is estimated from a price table. `usage` is
+null before the first answer. the sources are in the [kind table](/docs/agents#reading).
 
 `model` and `effort` are what was passed or configured, or null. orchestratr does not guess a
 kind's default. `transcript` is null for a kind that writes no transcript file (OpenCode).
@@ -310,13 +319,17 @@ data. `--takeover` detaches any other attached client.
 
 ## `orcr agent stop`
 
-stop an agent and remove its tab.
+stop agents and remove their tabs.
 
 ```sh
-orcr agent stop <agent> [--json]
+orcr agent stop <agent>… [--json]
 ```
 
-the order matters, and is the same for every kind:
+several agents stop in parallel. a name given twice fails the call before anything stops. one
+agent's failure never blocks the others, and each gets its own outcome. the exit code is 0 when
+every stop succeeded, and otherwise the code of the first failure.
+
+for each agent the order matters, and is the same for every kind:
 
 1. refuse new sends to the agent.
 2. end every open watch on the agent `exited`, so each waiting sender hears now. drop the watches

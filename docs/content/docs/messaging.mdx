@@ -66,7 +66,8 @@ the location is fixed. orchestratr passes it to each agent as `ORCR_BUS`.
   "pid_started": "2026-10-06T09:14:03Z",
   "session": {"id": "019fd875-…", "transcript": "/Users/me/.codex/sessions/…/rollout-….jsonl"},
   "integration": "2",
-  "started_at": "2026-10-06T09:14:05Z"
+  "started_at": "2026-10-06T09:14:05Z",
+  "context_window": null
 }
 ```
 
@@ -80,7 +81,9 @@ the record has two owners, one after the other, so two writers never race:
    (the version folder it was loaded from, or just the version for a kind with no files) and
    `started_at`, and writes it back. that is how
    orchestratr knows the agent is ready. after that, only the integration writes the record, for
-   example when a person runs `/clear` and the session id changes. it rewrites the record only if
+   example when a person runs `/clear` and the session id changes. on kinds whose transcript does
+   not state the model's context window (Pi, OpenCode), it also writes `context_window` at
+   registration and when the model changes. it rewrites the record only if
    the file still exists, so a late write cannot bring back a stopped agent.
 
 **a record lives from `agent new` to `agent stop`.** an agent whose process ended reads

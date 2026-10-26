@@ -116,7 +116,7 @@ in `details` and not into new codes.
 | [`agent.get`](#agentget) | [`orcr agent status`](/docs/cli#orcr-agent-status) |
 | [`agent.read`](#agentread) | [`orcr agent read`](/docs/cli#orcr-agent-read) |
 | `agent.interrupt` | [`orcr agent interrupt`](/docs/cli#orcr-agent-interrupt) |
-| `agent.stop` | [`orcr agent stop`](/docs/cli#orcr-agent-stop) |
+| [`agent.stop`](#agentstop) | [`orcr agent stop`](/docs/cli#orcr-agent-stop) |
 | [`message.send`](#messagesend) | [`orcr agent message`](/docs/cli#orcr-agent-message) |
 | [`message.list`](#messagelist) | [`orcr inbox`](/docs/cli#orcr-inbox) |
 | [`models.list`](#modelslist) | [`orcr models`](/docs/cli#orcr-models) |
@@ -169,6 +169,20 @@ that sees an older `version` than its own asks the server to exit and starts a n
 ```
 
 `wait` null or empty returns at once.
+
+### `agent.stop`
+
+```json
+{"agents": ["codex-1", "reviewer"]}
+```
+
+`agents` is a list, or `"all"` for every agent the caller started. the result has one entry per
+agent, in the order given:
+
+```json
+{"results": [{"agent": "codex-1", "stopped": true},
+             {"agent": "reviewer", "error": {"code": "not_found", "message": "…"}}]}
+```
 
 ### `agent.read`
 

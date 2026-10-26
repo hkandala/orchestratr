@@ -137,7 +137,9 @@ one resolves against the working folder.
 | timing | not measured | 0.65 seconds after launch. the composer drew 1.0 seconds later. |
 
 the plugin adds `session` (`{id, transcript: null}`), `integration` and `started_at`, and only
-if the record file still exists. it writes no `pid`: orchestratr takes that from herdr, and on 2.x
+if the record file still exists. it also writes `context_window`: the model's `limit.context`
+from OpenCode's model list (1.x `/config/providers`, 2.x `/api/model`), at registration and when
+the session's model changes. which event reports a model change was not verified. it writes no `pid`: orchestratr takes that from herdr, and on 2.x
 the plugin runs in a child process anyway.
 
 the negative test: 2.x has no blocking startup screen, and the plugin registers about 1 second
@@ -318,6 +320,8 @@ printed nothing cold on 2.x, twice.
 
 ## not verified
 
+- **whether `orcr mcp`'s `instructions` reach the model.** the
+  [brief](/docs/integrations#what-the-model-reads) depends on it.
 - the `mcp` entries above, live, on either line. they are read from source, including that 2.x
   takes `codemode: false` from the native form only.
 - when 1.x registers relative to `Connect a provider`, and 2.x relative to the migration overlay.
