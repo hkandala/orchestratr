@@ -4,7 +4,7 @@ description: "how orchestratr launches Codex with a private app-server, delivers
 ---
 
 **kind value:** `--kind codex`. versions: 0.159 and later, while the app-server offers the methods
-the bridge uses (see [checks](#checks)). the integration was measured on 0.159.3. older measurements name their version.
+the bridge uses (see [checks](#checks)). the integration was measured on 0.159.3. delivery and interrupts were measured again on 0.163.0. older measurements name their version.
 
 ## launch
 
@@ -30,7 +30,7 @@ S=~/.local/state/orcr/run/<id>.sock
   --disable tool_call_mcp_elicitation \
   -c 'shell_environment_policy.set={EDITOR="true",VISUAL="true",GIT_EDITOR="true",PAGER="cat",GIT_PAGER="cat",GIT_TERMINAL_PROMPT="0",CI="1"}' \
   -c 'mcp_servers.orcr={command="/abs/orcr",args=["mcp"],env_vars=["ORCR_AGENT_ID","ORCR_BUS","XDG_STATE_HOME"]}' \
-  [-m <model>] [-c model_reasoning_effort=<effort>] <config args> >>"$S.log" 2>&1 &
+  [-c model=<model>] [-c model_reasoning_effort=<effort>] <config args> >>"$S.log" 2>&1 &
 for i in $(seq 100); do [ -S "$S" ] && break; sleep 0.1; done
 ( /abs/orcr bridge codex --socket "$S" >>"$S.log" 2>&1; kill 0 ) &
 exec /abs/codex --remote "unix://$S" --yolo -C <real cwd> [-m <model>]
@@ -43,7 +43,7 @@ exec /abs/codex --remote "unix://$S" --yolo -C <real cwd> [-m <model>]
 | `app-server` | a private server for this agent. it runs every turn, tool, hook and MCP server, and writes the transcript. the TUI is only a client. its output goes to `$S.log`, off the TUI's screen. |
 | `projects=…`, `tools.*`, `--disable …`, `shell_environment_policy.set` | trust, the interactive tools and the stall environment. see [startup](#startup). |
 | `mcp_servers.orcr` | the [tools](#tools). an MCP server gets a base environment plus `env_vars` only, so the variables `orcr mcp` needs are named. |
-| `-m`, `model_reasoning_effort` | effort must be on the app-server, because a remote TUI does not forward it. `-m` goes on both. |
+| `model`, `model_reasoning_effort` | as `-c` on the app-server: `codex app-server` refuses `-m` (`unexpected argument '-m'`, 0.163.0), and a remote TUI does not forward effort. the TUI gets `-m`. |
 | `<config args>` | `kind.codex.args`, on the app-server, because only there do thread settings apply. |
 | `( … bridge …; kill 0 ) &` | the [bridge](#the-bridge). when it exits, for any reason, `kill 0` ends the whole process group: the pane closes and the agent reads `exited`. an agent whose bridge died would otherwise look alive and never read its inbox. |
 | the socket wait | the TUI does not retry a missing socket: it exits with `failed to connect to remote app server`. after 10 seconds the TUI starts anyway, fails visibly, and `agent new` reports the pane. the bridge starts after the wait, and also retries its connect for 10 seconds before it gives up. |
@@ -190,9 +190,14 @@ so this check keeps a stop from starting a new turn.
 
 - **`.accepted`** when `turn/start` returns, or when the bridge holds a `followUp`.
 - **`.delivered`** at `item/started` on the followed thread with `item.type == "userMessage"` and
-  `item.clientId` equal to the message id. it fires when the input enters
-  the model's context: a steer sent during `sleep 15` was announced 13 seconds later, when the
-  tool returned (0.159.3). the person's messages carry TUI uuids, which never collide.
+  `item.clientId` equal to the message id. it fires when the input is written to the thread's
+  history, which is what the model reads. on code-mode models (`tool_mode: "code_mode_only"` in
+  `codex debug models`, the default `gpt-6.1-sol` among them) that is about 0.1 seconds after
+  `turn/start` returns, even during a tool call: the running `exec` cell yields to the model
+  (0.163.0). on a model with direct tools, a steer sent during a blocking tool call is written
+  when the call returns (`sleep 15`: 13 seconds later, 0.159.3). a message handed over again
+  writes `.delivered` again at its new `item/started`. the person's messages carry TUI uuids,
+  which never collide.
 - **an empty `immediate`** only interrupts, and never starts a turn. on an idle thread the bridge
   writes `.accepted` and `.delivered` at once and does nothing else. on a working thread it calls
   `turn/interrupt`, writes `.accepted` when the call returns, and `.delivered` at
@@ -210,16 +215,30 @@ the first input of the turn it starts.
 
 ### recovery after an interrupt
 
-any interrupt, the person's Esc or an `immediate`, silently drops a bridge steer that has not
-reached `item/started`. measured on 0.159.3: after Esc, it got no `item/started` and no turn in 25
-seconds. the TUI shows only its own pending steers, and re-sends only those.
+an interrupt, the person's Esc or an `immediate`, ends the turn before the model answers its
+steers. measured on 0.163.0, the same for `turn/start` and `turn/steer`, Esc and
+`turn/interrupt`, in 30 runs:
+
+- a steer not yet written to history (no `item/started`) is dropped. it never reaches the
+  rollout, the TUI never shows it, and no later turn sees it. the same on 0.159.3. the TUI
+  re-sends only its own pending steers.
+- a steer already written stays in history, but the turn never answers it. Codex adds a
+  `<turn_aborted>` note, and a later turn acted on such a steer in 4 of 8 runs.
+- no `item/started` for a steer arrived after its turn's `turn/completed`. the closest came 0.01
+  seconds before.
+
+on code-mode models nearly every steer is already written when the person presses Esc, so
+`.delivered` alone cannot decide. a steer of the turn counts as **answered** once an
+`agentMessage` item completes after its `item/started` in the same turn.
 
 at `turn/completed` with status `interrupted`, the bridge first sends the `immediate` message, if
-any, once. then it calls `turn/start` again, in id order, for every message it already handed over
-that is not `.delivered` and whose file still exists. without an `immediate`, the first of these
-starts the next turn. held follow-ups were never handed over, so they are not re-sent, and they
+any, once. then it calls `turn/start` again, in id order, for every **steer of that turn** (a
+message it handed over while the thread was working) that is not answered and whose file still
+exists, delivered or not. the message that started the turn is not sent again: the interrupt was
+aimed at its work. a steer that was already in history then appears there twice. in 15 runs the
+model answered it once. without an `immediate`, the first re-sent steer starts the next turn. held follow-ups were never handed over, so they are not re-sent, and they
 stay held until the next `turn/completed`: they never join the turn the bridge just started. if
-no turn starts here (no `immediate` with text, nothing to re-hand), the bridge sends the oldest
+no turn starts here (no `immediate` with text, no steer to re-send), the bridge sends the oldest
 held follow-up at once, so an Esc or an empty `immediate` never leaves follow-ups held forever.
 
 ### tools
@@ -279,8 +298,9 @@ unstable. the file exists after the first turn.
 - skip `developer` records tagged `hooks.additional_context`.
 - a turn's outcome is its last `task_started`, `task_complete` or `turn_aborted`.
   `task_complete.last_agent_message` is the answer. an `error` field is a provider failure.
-- input sent mid turn reaches the file only when the running tool returns: 17.82 seconds in one
-  measurement (0.154). fine for reading, and the reason delivery uses `item/started`.
+- input sent mid turn reaches the file when it reaches the model: at once on code-mode models
+  (0.163.0), and when the running tool returns on a model with direct tools (17.82 seconds in one
+  measurement, 0.154). fine for reading, and the reason delivery uses `item/started`.
 
 ## session identity
 
@@ -310,7 +330,7 @@ values.
 | typed keys | the design rule. also, two escapes at rest open the backtrack view. |
 | the shared app-server daemon | any `-c` makes the TUI skip it. the private server is the same binary. |
 | `thread/queue/add` for `followUp` | after an interrupt, a queued item waits until a later turn completes normally, and the TUI shows nothing. once, one vanished. |
-| `turn/steer` | needs `expectedTurnId`, and races the turn's end. `turn/start` does not. |
+| `turn/steer` | the same delivery and interrupt behaviour as `turn/start` (0.163.0), but it needs `expectedTurnId`: it fails at rest (`no active turn to steer`) and on a stale id, so a steer racing the turn's end needs a second call. `turn/start` on a running turn steers, and the 0.163 schema documents it. |
 | hooks and `codex queue` | a 10 second poll, no `immediate`, a steer the TUI does not show, and it breaks once a daemon runs for the same home. |
 | the bridge inside `orcr mcp` | one MCP process per loaded thread: `/new` delivered a message twice. no restart after a crash, and no thread id. |
 | the bridge in the orcr server | the app-server must start in the pane for herdr's hook. a sidecar also works while the orcr server is down. |
@@ -321,10 +341,13 @@ values.
 - the negative test in remote mode, and a bridge that connects after the TUI's `thread/started`.
 - trust on the app-server alone. the source says it is enough. every live run also passed it to
   the TUI.
-- `-m` on both commands, and whether `thread.path` is set before the first turn.
+- whether `thread.path` is set before the first turn.
 - `/resume` and `/fork` in a remote TUI, and how the bridge follows them.
 - subagent threads with their own MCP processes, and `turn/start` during auto-compaction.
 - the order of an `immediate` and re-sent steers.
+- the **answered** cut. the 30 runs interrupted every steer before an answer. the cut exists so
+  that an Esc long after a steer does not repeat work the model already did.
+- a steer during auto-compaction, and during a subagent's turn.
 - a first message sent with the person's first prompt. it becomes a steer, and is marked delivered
   early.
 - the exact tool name the model sees for `orcr mcp`.

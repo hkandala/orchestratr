@@ -183,8 +183,8 @@ with `<orcr-`, so a message text that begins with `/` or `!` is never run as a c
 - **`.delivered`**
   - submit: when the promise resolves without `drop`. it resolved within 9 milliseconds of
     `turn.start`, and at the same millisecond in most runs. `{drop: reason}` means one of the
-    person's hooks refused it. the mod logs the reason and does not retry, so the hook cannot
-    loop it. the message stays `.accepted` and undelivered.
+    person's hooks refused it. the mod writes the reason to `.failed` and does not retry, so the
+    hook cannot loop it. the message stays `.accepted` and undelivered.
   - steer: in the `tool.call` hook, as it returns the result that carries the `context`. the model
     reads it in the very next request.
 
@@ -324,7 +324,7 @@ OAuth or the keychain, so it breaks a subscription sign-in.
   follow-up, and whether one survives [`orcr agent stop`](/docs/cli#orcr-agent-stop) and runs
   before the pane closes.
 - **a prompt a person's hook dropped** stays `.accepted` and undelivered, and `send` reports
-  `queued`. how often hooks drop a plugin prompt is not known.
+  `queued` with the hook's reason from `.failed`. how often hooks drop a plugin prompt is not known.
 - **the subagent filter, the `ORCR_AGENT_ID` key and the empty `immediate`** were written, not
   run live. the live spike keyed on the session id and had no filter.
 - **trust inheritance from a parent folder**, from 2.1.285 strings only.

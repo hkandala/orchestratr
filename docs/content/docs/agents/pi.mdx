@@ -293,6 +293,8 @@ writes the shared bus, and becomes the Pi integration.
 - the negative test with the orcr extension itself on 1.0.0. the evidence is herdr's Pi
   integration on 0.85.1, at the same event.
 - `.accepted` timing. the tested extension wrote `.delivered` only.
+- `.failed` on an authentication failure. the extension reads the error from the turn that ends
+  before `message_start`. which event carries it was not checked.
 - the sender's outcome after a prompt that throws: `queued` if `.accepted` was written, `pending`
   if not.
 - the compaction guard. it comes from pi-herd's source.

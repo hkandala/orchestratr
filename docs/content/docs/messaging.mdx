@@ -18,6 +18,7 @@ this is the one send path for every kind. nothing is ever typed into an agent.
   inbox/<id>/<msgId>.json                one message, written once by the server
   inbox/<id>/<msgId>.accepted            the integration has handed it to the agent's own queue
   inbox/<id>/<msgId>.delivered           the message is in the model's context
+  inbox/<id>/<msgId>.failed              why the last hand-over failed. for people only
   inbox/orcr/                            the inbox of people and programs
 ```
 
@@ -31,13 +32,18 @@ the location is fixed. orchestratr passes it to each agent as `ORCR_BUS`.
   - `link` fails when the name exists, where `rename` would replace it. so writing the same id
     twice is a no-op, never a silent overwrite. a client can retry a send with the same id, and
     the server writes each watch ending exactly once.
+  - when `link` finds the name taken, the server compares the stored message. the same sender and
+    text is a retry, and returns the current outcome. anything else is refused with
+    `invalid_request` and `details.reason: "id_in_use"`.
   - OpenCode 2.x's own inbox works the same way: the caller picks the id, and the first
     admission wins.
 - **an agent record is written to a temporary file and renamed into place.** it is rewritten
   when it changes.
 - **a message file is never changed.** its state lives in the markers beside it.
 - **a marker is an empty file, or a small JSON object** such as `{"at": "2026-10-06T09:22:10Z"}`.
-  its existence is what counts.
+  its existence is what counts. one exception: a message handed over again after an interrupt
+  and delivered again gets a new `.delivered`, written to a temporary file and renamed into
+  place. its `at` is the latest delivery.
 - **unknown fields are ignored.** every message and record carries `"v": 1`.
 
 ## agent records
@@ -176,6 +182,10 @@ the integration does this, and nothing more:
    integration.
 5. **write `.delivered`** when the message is in the model's context. each kind has a precise
    event for this; see the table on [agent kinds](/docs/agents).
+6. **write `.failed`** when a hand-over throws, or the kind refuses the message or ends its turn
+   with an error before `.delivered`: `{"v": 1, "at": "…", "reason": "…"}`, rewritten on each
+   failure. it is for people only. it changes nothing about what happens next: no retry, no new
+   state. a later `.delivered` makes it stale, and readers ignore it then.
 
 delivery is at least once. if the agent reloads its integration after `.accepted` and before
 `.delivered`, the message is handed over again. an agent that has exited is not restarted, so its
@@ -233,6 +243,9 @@ held for long.
 | `pending` | the file was written, and nothing took it within the timeout. the integration is not running, or the agent is stuck. | 5 |
 | `failed` | nothing was written, for a reason orchestratr can name. | 2, 3 or 4 |
 
+a `queued` or `pending` result carries `reason` when the message has a `.failed` marker. without
+one, `pending` means no integration took the message: it is not running, or the agent is stuck.
+
 **never re-send after `queued` or `pending`.** the file stays in the inbox, and is delivered when
 the integration takes it. a second copy would be a duplicate. after `failed`, a retry is safe. a
 client that lost its connection mid send retries with the same `id`, which is safe in every case.
@@ -261,7 +274,7 @@ it ends with the first of these:
 | ending | when | carries |
 |---|---|---|
 | `reply` | a message from the recipient arrives with `reply_to` set to the watched message | nothing extra. the reply itself wakes the sender. |
-| `idle` | the watched message is delivered, the recipient has been idle for 2 seconds, and its transcript holds an assistant message, or a failed-turn record, written after the delivery | `last_text` (or the error), and `worked_ms` |
+| `idle` | the watched message is delivered, the recipient has been idle for 2 seconds, and its transcript holds an assistant message, or a failed-turn record, written after the latest delivery | `last_text` (or the error), and `worked_ms` |
 | `blocked` | the recipient has waited for a person for 2 seconds | `screen`: what its pane shows |
 | `exited` | the recipient's process ended, or `stop` removed it | `last_text` |
 | `timeout` | `reply_by` passed | `state`, and `last_text` |

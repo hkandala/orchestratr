@@ -46,17 +46,20 @@ integration.
      turn-start event. a second message a moment later is then a steer into the starting turn,
      not a second turn.
 5. **mark delivery.** write `.delivered` at the kind's event for "this message is in the model's
-   context".
+   context". write `.failed` with a reason when a hand-over fails, as
+   [receiving](/docs/messaging#receiving) step 6 says.
 6. **handle an empty `immediate`.** at rest, mark it `.accepted` and `.delivered` and do nothing
    else. while working, abort the turn, and mark it `.delivered` when the turn has ended. it never
    starts a turn. one older than 10 seconds when taken is marked the same way and ignored.
-7. **recover after an interrupt, where the kind needs it.** on Pi and on Codex, and only there, an interrupt
-   (an `immediate`, or the person pressing Esc) silently drops messages the agent had accepted
-   and not yet delivered. this was measured on both. when a turn ends interrupted, hand over again
-   every message the integration had handed to the agent, that is not delivered, and whose file
-   still exists: steers, and follow-ups the agent queued itself. messages the integration still
-   holds are not affected. an empty `immediate` is never handed over again. `stop` removes undelivered files before it interrupts, so a stop never restarts the
-   agent.
+7. **recover after an interrupt, where the kind needs it.** on Pi and on Codex, and only there,
+   an interrupt (an `immediate`, or the person pressing Esc) silently drops messages the agent
+   had accepted and not yet delivered. this was measured on both. when a turn ends interrupted,
+   hand over again every message the integration had handed to the agent, that is not delivered,
+   and whose file still exists: steers, and follow-ups the agent queued itself. on Codex, also the
+   delivered steers of that turn that the model did not answer (see
+   [Codex](/docs/agents/codex#recovery-after-an-interrupt)). messages the integration still holds
+   are not affected. an empty `immediate` is never handed over again. `stop` removes undelivered
+   files before it interrupts, so a stop never restarts the agent.
 8. **render the blocks.** wrap a message in `<orcr-message>`, with the reply hint that names the
    tool as this kind shows it to the model. render a message with a `watch` field as
    `<orcr-watch>`. escape `<orcr-` and `</orcr-` inside every field, with one shared function and

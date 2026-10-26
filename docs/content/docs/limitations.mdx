@@ -74,13 +74,17 @@ or the caller sees no reply.
 **`pending` and `queued` must not be re-sent.** see [outcomes](/docs/messaging#outcomes).
 
 **an interrupt can cancel accepted steers.** on Pi and on Codex, an abort, including the person
-pressing Esc, silently drops steers the agent had accepted and not yet delivered. the
-integration hands them over again after the interrupted turn (see
+pressing Esc, silently drops steers the agent had accepted and not yet delivered. on Codex, a
+steer already delivered is not answered either: it stays in history, and a later turn may or may
+not act on it. the integration hands them over again after the interrupted turn (see
 [the contract](/docs/integrations#the-contract), item 7). they arrive one turn later than they
-would have.
+would have. on Codex, a steer that was already delivered then appears twice in the agent's
+history.
 
-**a steer waits for the running tool call.** a message sent while an agent runs a 60-second
-command reaches the model when the command returns. it reads `queued` until then.
+**a steer may wait for the running tool call.** a message sent while an agent runs a 60-second
+command reaches the model when the command returns. it reads `queued` until then. Codex's
+code-mode models, the default on 0.163, take a steer within about a second, even during a
+command.
 
 **messages from different senders are ordered by send time to the millisecond**, not by a shared
 sequence.
@@ -131,8 +135,8 @@ can already type into every agent.
 - **Pi's own built-in pickers are not reported as blocked.** `/model`, `/resume` and `/tree` do not
   go through the extension dialog events. extension dialogs are reported.
 - **the process must be named `pi`.** herdr does not recognize `pi.real`.
-- **an authentication failure leaves no trace in the inbox.** the message reads `queued` and is
-  never delivered, and the agent's screen shows the error.
+- **an authentication failure leaves the message undelivered.** it reads `queued`, and the
+  extension writes the error to `.failed`, so `send` and `orcr agent list` show why.
 - **pi-herd sees orchestratr's Pi agents.** pi-herd registers every Pi session in herdr, so they
   appear on its dashboard. the two sets of tools do not clash.
 - **the effort values need one probe per model.** [`orcr models`](/docs/cli#orcr-models) reports
@@ -171,7 +175,7 @@ these are better fixed upstream than worked around here:
 3. **Codex:**
    - a stable app-server protocol;
    - fix: queued input stays stuck after an interrupt;
-   - fix: an interrupt drops another client's pending steer;
+   - fix: an interrupt drops another client's pending steer, and leaves a written one unanswered;
    - let a hook or MCP server enqueue input.
 4. **Pi:**
    - keep or report custom messages when an abort clears the queues;

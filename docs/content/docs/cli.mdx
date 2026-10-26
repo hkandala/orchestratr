@@ -152,11 +152,17 @@ one agent object:
   "effort": "high",
   "parent": null,
   "state": "idle",
+  "pending": 0,
+  "failed": null,
   "session": "019fd875-…",
   "transcript": "/Users/me/.codex/sessions/2026/10/06/rollout-….jsonl",
   "created_at": "2026-10-06T09:14:02Z"
 }
 ```
+
+`pending` counts the agent's messages without `.delivered`. `failed` is the `reason` of the newest
+of them that has a `.failed` marker, or null. both come from the inbox, so `orcr agent list` shows
+at a glance an agent that is not taking its messages.
 
 `model` and `effort` are what was passed or configured, or null. orchestratr does not guess a
 kind's default. `transcript` is null for a kind that writes no transcript file (OpenCode).
@@ -252,6 +258,8 @@ the full procedure is in [sending](/docs/messaging#sending).
 
 - **`delivered` and `queued` exit 0.** `queued` means the agent holds the message and will
   deliver it at its next tool call or after its turn.
+- **`queued` and `pending` carry `reason`** when the agent's integration wrote a `.failed`
+  marker for the message, such as a person's hook refusing it.
 - **`pending` exits 5,** with error code `timeout` and `details.result: "pending"`. the message
   is in the inbox. **do not re-send it:** it is delivered when the agent's integration runs.
 - **`failed` exits with the code of its cause:**
