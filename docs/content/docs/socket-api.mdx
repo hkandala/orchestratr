@@ -258,7 +258,8 @@ present only on a failure.
 
 `agents` is a list, or null (the default) for every agent, including agents created later. the
 response carries a snapshot of the agents, then events stream on the same connection until it
-closes:
+closes. the server takes the snapshot and starts the stream under one lock, so every change is
+in the snapshot or in an event, never in both or neither:
 
 ```json
 {"id": "c9", "ok": true, "result": {"subscription": "s1", "snapshot": {"agents": []}}}

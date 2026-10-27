@@ -408,6 +408,8 @@ on the same page. every message says what orchestratr looked for.
    the loop cap. a stop mid-turn, which no later turn may resume, and a stop cut short by a crash.
    an upgrade while an agent runs on the old folder. `/clear` and `/new`, which rewrite `session`.
    the subagent filter. the trust-key writer against a held lock and through a symbolic link.
+   a nested `opencode run` from an agent's shell, which must stay inert. an `agent new` racing an
+   `events.subscribe`: the agent is in the snapshot or in `agent.added`, exactly once.
 
 backend tests run against a throwaway herdr session. never against a session orchestratr did not
 create.

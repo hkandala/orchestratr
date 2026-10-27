@@ -242,6 +242,11 @@ currently available" (measured).
   transform hook is `experimental`, and compaction calls it too: ignore the call after
   `experimental.session.compacting`. subagent sessions fire `session.created` and `chat.message`:
   track only sessions with no `parentID`.
+- **a nested `opencode` inherits the plugin.** `OPENCODE_CONFIG_CONTENT` passes to every child,
+  so an `opencode run` from the agent's shell loads the orcr plugin with the agent's id. the plugin
+  acts only when its process (1.x) or its parent (2.x) has the record's `pid`
+  ([contract item 1](/docs/integrations#the-contract)). cp3 hit the same with a nested
+  `claude -p`.
 - **`--pure` turns off external plugins**, so the agent never registers. keep it out of
   `kind.opencode.args`.
 
@@ -353,3 +358,4 @@ printed nothing cold on 2.x, twice.
   on 2.x. the interrupt call acknowledges before cleanup settles (source).
 - that `question: deny` beats the `plan` agent's own allow on 2.x. it does for `build`.
 - both lines' startup with the person's own plugins loaded.
+- that a nested `opencode run` loads the plugin, and that the `pid` check keeps it inert.

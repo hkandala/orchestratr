@@ -31,6 +31,9 @@ every integration does exactly this. anything more belongs in orchestratr, not i
 integration.
 
 1. **stay inert outside orchestratr.** do nothing unless `ORCR_AGENT_ID` and `ORCR_BUS` are set.
+   a harness that the agent starts from its own shell inherits both. where the integration also
+   loads through an inherited variable (OpenCode), act only when the process, or its parent, has
+   the record's `pid`. otherwise a nested copy takes the agent's session and inbox.
 2. **register when the agent can take input.** read `agents/<id>.json`, add `session` and
    `started_at`, set `integration` (the version folder it was loaded from, or the version alone
    on a kind with no files), and rename it back into place. this is the readiness signal, so it
